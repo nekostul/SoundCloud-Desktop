@@ -970,39 +970,6 @@ function syncLyricCharProgress(charEl: HTMLElement, progress: number) {
   charEl.dataset.charState = charState;
 }
 
-function renderAnimatedLyricText(text: string) {
-  let animatedCharIndex = 0;
-
-  return Array.from(text).map((char, index) => {
-    if (/^\s+$/.test(char)) {
-      return (
-        <span key={`space-${index}`} className="whitespace-pre">
-          {char}
-        </span>
-      );
-    }
-
-    const charIndex = animatedCharIndex;
-    animatedCharIndex += 1;
-
-    return (
-      <span
-        key={`${char}-${index}`}
-        data-char-index={charIndex}
-        className="inline-block whitespace-pre will-change-transform"
-style={{
-  ['--char-progress' as string]: '0',
-  color: 'rgba(255,255,255,0.92)',
-  opacity: 0.55,
-  transform: 'translate3d(0, 0.08em, 0) scale(0.985)',
-}}
-      >
-        {char}
-      </span>
-    );
-  });
-}
-
 function getLyricMotionWeight(text: string | undefined) {
   const normalized = (text || '').replace(/\s+/g, ' ').trim();
   if (!normalized || normalized === '♪♪♪' || normalized === '...') return 0.6;
@@ -2486,16 +2453,8 @@ const StaticSyncedLyrics = React.memo(({ lines }: { lines: LyricLine[] }) => {
 
 /* ── Lyrics Panel (fullscreen, 50/50) ─────────────────────── */
 
-const LYRICS_PANEL_SPLIT_MIN = 0.32;
-const LYRICS_PANEL_SPLIT_MAX = 0.68;
-const LYRICS_PANEL_SPLIT_KEYBOARD_STEP = 0.03;
-const LYRICS_PANEL_SPLIT_DEFAULT = 0.5;
 const LYRICS_NOT_FOUND_HINT_TEXT =
   'T\u0435\u043a\u0441\u0442 \u043f\u0440\u043e\u0435\u0431\u0430\u043b\u0441\u044f. \u0418\u0434\u0438 \u043a\u043e\u043f\u0430\u0439\u0441\u044f \u043d\u0430 Genius';
-
-function clampLyricsPanelSplitRatio(value: number) {
-  return Math.max(LYRICS_PANEL_SPLIT_MIN, Math.min(LYRICS_PANEL_SPLIT_MAX, value));
-}
 
 function getLyricsSearchPrefill(
   track: Track | null | undefined,
@@ -2664,11 +2623,8 @@ export const LyricsPanel = React.memo(
     const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
     const { t } = useTranslation();
     const artworkColor = useArtworkColor(track?.artwork_url ?? null);
-    const lyricsSplitRatio = useFullscreenPanelStore((s) => s.lyricsSplitRatio);
-    const setLyricsSplitRatio = useFullscreenPanelStore((s) => s.setLyricsSplitRatio);
 
     const [isEditing, setIsEditing] = useState(false);
-    const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
     const [manualQuery, setManualQuery] = useState<{ artist: string; title: string } | null>(null);
     const [editArtist, setEditArtist] = useState('');
     const [editTitle, setEditTitle] = useState('');
@@ -2740,19 +2696,6 @@ export const LyricsPanel = React.memo(
     if (!visible || !track) return null;
 
     const artwork500 = art(track.artwork_url, 't500x500');
-    const splitPercent = lyricsSplitRatio * 100;
-    const updateLyricsSplitFromClientX = (clientX: number) => {
-      const layout = splitLayoutRef.current;
-      if (!layout) return;
-      const rect = layout.getBoundingClientRect();
-      if (rect.width <= 0) return;
-      const nextRatio = clampLyricsPanelSplitRatio((clientX - rect.left) / rect.width);
-      setLyricsSplitRatio(nextRatio);
-    };
-    const stopSplitDragging = () => {
-      splitDraggingRef.current = false;
-      setIsResizingSplit(false);
-    };
     const rootClassName = forceOpen
       ? `fixed inset-0 z-[60] flex flex-col overflow-hidden bg-[#08080a] ${openAnimation === 'fromMiniPlayer' ? 'animate-fullscreen-from-player' : ''} ${closeAnimation === 'toMiniPlayer' ? 'animate-fullscreen-to-player' : ''} ${panelClassName}`.trim()
       : 'fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in-up bg-[#08080a]';
@@ -3068,172 +3011,6 @@ export const lyricsPanelApi = {
   },
 };
 
-/* ── Fullscreen Panels ─────────────────────────────────────── */
-
-const LyricsColumnWrapper = React.memo(({ track }: { track: Track }) => {
-  const interactiveVisible = true;
-  const { t } = useTranslation();
-  const [isEditing, setIsEditing] = useState(false);
-  const [editArtist, setEditArtist] = useState('');
-  const [editTitle, setEditTitle] = useState('');
-  const [manualQuery, setManualQuery] = useState<{ artist: string; title: string } | null>(null);
-  const [showNotFoundHint, setShowNotFoundHint] = useState(false);
-  const notFoundHintTimeoutRef = useRef<number | null>(null);
-
-  const reqArtist = manualQuery ? manualQuery.artist : (track.user.username ?? '');
-  const reqTitle = manualQuery ? manualQuery.title : (track.title ?? '');
-
-  const experimentalRuAudioTextWarmup = useSettingsStore((s) => s.experimentalRuAudioTextWarmup);
-  const {
-    data: lyrics,
-    isLoading,
-    generatedFromPlain,
-  } = useResolvedLyrics(
-    interactiveVisible,
-    track,
-    reqArtist,
-    reqTitle,
-    getTrackDurationMs(track),
-    experimentalRuAudioTextWarmup,
-  );
-  const warmupEnabled = generatedFromPlain && experimentalRuAudioTextWarmup;
-  const { motionHints } = useAudioTextWarmup(warmupEnabled, track, reqArtist, reqTitle, lyrics);
-
-  // Show "not found" hint when lyrics fail to load
-  useEffect(() => {
-    if (!isLoading && !lyrics) {
-      setShowNotFoundHint(true);
-      
-      if (notFoundHintTimeoutRef.current !== null) {
-        window.clearTimeout(notFoundHintTimeoutRef.current);
-      }
-      
-      notFoundHintTimeoutRef.current = window.setTimeout(() => {
-        setShowNotFoundHint(false);
-        notFoundHintTimeoutRef.current = null;
-      }, 3000);
-    }
-  }, [isLoading, lyrics]);
-
-  useEffect(() => {
-    setManualQuery(null);
-    setIsEditing(false);
-  }, [track.urn]);
-
-  useEffect(() => {
-    return () => {
-      if (notFoundHintTimeoutRef.current !== null) {
-        window.clearTimeout(notFoundHintTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const startSearch = () => {
-    const parsed = splitArtistTitle(track.title ?? '');
-    setEditArtist(manualQuery?.artist || (parsed ? parsed[0] : track.user.username || ''));
-    setEditTitle(manualQuery?.title || (parsed ? parsed[1] : track.title || ''));
-    setIsEditing(true);
-  };
-
-  return (
-    <div className="h-full flex flex-col overflow-hidden relative">
-      <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-        {isEditing ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-4 px-8 animate-fade-in-up">
-            <h3 className="text-white/80 font-bold mb-2">
-              {t('track.manualSearch', 'Manual Search')}
-            </h3>
-            <input
-              value={editArtist}
-              onChange={(e) => setEditArtist(e.target.value)}
-              placeholder="Artist"
-              className="w-full max-w-[260px] bg-white/10 px-4 py-2.5 rounded-xl text-white text-[14px] outline-none border border-transparent focus:border-white/20 placeholder:text-white/30"
-            />
-            <input
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              placeholder="Title"
-              className="w-full max-w-[260px] bg-white/10 px-4 py-2.5 rounded-xl text-white text-[14px] outline-none border border-transparent focus:border-white/20 placeholder:text-white/30"
-            />
-            <div className="flex gap-3 mt-4">
-              <button
-                type="button"
-                onClick={() => setIsEditing(false)}
-                className="px-5 py-2 rounded-full text-[13px] font-medium text-white/50 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
-              >
-                {t('common.back')}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setManualQuery({ artist: editArtist, title: editTitle });
-                  setIsEditing(false);
-                }}
-                className="px-6 py-2 rounded-full text-[13px] font-bold bg-white/20 hover:bg-white/30 text-white transition-colors cursor-pointer"
-              >
-                {t('track.search', 'Search')}
-              </button>
-            </div>
-          </div>
-        ) : isLoading ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-3">
-            <Loader2 size={24} className="animate-spin text-white/15" />
-            <p className="text-[13px] text-white/25">{t('track.lyricsLoading')}</p>
-          </div>
-        ) : !lyrics ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-4 px-8 text-center relative">
-            <button
-              type="button"
-              onClick={startSearch}
-              className="absolute right-2 top-2 w-8 h-8 flex items-center justify-center rounded-full text-white/30 hover:text-white/70 hover:bg-white/10 transition-colors cursor-pointer"
-            >
-              <Search size={14} />
-            </button>
-            <MicVocal size={40} className="text-white/[0.06]" />
-            <p className="text-[15px] text-white/30 font-medium">{t('track.lyricsNotFound')}</p>
-            <p className="text-[12px] text-white/15 leading-relaxed max-w-[300px]">
-              {t('track.lyricsNotFoundHint')}
-            </p>
-          </div>
-        ) : shouldRenderSyncedLyrics(lyrics) ? (
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden pr-2">
-            <div className="flex items-center justify-end gap-2 px-3 pt-2 pb-1 shrink-0">
-              <LyricsSourceBadge source={lyrics.source} onSearch={startSearch} />
-            </div>
-            {warmupEnabled ? (
-              <SyncedLyricsWithWarmup lines={lyrics.synced} motionHints={motionHints} />
-            ) : (
-              <SyncedLyricsWithPlaceholders lines={lyrics.synced} />
-            )}
-          </div>
-        ) : lyrics.plain ? (
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden pr-2">
-            <div className="flex items-center justify-end gap-2 px-3 pt-2 pb-1 shrink-0">
-              <LyricsSourceBadge source={lyrics.source} onSearch={startSearch} />
-            </div>
-            <PlainLyrics text={lyrics.plain} />
-          </div>
-        ) : lyrics.synced ? (
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden pr-2">
-            <StaticSyncedLyrics lines={lyrics.synced} />
-          </div>
-        ) : null}
-      </div>
-
-      {/* Not found hint notification */}
-      {showNotFoundHint && !isLoading && !lyrics && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-40 animate-fade-in-up">
-          <div className="px-4 py-2 rounded-full bg-white/10 border border-white/20 backdrop-blur-sm shadow-lg">
-            <p className="text-[11px] font-medium text-white/70 whitespace-nowrap">
-              Текст проебался. Иди копайся на Genius
-            </p>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-});
-
 const FullscreenLyricsColumn = React.memo(
   ({
     lyrics,
@@ -3313,7 +3090,6 @@ const FullscreenPanels = React.memo(() => {
   const closeAnimation = useFullscreenPanelStore((s) => s.closeAnimation);
   const openAnimation = useFullscreenPanelStore((s) => s.openAnimation);
   const lyricsSplitRatio = useFullscreenPanelStore((s) => s.lyricsSplitRatio);
-  const setLyricsSplitRatio = useFullscreenPanelStore((s) => s.setLyricsSplitRatio);
   const track = usePlayerStore((s) => s.currentTrack);
   const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
   const experimentalRuAudioTextWarmup = useSettingsStore((s) => s.experimentalRuAudioTextWarmup);
@@ -3322,8 +3098,6 @@ const FullscreenPanels = React.memo(() => {
   const isLyrics = mode === 'lyrics';
   const closingToMiniPlayer = closeAnimation === 'toMiniPlayer';
   const splitRef = useRef<HTMLDivElement>(null);
-  const splitDraggingRef = useRef(false);
-  const [isResizingSplit, setIsResizingSplit] = useState(false);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [manualQuery, setManualQuery] = useState<{ artist: string; title: string } | null>(null);
   const [submittedSearchQuery, setSubmittedSearchQuery] = useState<{
@@ -3392,7 +3166,7 @@ const FullscreenPanels = React.memo(() => {
     : 1;
   const fullscreenTransitionEase = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const fullscreenTransitionDurationMs = 500;
-  const layoutTransition = isResizingSplit
+  const layoutTransition = false
     ? 'none'
     : `${fullscreenTransitionDurationMs}ms ${fullscreenTransitionEase}`;
   const trackStageTranslateX = lyricsPaneVisible
@@ -3402,21 +3176,6 @@ const FullscreenPanels = React.memo(() => {
     ? `inset(0 ${lyricsPanePercent}% 0 0)`
     : 'inset(0 0 0 0)';
 
-  const updateSplitFromClientX = useCallback(
-    (clientX: number) => {
-      const el = splitRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const ratio = Math.max(0.2, Math.min(0.8, (clientX - rect.left) / rect.width));
-      setLyricsSplitRatio(ratio);
-    },
-    [setLyricsSplitRatio],
-  );
-
-  const stopSplitDragging = useCallback(() => {
-    splitDraggingRef.current = false;
-    setIsResizingSplit(false);
-  }, []);
 
   const clearNotFoundHint = useCallback(() => {
     if (notFoundHintTimeoutRef.current !== null) {
@@ -3630,7 +3389,7 @@ const FullscreenPanels = React.memo(() => {
   return (
     <>
       <div
-        className={`fixed inset-0 z-[60] flex flex-col overflow-hidden bg-[#08080a] ${isResizingSplit ? 'select-none' : ''} ${animClass}`}
+        className={`fixed inset-0 z-[60] flex flex-col overflow-hidden bg-[#08080a] ${animClass}`}
         style={{ pointerEvents: closingToMiniPlayer ? 'none' : 'auto' }}
       >
       <FullscreenBackground
