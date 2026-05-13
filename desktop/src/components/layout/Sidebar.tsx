@@ -18,7 +18,6 @@ import {
 import { useAuthStore } from '../../stores/auth';
 import { useSettingsStore } from '../../stores/settings';
 import { Avatar } from '../ui/Avatar';
-import { StarBadge, StarCard, StarModal, useStarSubscription } from './StarSubscription';
 
 const languages = [
   { code: 'en', label: 'English' },
@@ -36,7 +35,6 @@ export const Sidebar = React.memo(() => {
   const { t, i18n } = useTranslation();
 
   const user = useAuthStore((s) => s.user);
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
 
   const { collapsed, pinnedPlaylists, toggleSidebar } = useSettingsStore(
     useShallow((s) => ({
@@ -45,8 +43,6 @@ export const Sidebar = React.memo(() => {
       toggleSidebar: s.toggleSidebar,
     })),
   );
-
-  const { isPremium, modalOpen, setModalOpen, openModal } = useStarSubscription();
 
   const toggleLanguage = () => {
     const next = i18n.language === 'ru' ? 'en' : 'ru';
@@ -144,9 +140,6 @@ export const Sidebar = React.memo(() => {
       </div>
 
       <div className="mt-auto px-2 pb-14 flex flex-col gap-0.5">
-        {isAuthenticated && (
-          <StarCard collapsed={collapsed} isPremium={isPremium} onOpenModal={openModal} />
-        )}
 
         <button
           type="button"
@@ -211,21 +204,15 @@ export const Sidebar = React.memo(() => {
             >
               <Avatar src={user.avatar_url} alt={user.username} size={24} />
 
-              {!collapsed && (
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="text-[12px] text-white/40 truncate font-medium">
-                    {user.username}
-                  </span>
-
-                  {isPremium && <StarBadge />}
-                </div>
-              )}
+{!collapsed && (
+  <span className="text-[12px] text-white/40 truncate font-medium">
+    {user.username}
+  </span>
+)}
             </NavLink>
           </div>
         )}
       </div>
-
-      <StarModal open={modalOpen} onOpenChange={setModalOpen} />
     </aside>
   );
 });

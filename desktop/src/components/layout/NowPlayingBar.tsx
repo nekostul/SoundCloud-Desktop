@@ -46,7 +46,6 @@ import { type MoodLabel, useSoundWaveStore } from '../../stores/soundwave';
 import { EqualizerPanel } from '../music/EqualizerPanel';
 import { PlaybackSpeedPresets } from '../music/PlaybackSpeedPresets';
 import { StreamQualityBadge } from '../music/StreamQualityBadge';
-import { Visualizer } from '../music/Visualizer';
 
 /* ── Download Progress Panel ────────────────────────────────── */
 
@@ -61,15 +60,13 @@ export const ProgressSlider = React.memo(() => {
 const artworkOpen = useArtworkStore((s) => s.open);
 
 const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
-  const floatingComments = useSettingsStore((s) => s.floatingComments);
-  const classicPlaybar = useSettingsStore((s) => s.classicPlaybar);
   const targetFramerate = useSettingsStore((s) => s.targetFramerate);
   const unlockFramerate = useSettingsStore((s) => s.unlockFramerate);
 
   const { data: comments } = useQuery({
     queryKey: ['comments', currentTrack?.urn],
     queryFn: () => getTrackComments(currentTrack!.urn),
-    enabled: !!currentTrack && floatingComments,
+    enabled: false,
     staleTime: 60 * 60 * 1000,
   });
 
@@ -79,116 +76,8 @@ const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
   const [syncedValue, setSyncedValue] = useState(0);
 
   const draggingRef = useRef(false);
-  const maskUrlRef = useRef<string | null>(null);
   const dragRafRef = useRef<number | null>(null);
   const pendingDragValueRef = useRef<number | null>(null);
-
-  // Waveform Mask Logic
-  const [maskUri, setMaskUri] = useState<string>('');
-  useEffect(() => {
-    const url = currentTrack?.waveform_url;
-    const releaseMask = () => {
-      if (maskUrlRef.current) {
-        URL.revokeObjectURL(maskUrlRef.current);
-        maskUrlRef.current = null;
-      }
-    };
-
-    releaseMask();
-
-    if (!url) {
-      setMaskUri('');
-      return;
-    }
-
-    const controller = new AbortController();
-    let cancelled = false;
-    const jsonUrl = url.replace(/\.[^.]+$/, '.json');
-    fetch(jsonUrl, { signal: controller.signal })
-      .then(async (r) => {
-        if (!r.ok) {
-          throw new Error(`HTTP ${r.status}`);
-        }
-        const contentType = (r.headers.get('content-type') || '').toLowerCase();
-        const canParseJson =
-          !contentType ||
-          contentType.includes('application/json') ||
-          contentType.includes('text/json') ||
-          contentType.includes('application/octet-stream') ||
-          contentType.includes('text/plain');
-        if (!canParseJson) {
-          throw new Error(`Invalid waveform content-type: ${contentType || 'unknown'}`);
-        }
-        const raw = await r.text();
-        if (!raw.trim()) {
-          throw new Error('Empty waveform payload');
-        }
-        try {
-          return JSON.parse(raw);
-        } catch {
-          throw new Error(`Invalid waveform JSON payload (${contentType || 'unknown'})`);
-        }
-      })
-      .then((d) => {
-        if (!d || !d.samples) return;
-        const s = d.samples as number[];
-        const c = document.createElement('canvas');
-        const w = 720;
-        const h = 40;
-        c.width = w;
-        c.height = h;
-        const ctx = c.getContext('2d');
-        if (!ctx) return;
-        ctx.fillStyle = 'black';
-        let max = 1;
-        for (let i = 0; i < s.length; i++) {
-          if (s[i] > max) max = s[i];
-        }
-        const barW = 2;
-        const gap = 1.5;
-        const step = barW + gap;
-        for (let i = 0; i < w; i += step) {
-          const idx = Math.floor((i / w) * s.length);
-          const amp = s[idx] / max;
-          const barH = Math.max(2, amp * h);
-          ctx.beginPath();
-          ctx.roundRect(i, (h - barH) / 2, barW, barH, 2);
-          ctx.fill();
-        }
-
-        c.toBlob((blob) => {
-          if (cancelled) return;
-          if (!blob) {
-            setMaskUri('');
-            return;
-          }
-          const next = URL.createObjectURL(blob);
-          if (maskUrlRef.current) URL.revokeObjectURL(maskUrlRef.current);
-          maskUrlRef.current = next;
-          setMaskUri(next);
-        }, 'image/png');
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
-        if (e instanceof DOMException && e.name === 'AbortError') return;
-        console.warn('Waveform load failed', e);
-        setMaskUri('');
-      });
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [currentTrack?.waveform_url]);
-
-  useEffect(() => {
-    return () => {
-      if (maskUrlRef.current) {
-        URL.revokeObjectURL(maskUrlRef.current);
-        maskUrlRef.current = null;
-      }
-    };
-  }, []);
 
   // Keep slider state in sync without competing DOM mutations
   useEffect(() => {
@@ -267,26 +156,18 @@ const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
       .filter((c) => c.timestamp != null)
       .map((c) => {
         const left = (c.timestamp! / (duration * 1000)) * 100;
-        return (
-          <div
-            key={c.id}
-            className={`absolute top-1/2 -translate-y-1/2 w-0.5 h-0.5 rounded-full pointer-events-none ${
-              maskUri && !classicPlaybar ? 'bg-white/30' : 'bg-white/10'
-            }`}
-            style={{ left: `${left}%` }}
-          />
-        );
-      });
-  }, [comments, duration, maskUri, classicPlaybar]);
-
 return (
   <div
-  className={`group/slider z-20 ${
-    classicPlaybar
-      ? 'relative w-full'
-      : 'absolute top-0 left-0 right-0'
-  }`}
->
+    key={c.id}
+    className="absolute top-1/2 -translate-y-1/2 w-0.5 h-0.5 rounded-full pointer-events-none bg-white/10"
+    style={{ left: `${left}%` }}
+  />
+);
+      });
+  }, [comments, duration]);
+
+return (
+  <div className="relative w-full group/slider z-20">
     <Slider.Root
       onPointerMove={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
@@ -296,48 +177,25 @@ return (
       onPointerLeave={() => {
         setHoverPercent(null);
       }}
-      className={`relative flex items-start w-full cursor-pointer select-none touch-none group/slider ${
-        maskUri && !classicPlaybar
-          ? 'h-[18px] pt-[1px]'
-          : 'h-[10px]'
-      }`}
+      className="relative flex items-start w-full h-[10px] cursor-pointer select-none touch-none group/slider"
       value={[displayValue]}
       max={duration || 1}
       step={0.1}
       onValueChange={onValueChange}
       onValueCommit={onValueCommit}
     >
-      <Slider.Track
-        className={`relative grow transition-all duration-150 overflow-hidden ${
-          maskUri && !classicPlaybar
-            ? 'h-full'
-            : 'h-[3px] rounded-full group-hover/slider:h-[4px]'
-        }`}
-        style={
-          maskUri && !classicPlaybar
-            ? {
-                maskImage: `url(${maskUri})`,
-                maskSize: '100% 100%',
-                WebkitMaskImage: `url(${maskUri})`,
-                WebkitMaskSize: '100% 100%',
-              }
-            : undefined
-        }
-      >
+      <Slider.Track className="relative grow h-[3px] rounded-full overflow-hidden transition-all duration-150 group-hover/slider:h-[4px]">
         <div className="absolute inset-0 bg-white/[0.08]" />
 
-        <Slider.Range
-          className={`absolute h-full will-change-transform theme-accent-progress theme-accent-animated ${
-            maskUri ? '' : 'rounded-full'
-          }`}
-        />
+        <Slider.Range className="absolute h-full rounded-full will-change-transform theme-accent-progress theme-accent-animated" />
 
         {markers}
       </Slider.Track>
 
-{hoverPercent !== null && !isFullscreenOverlayOpen && (
-  <div
-    className="absolute top-[50px] px-2 py-1 rounded-xl bg-black/80 border border-white/10 text-white text-[10px] font-medium pointer-events-none backdrop-blur-xl"          style={{
+      {hoverPercent !== null && !isFullscreenOverlayOpen && (
+        <div
+          className="absolute top-[50px] px-2 py-1 rounded-xl bg-black/80 border border-white/10 text-white text-[10px] font-medium pointer-events-none backdrop-blur-xl"
+          style={{
             left: `${hoverPercent * 100}%`,
             transform: 'translateX(-50%)',
           }}
@@ -346,9 +204,7 @@ return (
         </div>
       )}
 
-      {(!maskUri || classicPlaybar) && (
-        <Slider.Thumb className="hidden" />
-      )}
+      <Slider.Thumb className="hidden" />
     </Slider.Root>
   </div>
 );
@@ -1042,31 +898,6 @@ const BackgroundGlow = React.memo(() => {
   );
 });
 
-/* ── Playbar Visualizer ──────────────────────────────────────── */
-
-const PlaybarVisualizer = React.memo(() => {
-  const h = useSettingsStore((s) => s.visualizerHeight);
-  const op = useSettingsStore((s) => s.visualizerOpacity);
-  const fade = useSettingsStore((s) => s.visualizerFade);
-
-  return (
-    <div
-      className="absolute pointer-events-none z-[5] overflow-visible"
-      style={{
-        bottom: '100%',
-        width: '100%',
-        height: `${h}px`,
-        left: '0%',
-        opacity: op / 100,
-        maskImage: `linear-gradient(to top, black ${100 - fade}%, transparent 100%)`,
-        WebkitMaskImage: `linear-gradient(to top, black ${100 - fade}%, transparent 100%)`,
-      }}
-    >
-      <Visualizer className="w-full h-full" />
-    </div>
-  );
-});
-
 /* ── Global Discord Lyrics Syncer ────────────────────────────── */
 
 const DiscordLyricsSyncer = React.memo(() => {
@@ -1146,7 +977,7 @@ export const NowPlayingBar = React.memo(
         <DiscordLyricsSyncer />
         {!isFullscreenOverlayOpen && <BackgroundGlow />}
 
-        {visualizerPlaybar && !isMobile && !isFullscreenOverlayOpen && <PlaybarVisualizer />}
+        {visualizerPlaybar && !isMobile && !isFullscreenOverlayOpen}
 
 <div className={`relative z-10 ${isMobile ? '' : 'pointer-events-none'}`} style={{ isolation: 'isolate' }}>
   <div

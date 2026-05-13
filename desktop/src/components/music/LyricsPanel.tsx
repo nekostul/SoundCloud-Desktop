@@ -56,10 +56,8 @@ import { useSettingsStore } from '../../stores/settings';
 import { useSoundWaveStore } from '../../stores/soundwave';
 import { ProgressSlider, ProgressTime } from '../layout/NowPlayingBar';
 import { AddToPlaylistDialog } from './AddToPlaylistDialog';
-import { FloatingComments } from './FloatingComments';
 import { PlaybackSpeedPresets } from './PlaybackSpeedPresets';
 import { StreamQualityBadge } from './StreamQualityBadge';
-import { Visualizer } from './Visualizer';
 
 /* ── Source Badge ─────────────────────────────────────────── */
 
@@ -123,7 +121,6 @@ function useResolvedLyrics(
   reqArtist: string,
   reqTitle: string,
   trackDurationMs: number | undefined,
-  allowApproxSync: boolean,
 ) {
   const trackUrn = track?.urn;
   const lyricsQuery = useQuery({
@@ -141,7 +138,6 @@ function useResolvedLyrics(
   });
 
   const shouldLoadComments =
-    allowApproxSync &&
     visible &&
     !!trackUrn &&
     Boolean(lyricsQuery.data?.plain && !lyricsQuery.data?.synced);
@@ -161,7 +157,6 @@ function useResolvedLyrics(
       lyricsQuery.data?.source ?? null,
       lyricsQuery.data?.plain ?? null,
       lyricsQuery.data?.synced?.length ?? 0,
-      allowApproxSync,
       timedComments.length,
       trackDurationMs,
     ],
@@ -172,11 +167,8 @@ function useResolvedLyrics(
         timedComments,
         reqArtist,
         reqTitle,
-        allowApproxSync,
-        trackDurationMs,
       ),
     enabled:
-      allowApproxSync &&
       visible &&
       Boolean(lyricsQuery.data?.plain && !lyricsQuery.data?.synced) &&
       !commentsQuery.isLoading,
@@ -192,7 +184,6 @@ function useResolvedLyrics(
 
   const pseudoSynced = Boolean(
     generatedFromPlain &&
-      allowApproxSync &&
       lyricsQuery.data &&
       data?.source === lyricsQuery.data.source &&
       timedComments.length >= 2 &&
@@ -388,7 +379,6 @@ const FullscreenVisualizer = React.memo(() => {
             'drop-shadow(0 0 18px var(--color-accent-glow)) drop-shadow(0 0 44px rgba(255,255,255,0.1))',
         }}
       >
-        <Visualizer className="h-full w-full" />
       </div>
     </div>
   );
@@ -2634,7 +2624,6 @@ export const LyricsPanel = React.memo(
 
     const reqArtist = manualQuery ? manualQuery.artist : (track?.user.username ?? '');
     const reqTitle = manualQuery ? manualQuery.title : (track?.title ?? '');
-    const experimentalRuAudioTextWarmup = useSettingsStore((s) => s.experimentalRuAudioTextWarmup);
     const {
       data: lyrics,
       isLoading,
@@ -2646,9 +2635,9 @@ export const LyricsPanel = React.memo(
       reqArtist,
       reqTitle,
       getTrackDurationMs(track),
-      experimentalRuAudioTextWarmup,
     );
-    const warmupEnabled = interactiveVisible && generatedFromPlain && experimentalRuAudioTextWarmup;
+const warmupEnabled =
+  interactiveVisible && generatedFromPlain;
     const { motionHints, hintLabel } = useAudioTextWarmup(
       warmupEnabled,
       track,
@@ -2889,7 +2878,6 @@ export const LyricsPanel = React.memo(
           </div>
       </div>
 
-      {live && <FloatingComments />}
       {live && visualizerFullscreen && <FullscreenVisualizer />}
     </>
   );
@@ -2988,7 +2976,6 @@ export const ArtworkPanel = React.memo(
           <TrackColumn track={track} maxArt="max-w-[420px]" />
         </div>
 
-        {live && <FloatingComments mode="sidebar" />}
         {live && visualizerFullscreen && <FullscreenVisualizer />}
       </div>
     );
@@ -3092,7 +3079,6 @@ const FullscreenPanels = React.memo(() => {
   const lyricsSplitRatio = useFullscreenPanelStore((s) => s.lyricsSplitRatio);
   const track = usePlayerStore((s) => s.currentTrack);
   const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
-  const experimentalRuAudioTextWarmup = useSettingsStore((s) => s.experimentalRuAudioTextWarmup);
   const artworkColor = useArtworkColor(track?.artwork_url ?? null);
   const { t } = useTranslation();
   const isLyrics = mode === 'lyrics';
@@ -3131,10 +3117,9 @@ const FullscreenPanels = React.memo(() => {
     reqArtist,
     reqTitle,
     getTrackDurationMs(track),
-    experimentalRuAudioTextWarmup,
   );
   const warmupEnabled = Boolean(
-    mode !== 'none' && generatedFromPlain && experimentalRuAudioTextWarmup,
+    mode !== 'none' && generatedFromPlain
   );
   const { motionHints, hintLabel } = useAudioTextWarmup(
     warmupEnabled,
@@ -3547,7 +3532,6 @@ const FullscreenPanels = React.memo(() => {
         </div>
       </div>
 
-        {!lyricsPaneVisible && <FloatingComments mode="sidebar" />}
         {visualizerFullscreen && <FullscreenVisualizer />}
 
         <LyricsSearchModal

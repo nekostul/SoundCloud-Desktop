@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { subscribeVisualizerBins } from '../Visualizer';
 
 interface Props {
   /** Number of drifting accent particles. Fewer on smaller blocks. */
@@ -34,61 +33,6 @@ export const AmbientLayer = React.memo(function AmbientLayer({
   // animation frame from a smoothed audio level, bypassing React re-renders.
   const auroraARef = useRef<HTMLDivElement>(null);
   const auroraBRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!reactive) return;
-    let smoothedLevel = 0;
-    let lastBins: number[] | null = null;
-    let rafId = 0;
-    let mounted = true;
-
-    const unsubscribe = subscribeVisualizerBins((bins) => {
-      lastBins = bins;
-    });
-
-    const tick = () => {
-      if (!mounted) return;
-      // Compute a bass-weighted level. The first ~12% of bins covers the
-      // sub/low end which carries the perceptual "punch" — driving the glow
-      // off the full spectrum makes it feel mushy.
-      let target = 0;
-      if (lastBins && lastBins.length > 0) {
-        const bassEnd = Math.max(4, Math.floor(lastBins.length * 0.12));
-        let sum = 0;
-        for (let i = 0; i < bassEnd; i++) sum += lastBins[i];
-        // bins are ~0..255 (byte-frequency); normalize to 0..1.
-        target = Math.min(1, sum / bassEnd / 255);
-      }
-      // Critically-damped exponential smoothing: ~80ms attack, ~250ms release.
-      const attack = target > smoothedLevel ? 0.22 : 0.06;
-      smoothedLevel += (target - smoothedLevel) * attack;
-
-      // Map smoothed level to opacity boost (0..+0.6) and a subtle scale
-      // pulse (1.0..1.08). Scale via transform is cheap on already-blurred
-      // elements (composite-only). Opacity multiplies the static intensity.
-      const opacityBoost = smoothedLevel * 0.6;
-      const scale = 1 + smoothedLevel * 0.08;
-      const elA = auroraARef.current;
-      const elB = auroraBRef.current;
-      if (elA) {
-        elA.style.opacity = String(Math.min(1, intensity + opacityBoost));
-        elA.style.setProperty('--sw-pulse-scale', String(scale));
-      }
-      if (elB) {
-        elB.style.opacity = String(Math.min(1, intensity * 0.9 + opacityBoost * 0.7));
-        elB.style.setProperty('--sw-pulse-scale', String(1 + smoothedLevel * 0.05));
-      }
-
-      rafId = requestAnimationFrame(tick);
-    };
-    rafId = requestAnimationFrame(tick);
-
-    return () => {
-      mounted = false;
-      cancelAnimationFrame(rafId);
-      unsubscribe();
-    };
-  }, [reactive, intensity]);
 
   return (
     <div

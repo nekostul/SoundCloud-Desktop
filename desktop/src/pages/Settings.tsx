@@ -1844,8 +1844,6 @@ const AudioDeviceSection = React.memo(function AudioDeviceSection() {
 const PlaybackSection = React.memo(function PlaybackSection() {
   const { t } = useTranslation();
   const { data: isPremium } = useSubscription(true);
-  const floatingComments = useSettingsStore((s) => s.floatingComments);
-  const setFloatingComments = useSettingsStore((s) => s.setFloatingComments);
   const normalizeVolume = useSettingsStore((s) => s.normalizeVolume);
   const setNormalizeVolume = useSettingsStore((s) => s.setNormalizeVolume);
   const highQualityStreaming = useSettingsStore((s) => s.highQualityStreaming);
@@ -1874,57 +1872,11 @@ const PlaybackSection = React.memo(function PlaybackSection() {
   const crossfadeDuration = useSettingsStore((s) => s.crossfadeDuration);
   const setCrossfadeEnabled = useSettingsStore((s) => s.setCrossfadeEnabled);
   const setCrossfadeDuration = useSettingsStore((s) => s.setCrossfadeDuration);
-  const classicPlaybar = useSettingsStore((s) => s.classicPlaybar);
-  const setClassicPlaybar = useSettingsStore((s) => s.setClassicPlaybar);
   return (
     <section className="bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl space-y-5">
       <h3 className="text-[15px] font-bold text-white/80 tracking-tight">
         {t('settings.playback')}
       </h3>
-
-      {/* Classic Playbar */}
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-[13px] text-white/70 font-medium">{t('settings.classicPlaybar')}</p>
-          <p className="text-[11px] text-white/30 mt-0.5">{t('settings.classicPlaybarDesc')}</p>
-        </div>
-        <button
-          onClick={() => setClassicPlaybar(!classicPlaybar)}
-          className={`w-11 h-6 rounded-full transition-all duration-200 cursor-pointer relative ${
-            classicPlaybar ? 'bg-accent' : 'bg-white/10'
-          }`}
-        >
-          <div
-            className={`absolute top-0.5 w-5 h-5 rounded-full shadow-md transition-all duration-200 ${
-              classicPlaybar ? 'left-[22px] bg-accent-contrast' : 'left-0.5 bg-white'
-            }`}
-          />
-        </button>
-      </div>
-
-      <div className="border-t border-white/[0.04]" />
-
-      {/* Floating Comments */}
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-[13px] text-white/70 font-medium">{t('settings.floatingComments')}</p>
-          <p className="text-[11px] text-white/30 mt-0.5">{t('settings.floatingCommentsDesc')}</p>
-        </div>
-        <button
-          onClick={() => setFloatingComments(!floatingComments)}
-          className={`w-11 h-6 rounded-full transition-all duration-200 cursor-pointer relative ${
-            floatingComments ? 'bg-accent' : 'bg-white/10'
-          }`}
-        >
-          <div
-            className={`absolute top-0.5 w-5 h-5 rounded-full shadow-md transition-all duration-200 ${
-              floatingComments ? 'left-[22px] bg-accent-contrast' : 'left-0.5 bg-white'
-            }`}
-          />
-        </button>
-      </div>
-
-      <div className="border-t border-white/[0.04]" />
 
       <div className="flex items-center justify-between">
         <div>
@@ -2016,37 +1968,6 @@ const PlaybackSection = React.memo(function PlaybackSection() {
             className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
           />
         </div>
-      </div>
-
-      <div className="border-t border-white/[0.04]" />
-
-      <div className="flex items-center justify-between">
-        <div className="space-y-1 pr-4">
-          <p className="text-[13px] text-white/70 font-medium">
-            {t(
-              'settings.experimentalRuAudioTextWarmup',
-              'Экспериментально: Light Audio-Text Warmup (RU)',
-            )}
-          </p>
-          <p className="text-[11px] text-white/30">
-            {t(
-              'settings.experimentalRuAudioTextWarmupDesc',
-              'Экспериментальный лёгкий warmup, который слегка подготавливает тайминг сгенерированной русской лирики. По умолчанию выключен.',
-            )}
-          </p>
-        </div>
-        <button
-          onClick={() => setExperimentalRuAudioTextWarmup(!experimentalRuAudioTextWarmup)}
-          className={`w-11 h-6 rounded-full transition-all duration-200 cursor-pointer relative ${
-            experimentalRuAudioTextWarmup ? 'bg-accent' : 'bg-white/10'
-          }`}
-        >
-          <div
-            className={`absolute top-0.5 w-5 h-5 rounded-full shadow-md transition-all duration-200 ${
-              experimentalRuAudioTextWarmup ? 'left-[22px] bg-accent-contrast' : 'left-0.5 bg-white'
-            }`}
-          />
-        </button>
       </div>
 
       <div className="border-t border-white/[0.04]" />
@@ -2363,277 +2284,6 @@ const AccountSection = React.memo(function AccountSection() {
   );
 });
 
-/* ── Visualizer Section ──────────────────────────────────── */
-
-const VisualizerSection = React.memo(function VisualizerSection() {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-
-  // All hooks must be called unconditionally (Rules of Hooks)
-  const style = useSettingsStore((s) => s.visualizerStyle);
-  const playbar = useSettingsStore((s) => s.visualizerPlaybar);
-  const fullscreen = useSettingsStore((s) => s.visualizerFullscreen);
-  const themeColor = useSettingsStore((s) => s.visualizerThemeColor);
-  const mirror = useSettingsStore((s) => s.visualizerMirror);
-  const height = useSettingsStore((s) => s.visualizerHeight);
-  const scale = useSettingsStore((s) => s.visualizerScale);
-  const opacity = useSettingsStore((s) => s.visualizerOpacity);
-  const smoothing = useSettingsStore((s) => s.visualizerSmoothing);
-  const fade = useSettingsStore((s) => s.visualizerFade);
-  const bars = useSettingsStore((s) => s.visualizerBars);
-  const yOffset = useSettingsStore((s) => s.visualizerYOffset);
-  const isOff = style === 'Off';
-
-  return (
-    <section className="bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl shadow-xl overflow-hidden mt-6">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-6 py-5 hover:bg-white/[0.02] transition-colors cursor-pointer"
-      >
-        <h3 className="text-[15px] font-bold text-white/80 tracking-tight">
-          {t('visualizer.title', 'Audio Visualizer')}
-        </h3>
-        <div className="flex items-center gap-3">
-          <span
-            className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${!isOff ? 'bg-emerald-500/15 text-emerald-400' : 'bg-white/[0.05] text-white/30'}`}
-          >
-            {!isOff ? t('eq.on', 'On') : t('eq.off', 'Off')}
-          </span>
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 14 14"
-            fill="none"
-            className={`text-white/30 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
-          >
-            <path
-              d="M3 5l4 4 4-4"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </div>
-      </button>
-
-      {open && (
-        <div className="px-6 pb-6 space-y-4 border-t border-white/[0.05] pt-4 animate-fade-in-up">
-          <div className="flex gap-2 bg-white/[0.04] p-1 rounded-xl">
-            {['Off', 'Bars', 'Wave', 'Pulse'].map((s) => {
-              const isActive = style === s;
-              const label =
-                s === 'Off'
-                  ? t('visualizer.off', 'Off')
-                  : s === 'Bars'
-                    ? t('visualizer.bars', 'Bars')
-                    : s === 'Wave'
-                      ? t('visualizer.wave', 'Wave')
-                      : t('visualizer.pulse', 'Pulse');
-              return (
-                <button
-                  key={s}
-                  className={`flex-1 text-[12px] font-medium py-1.5 rounded-lg transition-all cursor-pointer ${
-                    isActive ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'
-                  }`}
-                  onClick={() => useSettingsStore.getState().setVisualizerStyle(s as any)}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-
-          <div
-            className={`space-y-4 transition-opacity duration-300 ${isOff ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-white/60">
-                {t('visualizer.showAbovePlaybar', 'Show above playbar')}
-              </span>
-              <input
-                type="checkbox"
-                checked={playbar}
-                onChange={(e) => useSettingsStore.getState().setVisualizerPlaybar(e.target.checked)}
-                className="w-4 h-4 accent-[var(--color-accent)] cursor-pointer"
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-white/60">
-                {t('visualizer.showInFullscreen', 'Show in Fullscreen')}
-              </span>
-              <input
-                type="checkbox"
-                checked={fullscreen}
-                onChange={(e) =>
-                  useSettingsStore.getState().setVisualizerFullscreen(e.target.checked)
-                }
-                className="w-4 h-4 accent-[var(--color-accent)] cursor-pointer"
-              />
-            </div>
-            <div className="flex items-center justify-between pt-1">
-              <span className="text-[13px] text-white/60">
-                {t('visualizer.useThemeColor', 'Use Theme Color')}
-              </span>
-              <input
-                type="checkbox"
-                checked={themeColor}
-                onChange={(e) =>
-                  useSettingsStore.getState().setVisualizerThemeColor(e.target.checked)
-                }
-                className="w-4 h-4 accent-[var(--color-accent)] cursor-pointer"
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] text-white/60">
-                {t('visualizer.mirror', 'Mirror (flip horizontally)')}
-              </span>
-              <input
-                type="checkbox"
-                checked={mirror}
-                onChange={(e) => useSettingsStore.getState().setVisualizerMirror(e.target.checked)}
-                className="w-4 h-4 accent-[var(--color-accent)] cursor-pointer"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="text-[13px] text-white/60">
-                  {t('visualizer.height', 'Height')}
-                </label>
-                <span className="text-[12px] text-white/40 tabular-nums">{height}px</span>
-              </div>
-              <input
-                type="range"
-                min={32}
-                max={300}
-                step={8}
-                value={height}
-                onChange={(e) =>
-                  useSettingsStore.getState().setVisualizerHeight(Number(e.target.value))
-                }
-                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="text-[13px] text-white/60">
-                  {t('visualizer.scale', 'Scale')}
-                </label>
-                <span className="text-[12px] text-white/40 tabular-nums">{scale}%</span>
-              </div>
-              <input
-                type="range"
-                min={50}
-                max={200}
-                step={10}
-                value={scale}
-                onChange={(e) =>
-                  useSettingsStore.getState().setVisualizerScale(Number(e.target.value))
-                }
-                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="text-[13px] text-white/60">
-                  {t('visualizer.opacity', 'Opacity')}
-                </label>
-                <span className="text-[12px] text-white/40 tabular-nums">{opacity}%</span>
-              </div>
-              <input
-                type="range"
-                min={10}
-                max={100}
-                step={5}
-                value={opacity}
-                onChange={(e) =>
-                  useSettingsStore.getState().setVisualizerOpacity(Number(e.target.value))
-                }
-                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="text-[13px] text-white/60">
-                  {t('visualizer.smoothing', 'Smoothing')}
-                </label>
-                <span className="text-[12px] text-white/40 tabular-nums">{smoothing}%</span>
-              </div>
-              <input
-                type="range"
-                min={5}
-                max={80}
-                step={5}
-                value={smoothing}
-                onChange={(e) =>
-                  useSettingsStore.getState().setVisualizerSmoothing(Number(e.target.value))
-                }
-                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="text-[13px] text-white/60">{t('visualizer.fade', 'Fade')}</label>
-                <span className="text-[12px] text-white/40 tabular-nums">{fade}%</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={fade}
-                onChange={(e) =>
-                  useSettingsStore.getState().setVisualizerFade(Number(e.target.value))
-                }
-                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="text-[13px] text-white/60">
-                  {t('visualizer.barCount', 'Bar Count')}
-                </label>
-                <span className="text-[12px] text-white/40 tabular-nums">{bars}</span>
-              </div>
-              <input
-                type="range"
-                min={8}
-                max={128}
-                step={4}
-                value={bars}
-                onChange={(e) =>
-                  useSettingsStore.getState().setVisualizerBars(Number(e.target.value))
-                }
-                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="text-[13px] text-white/60">
-                  {t('visualizer.yOffset', 'Y-Offset')}
-                </label>
-                <span className="text-[12px] text-white/40 tabular-nums">{yOffset}px</span>
-              </div>
-              <input
-                type="range"
-                min={-300}
-                max={300}
-                step={10}
-                value={yOffset}
-                onChange={(e) =>
-                  useSettingsStore.getState().setVisualizerYOffset(Number(e.target.value))
-                }
-                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
-              />
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-});
 
 /* ── Equalizer Section ───────────────────────────────────── */
 
@@ -2834,7 +2484,6 @@ export function Settings() {
       <AppFontSection />
       <CacheSection />
       <ThemeSection />
-      <VisualizerSection />
       <PlaybackSection />
       <EqualizerSection />
       <AudioDeviceSection />
