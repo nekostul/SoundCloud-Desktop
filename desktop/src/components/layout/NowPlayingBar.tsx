@@ -57,6 +57,10 @@ export const ProgressSlider = React.memo(() => {
   const duration = useSyncExternalStore(subscribe, getDuration);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const currentTrack = usePlayerStore((s) => s.currentTrack);
+  const lyricsOpen = useLyricsStore((s) => s.open);
+const artworkOpen = useArtworkStore((s) => s.open);
+
+const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
   const floatingComments = useSettingsStore((s) => s.floatingComments);
   const classicPlaybar = useSettingsStore((s) => s.classicPlaybar);
   const targetFramerate = useSettingsStore((s) => s.targetFramerate);
@@ -70,6 +74,7 @@ export const ProgressSlider = React.memo(() => {
   });
 
   const [dragging, setDragging] = useState(false);
+  const [hoverPercent, setHoverPercent] = useState<number | null>(null);
   const [dragValue, setDragValue] = useState(0);
   const [syncedValue, setSyncedValue] = useState(0);
 
@@ -274,41 +279,79 @@ export const ProgressSlider = React.memo(() => {
       });
   }, [comments, duration, maskUri, classicPlaybar]);
 
-  return (
-    <div className="relative w-full flex items-center group/slider z-20">
-      <Slider.Root
-        className={`relative flex items-center w-full cursor-pointer select-none touch-none group/slider ${maskUri && !classicPlaybar ? 'h-6' : 'h-5'}`}
-        value={[displayValue]}
-        max={duration || 1}
-        step={0.1}
-        onValueChange={onValueChange}
-        onValueCommit={onValueCommit}
+return (
+  <div
+  className={`group/slider z-20 ${
+    classicPlaybar
+      ? 'relative w-full'
+      : 'absolute top-0 left-0 right-0'
+  }`}
+>
+    <Slider.Root
+      onPointerMove={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const percent = (e.clientX - rect.left) / rect.width;
+        setHoverPercent(Math.max(0, Math.min(1, percent)));
+      }}
+      onPointerLeave={() => {
+        setHoverPercent(null);
+      }}
+      className={`relative flex items-start w-full cursor-pointer select-none touch-none group/slider ${
+        maskUri && !classicPlaybar
+          ? 'h-[18px] pt-[1px]'
+          : 'h-[10px]'
+      }`}
+      value={[displayValue]}
+      max={duration || 1}
+      step={0.1}
+      onValueChange={onValueChange}
+      onValueCommit={onValueCommit}
+    >
+      <Slider.Track
+        className={`relative grow transition-all duration-150 overflow-hidden ${
+          maskUri && !classicPlaybar
+            ? 'h-full'
+            : 'h-[3px] rounded-full group-hover/slider:h-[4px]'
+        }`}
+        style={
+          maskUri && !classicPlaybar
+            ? {
+                maskImage: `url(${maskUri})`,
+                maskSize: '100% 100%',
+                WebkitMaskImage: `url(${maskUri})`,
+                WebkitMaskSize: '100% 100%',
+              }
+            : undefined
+        }
       >
-        <Slider.Track
-          className={`relative grow transition-all duration-150 overflow-hidden ${maskUri && !classicPlaybar ? 'h-full' : 'h-[3px] rounded-full group-hover/slider:h-[5px]'}`}
-          style={
-            maskUri && !classicPlaybar
-              ? {
-                  maskImage: `url(${maskUri})`,
-                  maskSize: '100% 100%',
-                  WebkitMaskImage: `url(${maskUri})`,
-                  WebkitMaskSize: '100% 100%',
-                }
-              : undefined
-          }
+        <div className="absolute inset-0 bg-white/[0.08]" />
+
+        <Slider.Range
+          className={`absolute h-full will-change-transform theme-accent-progress theme-accent-animated ${
+            maskUri ? '' : 'rounded-full'
+          }`}
+        />
+
+        {markers}
+      </Slider.Track>
+
+{hoverPercent !== null && !isFullscreenOverlayOpen && (
+  <div
+    className="absolute top-[50px] px-2 py-1 rounded-xl bg-black/80 border border-white/10 text-white text-[10px] font-medium pointer-events-none backdrop-blur-xl"          style={{
+            left: `${hoverPercent * 100}%`,
+            transform: 'translateX(-50%)',
+          }}
         >
-          <div className="absolute inset-0 bg-white/[0.08]" />
-          <Slider.Range
-            className={`absolute h-full will-change-transform theme-accent-progress theme-accent-animated ${maskUri ? '' : 'rounded-full'}`}
-          />
-          {markers}
-        </Slider.Track>
-        {(!maskUri || classicPlaybar) && (
-          <Slider.Thumb className="block w-3 h-3 rounded-full theme-accent-thumb theme-accent-animated scale-0 opacity-0 group-hover/slider:scale-100 group-hover/slider:opacity-100 transition-all duration-150 outline-none will-change-transform" />
-        )}
-      </Slider.Root>
-    </div>
-  );
+          {formatTime((duration || 0) * hoverPercent)}
+        </div>
+      )}
+
+      {(!maskUri || classicPlaybar) && (
+        <Slider.Thumb className="hidden" />
+      )}
+    </Slider.Root>
+  </div>
+);
 });
 
 /* ── Volume Slider ───────────────────────────────────────────── */
@@ -715,11 +758,12 @@ const btnClass = (active: boolean, size: 'default' | 'sm') =>
 const PlayPauseBtn = React.memo(() => {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const togglePlay = usePlayerStore((s) => s.togglePlay);
+
   return (
     <button
       type="button"
       onClick={togglePlay}
-      className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center text-black hover:bg-white hover:scale-105 active:scale-95 transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer mx-1.5"
+      className="w-9 h-9 rounded-full bg-white/90 flex items-center justify-center text-black hover:bg-white hover:scale-105 active:scale-95 transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer mx-1"
     >
       {isPlaying ? pauseBlack20 : playBlack20}
     </button>
@@ -1090,25 +1134,32 @@ export const NowPlayingBar = React.memo(
     const togglePlay = usePlayerStore((s) => s.togglePlay);
     const lyricsOpen = useLyricsStore((s) => s.open);
     const artworkOpen = useArtworkStore((s) => s.open);
+    const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
     const visualizerPlaybar = useSettingsStore((s) => s.visualizerPlaybar);
     const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
+    const desktopBarOffset = sidebarCollapsed ? 66 : 210;
 
     return (
-      <div className={`shrink-0 relative group/trackinfo ${isMobile ? 'h-[72px]' : ''}`}>
+      <div
+        className={`shrink-0 relative group/trackinfo ${isMobile ? 'h-[72px]' : 'pointer-events-none'}`}
+      >
         <DiscordLyricsSyncer />
         {!isFullscreenOverlayOpen && <BackgroundGlow />}
 
         {visualizerPlaybar && !isMobile && !isFullscreenOverlayOpen && <PlaybarVisualizer />}
 
-        <div className="relative z-10" style={{ isolation: 'isolate' }}>
-          {!isMobile && <ProgressSlider />}
-          <div
-            className={
-              isMobile
-                ? 'h-[72px] flex items-center px-5 gap-3 relative'
-                : 'min-h-[76px] grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 px-5 py-2'
-            }
-          >
+<div className={`relative z-10 ${isMobile ? '' : 'pointer-events-none'}`} style={{ isolation: 'isolate' }}>
+  <div
+ className={
+  isMobile
+    ? 'h-[72px] flex items-center px-5 gap-3 relative'
+    : 'pointer-events-auto relative min-h-[68px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-2 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] bg-black/40 backdrop-blur-2xl border border-white/[0.04] transition-[margin] duration-200 ease-[var(--ease-apple)]'
+}
+  style={isMobile ? undefined : { marginLeft: `${desktopBarOffset}px` }}
+  >
+    <div className="absolute top-[-1px] left-0 right-0 z-20">
+      {!isMobile && <ProgressSlider />}
+    </div>
             {/* Left: track info */}
             <div className="w-full min-w-0 max-w-[320px]">
               <TrackInfo />
@@ -1125,7 +1176,6 @@ export const NowPlayingBar = React.memo(
                     <NextBtn />
                     <RepeatBtn />
                   </div>
-                  <ProgressTime />
                 </div>
 
                 {/* Right: tuning + volume + actions */}

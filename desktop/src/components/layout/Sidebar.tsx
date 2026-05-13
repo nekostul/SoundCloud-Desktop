@@ -34,8 +34,10 @@ const navItems = [
 
 export const Sidebar = React.memo(() => {
   const { t, i18n } = useTranslation();
+
   const user = useAuthStore((s) => s.user);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+
   const { collapsed, pinnedPlaylists, toggleSidebar } = useSettingsStore(
     useShallow((s) => ({
       collapsed: s.sidebarCollapsed,
@@ -43,6 +45,7 @@ export const Sidebar = React.memo(() => {
       toggleSidebar: s.toggleSidebar,
     })),
   );
+
   const { isPremium, modalOpen, setModalOpen, openModal } = useStarSubscription();
 
   const toggleLanguage = () => {
@@ -54,7 +57,7 @@ export const Sidebar = React.memo(() => {
 
   return (
     <aside
-      className="shrink-0 flex flex-col h-full border-r border-white/[0.04] transition-[width] duration-200 ease-[var(--ease-apple)]"
+      className="shrink-0 flex z-20 flex-col h-screen border-r border-white/[0.04] transition-[width] duration-200 ease-[var(--ease-apple)]"
       style={{ width: collapsed ? 56 : 200 }}
     >
       <nav className="flex flex-col gap-0.5 px-2 pt-2">
@@ -67,8 +70,9 @@ export const Sidebar = React.memo(() => {
               const stateClass = isActive
                 ? 'text-white bg-white/[0.07] shadow-[inset_0_0.5px_0_rgba(255,255,255,0.1)]'
                 : 'text-white/40 hover:text-white/70 hover:bg-white/[0.04]';
-              return `flex items-center gap-3 rounded-xl text-[13px] font-medium transition-all duration-200 ease-[var(--ease-apple)] ${
-                collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2.5'
+
+              return `flex items-center gap-2.5 rounded-[14px] text-[13px] font-medium transition-all duration-200 ease-[var(--ease-apple)] ${
+                collapsed ? 'justify-center px-0 py-2.5' : 'px-2.5 py-2'
               } ${stateClass}`;
             }}
           >
@@ -132,41 +136,47 @@ export const Sidebar = React.memo(() => {
               ) : (
                 <ListMusic size={16} strokeWidth={1.8} />
               )}
+
               {!collapsed && <span className="truncate">{playlist.title}</span>}
             </NavLink>
           );
         })}
       </div>
 
-      <div className="flex-1" />
-
-      <div className="px-2 pb-1 flex flex-col gap-0.5">
+      <div className="mt-auto px-2 pb-14 flex flex-col gap-0.5">
         {isAuthenticated && (
           <StarCard collapsed={collapsed} isPremium={isPremium} onOpenModal={openModal} />
         )}
-        {/* Toggle sidebar */}
+
         <button
           type="button"
           onClick={toggleSidebar}
           title={collapsed ? t('nav.expand') : undefined}
-          className={`flex items-center gap-2.5 w-full px-3 py-2 rounded-xl text-[12px] font-medium text-white/40 hover:text-white/70 hover:bg-white/[0.04] transition-all duration-200 cursor-pointer ${collapsed ? 'justify-center' : ''}`}
+          className={`flex items-center gap-2.5 w-full px-3 py-2 rounded-xl text-[12px] font-medium text-white/40 hover:text-white/70 hover:bg-white/[0.04] transition-all duration-200 cursor-pointer ${
+            collapsed ? 'justify-center' : ''
+          }`}
         >
           {collapsed ? (
             <PanelLeftOpen size={16} strokeWidth={1.8} />
           ) : (
             <PanelLeftClose size={16} strokeWidth={1.8} />
           )}
+
           {!collapsed && <span className="truncate">{t('nav.collapse')}</span>}
         </button>
+
         <button
           type="button"
           onClick={toggleLanguage}
           title={collapsed ? currentLang.label : undefined}
-          className={`flex items-center gap-2.5 w-full px-3 py-2 rounded-xl text-[12px] font-medium text-white/40 hover:text-white/70 hover:bg-white/[0.04] transition-all duration-200 cursor-pointer ${collapsed ? 'justify-center' : ''}`}
+          className={`flex items-center gap-2.5 w-full px-3 py-2 rounded-xl text-[12px] font-medium text-white/40 hover:text-white/70 hover:bg-white/[0.04] transition-all duration-200 cursor-pointer ${
+            collapsed ? 'justify-center' : ''
+          }`}
         >
           <Globe size={16} strokeWidth={1.8} />
           {!collapsed && <span className="truncate">{currentLang.label}</span>}
         </button>
+
         <NavLink
           to="/settings"
           title={collapsed ? t('nav.settings') : undefined}
@@ -183,35 +193,38 @@ export const Sidebar = React.memo(() => {
           <Settings size={16} strokeWidth={1.8} />
           {!collapsed && <span className="truncate">{t('nav.settings')}</span>}
         </NavLink>
+
+        {user && (
+          <div className="pt-2">
+            <NavLink
+              to={`/user/${encodeURIComponent(user.urn)}`}
+              title={collapsed ? user.username : undefined}
+              className={({ isActive }) =>
+                `flex items-center gap-2.5 px-2 py-2.5 rounded-xl transition-all duration-200 cursor-pointer ${
+                  collapsed ? 'justify-center' : ''
+                } ${
+                  isActive
+                    ? 'bg-white/[0.07] shadow-[inset_0_0.5px_0_rgba(255,255,255,0.1)]'
+                    : 'hover:bg-white/[0.04]'
+                }`
+              }
+            >
+              <Avatar src={user.avatar_url} alt={user.username} size={24} />
+
+              {!collapsed && (
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-[12px] text-white/40 truncate font-medium">
+                    {user.username}
+                  </span>
+
+                  {isPremium && <StarBadge />}
+                </div>
+              )}
+            </NavLink>
+          </div>
+        )}
       </div>
 
-      {user && (
-        <div className="px-2 pb-3">
-          <NavLink
-            to={`/user/${encodeURIComponent(user.urn)}`}
-            title={collapsed ? user.username : undefined}
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-2 py-2.5 rounded-xl transition-all duration-200 cursor-pointer ${
-                collapsed ? 'justify-center' : ''
-              } ${
-                isActive
-                  ? 'bg-white/[0.07] shadow-[inset_0_0.5px_0_rgba(255,255,255,0.1)]'
-                  : 'hover:bg-white/[0.04]'
-              }`
-            }
-          >
-            <Avatar src={user.avatar_url} alt={user.username} size={26} />
-            {!collapsed && (
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-[12px] text-white/40 truncate font-medium">
-                  {user.username}
-                </span>
-                {isPremium && <StarBadge />}
-              </div>
-            )}
-          </NavLink>
-        </div>
-      )}
       <StarModal open={modalOpen} onOpenChange={setModalOpen} />
     </aside>
   );

@@ -368,13 +368,19 @@ export const AppShell = React.memo(() => {
         }}
       >
         {!isMobile && <Sidebar />}
-        <main className="flex-1 overflow-y-auto overflow-x-hidden">
-          <StableOutlet />
-        </main>
+<main className="flex-1 mx-3 mt-3 mb-[14px] rounded-[15px] overflow-hidden border border-white/[0.04]">
+  <div className="h-full overflow-y-auto overflow-x-hidden">
+    <StableOutlet />
+  </div>
+</main>
       </div>
-      <div className="fixed bottom-0 left-0 right-0 z-10 flex flex-col">
+      <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-10 flex flex-col">
         <NowPlayingBar onQueueToggle={onQueueToggle} queueOpen={queueOpen} />
-        {isMobile && <MobileNav />}
+        {isMobile && (
+          <div className="pointer-events-auto">
+            <MobileNav />
+          </div>
+        )}
       </div>
       <QueuePanel open={queueOpen} onClose={onQueueClose} />
       <FullscreenPanels />
