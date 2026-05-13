@@ -1,0 +1,24 @@
+desktop/node_modules/
+desktop/dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+.flatpak-builder
+.claude
+
+# Tauri build output
+desktop/src-tauri/target/
+
+# IDE
+.idea/
+
+# FireBase
+.firebase
+
+# Internal tool/temp
+.agents/
+tmp-repo/
+test-apis.js

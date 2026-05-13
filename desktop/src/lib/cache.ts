@@ -1,0 +1,582 @@
+import { invoke } from '@tauri-apps/api/core';
+import { appCacheDir, join } from '@tauri-apps/api/path';
+import { exists, mkdir, readDir, remove, stat, writeFile } from '@tauri-apps/plugin-fs';
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+import { getSessionId, streamUrl } from './api';
+import { getStaticPort } from './constants';
+import { isTauriRuntime } from './runtime';
+
+const AUDIO_DIR = 'audio';
+const ASSETS_DIR = 'assets';
+const WALLPAPERS_DIR = 'wallpapers';
+const LYRICS_DIR = 'lyrics';
+const MIN_AUDIO_SIZE = 8192;
+const CACHE_FETCH_FORMAT = 'http_mp3_128';
+
+let cacheBasePath: string | null = null;
+
+async function getAudioDir(): Promise<string> {
+  if (!isTauriRuntime()) return '';
+  if (cacheBasePath) return cacheBasePath;
+  const base = await appCacheDir();
+  cacheBasePath = await join(base, AUDIO_DIR);
+  await mkdir(cacheBasePath, { recursive: true });
+  return cacheBasePath;
+}
+
+function urnToFilename(urn: string): string {
+  return `${urn.replace(/:/g, '_')}.audio`;
+}
+
+function filenameToUrn(filename: string): string | null {
+  if (!filename.endsWith('.audio')) return null;
+  return filename.slice(0, -'.audio'.length).replace(/_/g, ':');
+}
+
+async function filePath(urn: string): Promise<string> {
+  const dir = await getAudioDir();
+  return await join(dir, urnToFilename(urn));
+}
+
+export async function getCacheTargetPath(urn: string): Promise<string> {
+  if (!isTauriRuntime()) return urnToFilename(urn);
+  return await filePath(urn);
+}
+
+export async function removeCachedTrack(urn: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const path = await filePath(urn);
+    await remove(path).catch(() => {});
+  } catch {
+    // ignore cache cleanup failures
+  }
+}
+
+export async function isCached(urn: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    const path = await filePath(urn);
+    if (!(await exists(path))) return false;
+    const info = await stat(path);
+    if (info.size < MIN_AUDIO_SIZE) {
+      await remove(path).catch(() => {});
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isValidAudio(buffer: ArrayBuffer): boolean {
+  const data = new Uint8Array(buffer);
+  if (data.length < MIN_AUDIO_SIZE) return false;
+  // ID3 (MP3)
+  if (data[0] === 0x49 && data[1] === 0x44 && data[2] === 0x33) return true;
+  // MPEG Sync (MP3 / ADTS AAC)
+  if (data[0] === 0xff && (data[1] & 0xe0) === 0xe0) return true;
+  // ftyp (MP4/AAC)
+  if (data[4] === 0x66 && data[5] === 0x74 && data[6] === 0x79 && data[7] === 0x70) return true;
+  // OggS (Ogg Vorbis/Opus)
+  if (data[0] === 0x4f && data[1] === 0x67 && data[2] === 0x67 && data[3] === 0x53) return true;
+  // RIFF/WAV
+  if (data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46) return true;
+  // fLaC
+  if (data[0] === 0x66 && data[1] === 0x4c && data[2] === 0x61 && data[3] === 0x43) return true;
+  return false;
+}
+
+const activeDownloads = new Map<string, Promise<ArrayBuffer>>();
+
+export interface CacheBatchProgress {
+  completed: number;
+  total: number;
+}
+
+export interface CacheBatchResult {
+  completed: number;
+  skipped: number;
+  failed: number;
+}
+
+export async function fetchAndCacheTrack(urn: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+  if (activeDownloads.has(urn)) {
+    console.log(`💾[Cache] Reusing active download for: ${urn}`);
+    return activeDownloads.get(urn)!;
+  }
+
+  console.log(`💾 [Cache] Starting background fetch for: ${urn}`);
+
+  const promise = (async () => {
+    try {
+      const sessionId = getSessionId();
+      const url = streamUrl(urn, CACHE_FETCH_FORMAT, false);
+
+      const requestInit: RequestInit = {
+        headers: sessionId ? { 'x-session-id': sessionId } : {},
+        signal,
+      };
+
+      const res = isTauriRuntime()
+        ? await tauriFetch(url, requestInit)
+        : await fetch(url, requestInit);
+
+      if (!res.ok) throw new Error(`Stream ${res.status}`);
+
+      const buffer = await res.arrayBuffer();
+
+      if (isValidAudio(buffer)) {
+        console.log(`💾 [Cache] Download complete for ${urn}. Saving...`);
+        if (isTauriRuntime()) {
+          const path = await filePath(urn);
+          await writeFile(path, new Uint8Array(buffer)).catch((e) => console.error('Write fail', e));
+        }
+      } else {
+        console.error(`💾 [Cache] Invalid audio received for ${urn}`);
+        await removeCachedTrack(urn);
+        throw new Error('Invalid audio');
+      }
+      return buffer;
+    } catch (e: any) {
+      if (e.name !== 'AbortError') {
+        await removeCachedTrack(urn);
+      }
+      if (e.name === 'AbortError') {
+        console.warn(`💾[Cache] Fetch ABORTED for ${urn}`);
+      } else {
+        console.error(`💾[Cache] Fetch failed for ${urn}:`, e);
+      }
+      throw e;
+    }
+  })();
+
+  activeDownloads.set(urn, promise);
+
+  try {
+    return await promise;
+  } finally {
+    activeDownloads.delete(urn);
+  }
+}
+
+export async function cacheTracksBatch(
+  urns: string[],
+  options: {
+    concurrency?: number;
+    onProgress?: (progress: CacheBatchProgress) => void;
+  } = {},
+): Promise<CacheBatchResult> {
+  const uniqueUrns = [...new Set(urns.filter(Boolean))];
+  const total = uniqueUrns.length;
+  const concurrency = Math.max(1, Math.min(options.concurrency ?? 3, 6));
+
+  if (total === 0) {
+    options.onProgress?.({ completed: 0, total: 0 });
+    return { completed: 0, skipped: 0, failed: 0 };
+  }
+
+  let cursor = 0;
+  let completed = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  const runNext = async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= uniqueUrns.length) return;
+
+      const urn = uniqueUrns[index];
+      try {
+        if (await isCached(urn)) {
+          skipped++;
+        } else {
+          await fetchAndCacheTrack(urn);
+          completed++;
+        }
+      } catch {
+        failed++;
+      } finally {
+        options.onProgress?.({ completed: completed + skipped + failed, total });
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, total) }, () => runNext()));
+
+  return { completed, skipped, failed };
+}
+
+export async function getCacheSize(): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  try {
+    const dir = await getAudioDir();
+    const entries = await readDir(dir);
+    let total = 0;
+    for (const entry of entries) {
+      if (entry.name && entry.isFile) {
+        const info = await stat(`${dir}/${entry.name}`);
+        total += info.size;
+      }
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
+export async function clearCache(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const dir = await getAudioDir();
+    const entries = await readDir(dir);
+    for (const entry of entries) {
+      if (entry.name && entry.isFile) {
+        await remove(`${dir}/${entry.name}`).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error('clearCache failed:', e);
+  }
+}
+
+export async function listCachedUrns(): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    const dir = await getAudioDir();
+    const entries = await readDir(dir);
+    const urns: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.name || !entry.isFile) continue;
+      const path = `${dir}/${entry.name}`;
+      const info = await stat(path);
+      if ((info.size ?? 0) < MIN_AUDIO_SIZE) {
+        await remove(path).catch(() => {});
+        continue;
+      }
+
+      const urn = filenameToUrn(entry.name);
+      if (urn) {
+        urns.push(urn);
+      }
+    }
+
+    return urns;
+  } catch {
+    return [];
+  }
+}
+
+/** Возвращает абсолютный путь к файлу в кэше */
+export async function getCacheFilePath(urn: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    if (!(await isCached(urn))) return null;
+    const path = await filePath(urn);
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+/* ── Assets cache ────────────────────────────────────────── */
+
+let assetsBasePath: string | null = null;
+
+async function getAssetsDir(): Promise<string> {
+  if (!isTauriRuntime()) return '';
+  if (assetsBasePath) return assetsBasePath;
+  const base = await appCacheDir();
+  assetsBasePath = await join(base, ASSETS_DIR);
+  await mkdir(assetsBasePath, { recursive: true });
+  return assetsBasePath;
+}
+
+export async function getAssetsCacheSize(): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  try {
+    const dir = await getAssetsDir();
+    const entries = await readDir(dir);
+    let total = 0;
+    for (const entry of entries) {
+      if (entry.name) {
+        const path = await join(dir, entry.name);
+        const info = await stat(path);
+        total += info.size;
+      }
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
+export async function clearAssetsCache(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const dir = await getAssetsDir();
+    const entries = await readDir(dir);
+    for (const entry of entries) {
+      if (entry.name) {
+        const path = await join(dir, entry.name);
+        await remove(path).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error('clearAssetsCache failed:', e);
+  }
+}
+
+/* ── Wallpapers ──────────────────────────────────────────── */
+
+let wallpapersBasePath: string | null = null;
+
+async function getWallpapersDir(): Promise<string> {
+  if (!isTauriRuntime()) return '';
+  if (wallpapersBasePath) return wallpapersBasePath;
+  const base = await appCacheDir();
+  wallpapersBasePath = await join(base, WALLPAPERS_DIR);
+  await mkdir(wallpapersBasePath, { recursive: true });
+  return wallpapersBasePath;
+}
+
+function extensionFromType(mime: string): string {
+  if (mime.includes('png')) return '.png';
+  if (mime.includes('webp')) return '.webp';
+  if (mime.includes('gif')) return '.gif';
+  if (mime.includes('svg')) return '.svg';
+  return '.jpg';
+}
+
+/** Скачивает картинку по URL и сохраняет в wallpapers/. Возвращает имя файла. */
+export async function downloadWallpaper(url: string): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error('Wallpaper download is only available in Tauri runtime');
+  }
+  const res = await tauriFetch(url);
+  if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+  const ct = res.headers.get('content-type') ?? 'image/jpeg';
+  const ext = extensionFromType(ct);
+  const name = `wallpaper_${Date.now()}${ext}`;
+  const dir = await getWallpapersDir();
+  const path = await join(dir, name);
+  const buffer = await res.arrayBuffer();
+  await writeFile(path, new Uint8Array(buffer));
+  return name;
+}
+
+/** Сохраняет ArrayBuffer (из input type=file) как wallpaper. Возвращает имя файла. */
+export async function saveWallpaperFromBuffer(
+  buffer: ArrayBuffer,
+  fileName: string,
+): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error('Wallpaper save is only available in Tauri runtime');
+  }
+  const dir = await getWallpapersDir();
+  const ext = fileName.includes('.') ? fileName.substring(fileName.lastIndexOf('.')) : '.jpg';
+  const name = `wallpaper_${Date.now()}${ext}`;
+  const path = await join(dir, name);
+  await writeFile(path, new Uint8Array(buffer));
+  return name;
+}
+
+/** Получить имена всех сохранённых wallpapers */
+export async function listWallpapers(): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    const dir = await getWallpapersDir();
+    const entries = await readDir(dir);
+    const names: string[] = [];
+    for (const entry of entries) {
+      if (entry.name && /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(entry.name)) {
+        names.push(entry.name);
+      }
+    }
+    return names;
+  } catch {
+    return [];
+  }
+}
+
+/** Удалить wallpaper по имени файла */
+export async function removeWallpaper(name: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const dir = await getWallpapersDir();
+  const path = await join(dir, name);
+  await remove(path).catch(() => {});
+}
+
+/** HTTP URL для wallpaper по имени файла */
+export function getWallpaperUrl(name: string): string | null {
+  if (!isTauriRuntime()) return null;
+  const port = getStaticPort();
+  if (!port) return null;
+  return `http://127.0.0.1:${port}/wallpapers/${encodeURIComponent(name)}`;
+}
+
+/* ── Lyrics cache ────────────────────────────────────────── */
+
+let lyricsBasePath: string | null = null;
+
+async function getLyricsDir(): Promise<string> {
+  if (!isTauriRuntime()) return '';
+  if (lyricsBasePath) return lyricsBasePath;
+  const base = await appCacheDir();
+  lyricsBasePath = await join(base, LYRICS_DIR);
+  await mkdir(lyricsBasePath, { recursive: true });
+  return lyricsBasePath;
+}
+
+function urnToLyricsFilename(urn: string): string {
+  return `${urn.replace(/:/g, '_')}.json`;
+}
+
+export async function saveLyricsToCache(urn: string, data: any): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const dir = await getLyricsDir();
+    const path = await join(dir, urnToLyricsFilename(urn));
+    const encoder = new TextEncoder();
+    await writeFile(path, encoder.encode(JSON.stringify(data)));
+  } catch (e) {
+    console.error('Failed to save lyrics cache', e);
+  }
+}
+
+export async function loadLyricsFromCache(urn: string): Promise<any | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const dir = await getLyricsDir();
+    const path = await join(dir, urnToLyricsFilename(urn));
+    if (!(await exists(path))) return null;
+    
+    // Tauri v2 plugin-fs has readTextFile
+    const { readTextFile } = await import('@tauri-apps/plugin-fs');
+    const text = await readTextFile(path);
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      const source = (parsed as { source?: unknown }).source;
+      if (source === 'qwen' || source === 'kroko' || source === 'vosk') {
+        return {
+          ...parsed,
+          source: 'genius',
+        };
+      }
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function isLyricsCached(urn: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    const dir = await getLyricsDir();
+    const path = await join(dir, urnToLyricsFilename(urn));
+    return await exists(path);
+  } catch {
+    return false;
+  }
+}
+
+export async function removeLyricsForTrack(urn: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const dir = await getLyricsDir();
+    const path = await join(dir, urnToLyricsFilename(urn));
+    if (await exists(path)) {
+      await remove(path);
+    }
+  } catch {}
+}
+
+export async function listCachedLyricsUrns(): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+  try {
+    const dir = await getLyricsDir();
+    const entries = await readDir(dir);
+    const urns: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.name || !entry.isFile) continue;
+      if (entry.name.endsWith('.json')) {
+        const urn = entry.name.slice(0, -5).replace(/_/g, ':');
+        urns.push(urn);
+      }
+    }
+
+    return urns;
+  } catch {
+    return [];
+  }
+}
+
+export async function getLyricsCacheSize(): Promise<number> {
+  if (!isTauriRuntime()) return 0;
+  try {
+    const dir = await getLyricsDir();
+    const entries = await readDir(dir);
+    let total = 0;
+    for (const entry of entries) {
+      if (entry.name && entry.isFile) {
+        const info = await stat(`${dir}/${entry.name}`);
+        total += info.size;
+      }
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
+export async function clearLyricsCache(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const dir = await getLyricsDir();
+    const entries = await readDir(dir);
+    for (const entry of entries) {
+      if (entry.name && entry.isFile) {
+        await remove(`${dir}/${entry.name}`).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error('clearLyricsCache failed:', e);
+  }
+}
+
+/* ── Track Download ──────────────────────────────────────── */
+
+function sanitizeFilename(name: string): string {
+  return name
+    .replace(/[<>:"/\\|?*]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export async function downloadTrack(urn: string, artist: string, title: string): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error('Track download is only available in Tauri runtime');
+  }
+  const { save } = await import('@tauri-apps/plugin-dialog');
+
+  const filename = sanitizeFilename(`${artist} - ${title}.mp3`);
+
+  const dest = await save({
+    defaultPath: filename,
+    filters: [{ name: 'Audio', extensions: ['mp3'] }],
+  });
+  if (!dest) throw new Error('cancelled');
+
+  // Ensure cached
+  let cachedPath = await getCacheFilePath(urn);
+  if (!cachedPath) {
+    await fetchAndCacheTrack(urn);
+    cachedPath = await getCacheFilePath(urn);
+  }
+  if (!cachedPath) throw new Error('Failed to cache track');
+
+  return invoke<string>('save_track_to_path', { cachePath: cachedPath, destPath: dest });
+}

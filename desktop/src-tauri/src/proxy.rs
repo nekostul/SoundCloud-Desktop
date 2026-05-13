@@ -1,0 +1,192 @@
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use sha2::{Digest, Sha256};
+
+use crate::constants::is_domain_whitelisted;
+
+pub struct State {
+    pub assets_dir: PathBuf,
+    pub http_client: reqwest::Client,
+    pub rt_handle: tokio::runtime::Handle,
+}
+
+pub static STATE: OnceLock<State> = OnceLock::new();
+
+pub struct ProxyResult {
+    pub status: u16,
+    pub content_type: String,
+    pub data: Vec<u8>,
+}
+
+fn cache_key(url: &str) -> String {
+    hex::encode(Sha256::digest(url.as_bytes()))
+}
+
+/// Core proxy logic — shared between scproxy:// protocol and HTTP proxy server.
+/// `encoded` is a (possibly percent-encoded) base64 target URL.
+pub async fn proxy_request(encoded: &str) -> ProxyResult {
+    let state = match STATE.get() {
+        Some(s) => s,
+        None => {
+            return ProxyResult {
+                status: 503,
+                content_type: "text/plain".into(),
+                data: b"not ready".to_vec(),
+            }
+        }
+    };
+
+    let decoded = urlencoding::decode(encoded).unwrap_or_default();
+    let target_url = match BASE64.decode(decoded.as_bytes()) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                return ProxyResult {
+                    status: 400,
+                    content_type: "text/plain".into(),
+                    data: b"invalid utf8".to_vec(),
+                }
+            }
+        },
+        Err(_) => {
+            return ProxyResult {
+                status: 400,
+                content_type: "text/plain".into(),
+                data: b"invalid base64".to_vec(),
+            }
+        }
+    };
+
+    let host = target_url
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|authority| authority.split(':').next())
+        .unwrap_or("");
+
+    if is_domain_whitelisted(host) {
+        return ProxyResult {
+            status: 403,
+            content_type: "text/plain".into(),
+            data: b"whitelisted domain".to_vec(),
+        };
+    }
+
+    // Cache check — single file per key, no extension
+    let key = cache_key(&target_url);
+    let cache_path = state.assets_dir.join(&key);
+    if cache_path.exists() {
+        if let Ok(data) = tokio::fs::read(&cache_path).await {
+            #[cfg(debug_assertions)]
+            println!("[Proxy] cache HIT {}", target_url);
+            return ProxyResult {
+                status: 200,
+                content_type: "application/octet-stream".into(),
+                data,
+            };
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    println!("[Proxy] {} -> direct", target_url);
+
+    let mut status = 502u16;
+    let mut content_type = String::new();
+    let mut data: Vec<u8> = Vec::new();
+
+    for attempt in 0..3u8 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+        }
+
+        let resp = match state
+            .http_client
+            .get(&target_url)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        status = resp.status().as_u16();
+        content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        match resp.bytes().await {
+            Ok(b) => data = b.to_vec(),
+            Err(_) => continue,
+        }
+
+        // Success or client error — no point retrying
+        if status < 500 {
+            break;
+        }
+    }
+
+    // Cache in background — skip html/text error pages
+    let is_cacheable = status == 200
+        && !content_type.starts_with("text/html")
+        && !content_type.starts_with("text/plain")
+        && !content_type.is_empty();
+    if is_cacheable {
+        let data_clone = data.clone();
+        let path = cache_path.clone();
+        tokio::spawn(async move {
+            let _ = tokio::fs::write(&path, &data_clone).await;
+        });
+    }
+
+    ProxyResult {
+        status,
+        content_type,
+        data,
+    }
+}
+
+/// Long-lived caching for successful image responses. SoundCloud artwork URLs
+/// are content-addressable (artwork-XXX), so effectively immutable — without
+/// `immutable` the WebView re-hits the proxy on every render even though the
+/// disk cache returns instantly.
+fn cache_control_for(status: u16) -> &'static str {
+    if status == 200 {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-store"
+    }
+}
+
+/// Handler for scproxy:// URI scheme protocol (used by img.src hooks).
+///
+/// Routes `/img/<encoded>` to the permanent image cache (7.1.0 port — see
+/// `image_cache.rs`). Everything else falls through to the existing proxy.
+pub async fn handle_uri(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
+    let path = request.uri().path();
+
+    if let Some(encoded) = path.strip_prefix("/img/") {
+        let result = crate::image_cache::handle(encoded).await;
+        return http::Response::builder()
+            .status(result.status)
+            .header("content-type", &result.content_type)
+            .header("cache-control", cache_control_for(result.status))
+            .header("access-control-allow-origin", "*")
+            .body(result.data)
+            .unwrap();
+    }
+
+    let encoded = path.trim_start_matches('/');
+    let result = proxy_request(encoded).await;
+    http::Response::builder()
+        .status(result.status)
+        .header("content-type", &result.content_type)
+        .header("cache-control", cache_control_for(result.status))
+        .header("access-control-allow-origin", "*")
+        .body(result.data)
+        .unwrap()
+}

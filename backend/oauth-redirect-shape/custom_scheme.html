@@ -1,0 +1,61 @@
+﻿<!DOCTYPE html>
+<html lang="en"><head>
+    <title>SoundCloud – Listen to free music and podcasts on SoundCloud</title>
+    <meta charset="utf-8">
+    <meta content="IE=edge,chrome=1" http-equiv="X-UA-Compatible">
+    <meta name="viewport" content="width=device-width,initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="robots" content="noindex">
+    <meta name="theme-color" content="#333">
+    
+    <link rel="stylesheet" href="https://secure.sndcdn.com/6-442a06be5552808e1c8a.css">
+    
+    <style>
+      .dark {
+        background-color: var(--background-dark-color);
+      }
+    </style>
+  <script charset="utf-8" src="https://secure.sndcdn.com/0-356e8cab77626fe93ce4.js"></script><script charset="utf-8" src="https://secure.sndcdn.com/2-cae431a0b12e42bd33d5.js"></script><script charset="utf-8" src="https://secure.sndcdn.com/8-3ff49fe3745c05501a39.js"></script><script charset="utf-8" src="https://secure.sndcdn.com/9-fa1ec017839cb1e9924d.js"></script></head>
+  <body>
+  <script>
+      window.__sc_features = {"auth_ui_datadome_killswitch":false,"api_auth_turn_recaptcha_off":false,"auth_ui_show_email_consent":false,"auth_ui_two_step_authentication":false};
+      window.__sc_country_code = "DE";
+      window.__sc_statsig = null;
+  </script>
+    <script>
+      (function () {
+        function getSearchParam(name) {
+          var results = new RegExp('[\?&]' + name + '=([^&#]*)').exec(
+            window.location.search
+          );
+          if (results == null) {
+            return null;
+          } else {
+            return decodeURI(results[1]) || '';
+          }
+        }
+
+        if (
+          window.matchMedia &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches &&
+          getSearchParam('theme') !== null &&
+          getSearchParam('theme') !== 'light'
+        ) {
+          document.body.classList.add('dark');
+        }
+
+        if (getSearchParam('locale') === 'ar') {
+          document.querySelector('html').dir = 'rtl'
+        }
+      })();
+    </script>
+
+    <div id="app"></div>
+
+      
+    <script crossorigin="" src="https://secure.sndcdn.com/web_auth-f64ae7cb85a1c57e5330.js"></script><script src="https://dwt.soundcloud.com/tags.js" async=""></script>
+    
+    <script crossorigin="" src="https://secure.sndcdn.com/vendor-1516d7186d1a3555729b.js"></script>
+    
+  
+
+</body></html>

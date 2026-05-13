@@ -1,0 +1,1118 @@
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef } from 'react';
+import type { Track } from '../stores/player';
+import { api } from './api';
+import { initLikedUrns } from './likes';
+import { rankTracksByQuery } from './track-search';
+
+/* ── Types ─────────────────────────────────────────────────────── */
+
+export type FeedOrigin = Track & {
+  track_count?: number;
+  set_type?: string;
+  tracks?: Track[];
+};
+
+export interface FeedItem {
+  type: string;
+  created_at: string;
+  origin: FeedOrigin;
+}
+
+interface FeedResponse {
+  collection: FeedItem[];
+  next_href: string | null;
+}
+
+interface TrackListResponse {
+  collection: Track[];
+  next_href: string | null;
+}
+
+export interface Comment {
+  id: number;
+  urn: string;
+  body: string;
+  created_at: string;
+  timestamp: number | null;
+  track_id: number;
+  user: {
+    id: number;
+    urn: string;
+    username: string;
+    avatar_url: string;
+    permalink_url: string;
+  };
+}
+
+interface CommentListResponse {
+  collection: Comment[];
+  next_href: string | null;
+}
+
+export interface Playlist {
+  id: number;
+  urn: string;
+  title: string;
+  permalink_url?: string;
+  description: string | null;
+  duration: number;
+  artwork_url: string | null;
+  genre: string;
+  tag_list: string;
+  track_count: number;
+  likes_count: number;
+  repost_count: number;
+  created_at: string;
+  last_modified: string;
+  sharing: string;
+  playlist_type: string;
+  user_favorite?: boolean;
+  tracks: Track[];
+  user: {
+    id: number;
+    urn: string;
+    username: string;
+    avatar_url: string;
+    permalink_url: string;
+    followers_count?: number;
+    track_count?: number;
+  };
+}
+
+export interface SCUser {
+  id: number;
+  urn: string;
+  username: string;
+  avatar_url: string;
+  permalink_url: string;
+  followers_count?: number;
+  followings_count?: number;
+  track_count?: number;
+  city?: string | null;
+  country?: string | null;
+}
+
+export interface UserProfile extends SCUser {
+  permalink: string;
+  created_at: string;
+  last_modified: string;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  description: string | null;
+  country: string | null;
+  public_favorites_count: number;
+  reposts_count: number;
+  plan: string;
+  website_title: string | null;
+  website: string | null;
+  comments_count: number;
+  online: boolean;
+  likes_count: number;
+  playlist_count: number;
+}
+
+export interface WebProfile {
+  id: number;
+  kind: string;
+  service: string;
+  title: string;
+  url: string;
+  username?: string;
+}
+
+interface UserListResponse {
+  collection: SCUser[];
+  next_href: string | null;
+}
+
+interface PlaylistListResponse {
+  collection: Playlist[];
+  next_href: string | null;
+}
+
+type PageParam = Record<string, string>;
+
+const INFINITE_MAX_PAGES = 8;
+const SEARCH_MAX_PAGES = 5;
+const PLAYLIST_TRACKS_MAX_PAGES = 12;
+
+/* ── Helpers ───────────────────────────────────────────────────── */
+
+/**
+ * Extract pagination params (cursor/offset) from SC API next_href.
+ * Forwards the exact param name SC uses, so the backend proxies it correctly.
+ */
+function extractPagination(href: string | null): PageParam | undefined {
+  if (!href) return undefined;
+  try {
+    const url = new URL(href);
+    const params: PageParam = {};
+    for (const key of ['cursor', 'offset']) {
+      const val = url.searchParams.get(key);
+      if (val) params[key] = val;
+    }
+    return Object.keys(params).length > 0 ? params : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/* ── History ───────────────────────────────────────────────────── */
+
+export interface HistoryEntry {
+  id: string;
+  scTrackId: string;
+  title: string;
+  artistName: string;
+  artworkUrl: string | null;
+  duration: number;
+  playedAt: string;
+}
+
+export function useHistory(limit = 50) {
+  const query = useInfiniteQuery({
+    queryKey: ['history'],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam = 0 }) => {
+      return api<{ collection: HistoryEntry[]; total: number }>(
+        `/history?limit=${limit}&offset=${pageParam}`,
+      );
+    },
+    initialPageParam: 0,
+    getNextPageParam: (last, _all, lastOffset) => {
+      const nextOffset = (lastOffset as number) + limit;
+      return nextOffset < last.total ? nextOffset : undefined;
+    },
+    staleTime: 0,
+  });
+
+  const entries = useMemo(() => {
+    if (!query.data) return [];
+    const arr: HistoryEntry[] = [];
+    for (const page of query.data.pages) {
+      for (const e of (page.collection ?? [])) arr.push(e);
+    }
+    return arr;
+  }, [query.data]);
+
+  return { entries, ...query };
+}
+
+/* ── Local Likes ──────────────────────────────────────────────── */
+
+/* ── Feed ──────────────────────────────────────────────────────── */
+
+export function useFeed() {
+  const query = useInfiniteQuery({
+    queryKey: ['feed'],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: '20' });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<FeedResponse>(`/me/feed?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) {
+        return undefined;
+      }
+      return next;
+    },
+    staleTime: 1000 * 60 * 2,
+  });
+
+  const items = useMemo(() => {
+    if (!query.data) return [];
+    const arr: FeedItem[] = [];
+    const seen = new Set<string>();
+    for (const page of query.data.pages) {
+      for (const item of (page.collection ?? [])) {
+        const urn = item.origin?.urn;
+        if (urn && !seen.has(urn)) {
+          seen.add(urn);
+          arr.push(item);
+        }
+      }
+    }
+    return arr;
+  }, [query.data]);
+
+  return {
+    items,
+    fetchNextPage: query.fetchNextPage,
+    hasNextPage: query.hasNextPage,
+    isFetchingNextPage: query.isFetchingNextPage,
+    isLoading: query.isLoading,
+  };
+}
+
+/* ── Liked tracks ──────────────────────────────────────────────── */
+
+export function useLikedTracks(limit = 30) {
+  const query = useInfiniteQuery({
+    queryKey: ['me', 'likes', 'tracks', limit],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<TrackListResponse>(`/me/likes/tracks?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+    staleTime: 1000 * 60 * 2,
+  });
+
+  const tracks = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Track[] = [];
+    for (const page of query.data.pages) {
+      for (const t of (page.collection ?? [])) arr.push(t);
+    }
+    return arr;
+  }, [query.data]);
+
+  // Seed global liked URNs store
+  useEffect(() => {
+    if (tracks.length > 0) initLikedUrns(tracks);
+  }, [tracks]);
+
+  return { tracks, ...query };
+}
+
+/**
+ * Fetch ALL liked tracks by paginating through the API.
+ * Module-level cache — shared across shuffle & play, no re-renders.
+ * Call invalidateAllLikesCache() when likes change.
+ */
+let _allLikesPromise: Promise<Track[]> | null = null;
+
+export function fetchAllLikedTracks(pageSize = 200): Promise<Track[]> {
+  if (_allLikesPromise) return _allLikesPromise;
+
+  _allLikesPromise = (async () => {
+    const all: Track[] = [];
+    let cursor: string | undefined;
+
+    for (;;) {
+      const params = new URLSearchParams({ limit: String(pageSize) });
+      if (cursor) params.set('cursor', cursor);
+
+      const page = await api<TrackListResponse>(`/me/likes/tracks?${params}`);
+      for (const t of (page.collection ?? [])) all.push(t);
+
+      const next = page.next_href ? extractPagination(page.next_href) : undefined;
+      if (!next?.cursor) break;
+      cursor = next.cursor;
+    }
+
+    return all;
+  })();
+
+  _allLikesPromise.catch(() => {
+    _allLikesPromise = null;
+  });
+
+  return _allLikesPromise;
+}
+
+export function invalidateAllLikesCache() {
+  _allLikesPromise = null;
+}
+
+/* ── Fresh from followed artists ───────────────────────────────── */
+
+export function useFollowingTracks(limit = 20) {
+  return useQuery({
+    queryKey: ['me', 'followings', 'tracks', limit],
+    queryFn: () => api<TrackListResponse>(`/me/followings/tracks?limit=${limit}`),
+    staleTime: 1000 * 60 * 2,
+  });
+}
+
+/* ── Track Comments (infinite) ─────────────────────────────────── */
+
+export function useTrackComments(trackUrn: string | undefined) {
+  const query = useInfiniteQuery({
+    queryKey: ['track', trackUrn, 'comments'],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: '20' });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<CommentListResponse>(
+        `/tracks/${encodeURIComponent(trackUrn!)}/comments?${params}`,
+      );
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+    enabled: !!trackUrn,
+    refetchOnMount: 'always',
+  });
+
+  const comments = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Comment[] = [];
+    for (const page of query.data.pages) {
+      for (const c of (page.collection ?? [])) arr.push(c);
+    }
+    return arr;
+  }, [query.data]);
+
+  return { comments, ...query };
+}
+
+/* ── Post Comment ─────────────────────────────────────────────── */
+
+export function usePostComment(trackUrn: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ body, timestamp }: { body: string; timestamp?: number }) => {
+      return api<Comment>(`/tracks/${encodeURIComponent(trackUrn!)}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({
+          comment: { body, timestamp: timestamp ?? 0 },
+        }),
+      });
+    },
+    onSuccess: () => {
+      qc.refetchQueries({ queryKey: ['track', trackUrn, 'comments'] });
+      qc.refetchQueries({ queryKey: ['track', trackUrn], exact: true });
+    },
+  });
+}
+
+/* ── Related Tracks ───────────────────────────────────────────── */
+
+export function useRelatedTracks(trackUrn: string | undefined, limit = 10) {
+  return useQuery({
+    queryKey: ['track', trackUrn, 'related', limit],
+    queryFn: () =>
+      api<TrackListResponse>(`/tracks/${encodeURIComponent(trackUrn!)}/related?limit=${limit}`),
+    enabled: !!trackUrn,
+    refetchOnMount: 'always',
+  });
+}
+
+/* ── Track Favoriters ─────────────────────────────────────────── */
+
+export function useTrackFavoriters(trackUrn: string | undefined, limit = 12) {
+  return useQuery({
+    queryKey: ['track', trackUrn, 'favoriters', limit],
+    queryFn: () =>
+      api<UserListResponse>(`/tracks/${encodeURIComponent(trackUrn!)}/favoriters?limit=${limit}`),
+    enabled: !!trackUrn,
+    refetchOnMount: 'always',
+  });
+}
+
+/* ── Playlist Detail ──────────────────────────────────────────── */
+
+export function usePlaylist(playlistUrn: string | undefined) {
+  return useQuery({
+    queryKey: ['playlist', playlistUrn],
+    queryFn: () => api<Playlist>(`/playlists/${encodeURIComponent(playlistUrn!)}`),
+    enabled: !!playlistUrn,
+    refetchOnMount: 'always',
+  });
+}
+
+/* ── Playlist Tracks ──────────────────────────────────────────── */
+
+export function usePlaylistTracks(playlistUrn: string | undefined) {
+  const query = useInfiniteQuery({
+    queryKey: ['playlist', playlistUrn, 'tracks'],
+    maxPages: PLAYLIST_TRACKS_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: '200' });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<TrackListResponse>(
+        `/playlists/${encodeURIComponent(playlistUrn!)}/tracks?${params}`,
+      );
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+    enabled: !!playlistUrn,
+    refetchOnMount: 'always',
+  });
+
+  const tracks = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Track[] = [];
+    for (const page of query.data.pages) {
+      for (const t of (page.collection ?? [])) arr.push(t);
+    }
+    return arr;
+  }, [query.data]);
+  return { tracks, ...query };
+}
+
+/* ── User Profile ─────────────────────────────────────────────── */
+
+export function useUser(userUrn: string | undefined) {
+  return useQuery({
+    queryKey: ['user', userUrn],
+    queryFn: () => api<UserProfile>(`/users/${encodeURIComponent(userUrn!)}`),
+    enabled: !!userUrn,
+    refetchOnMount: 'always',
+  });
+}
+
+export function useUserTracks(userUrn: string | undefined) {
+  const query = useInfiniteQuery({
+    queryKey: ['user', userUrn, 'tracks'],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: '30', access: 'playable,preview,blocked' });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<TrackListResponse>(`/users/${encodeURIComponent(userUrn!)}/tracks?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+    enabled: !!userUrn,
+    refetchOnMount: 'always',
+  });
+
+  const tracks = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Track[] = [];
+    for (const page of query.data.pages) {
+      for (const t of (page.collection ?? [])) arr.push(t);
+    }
+    return arr;
+  }, [query.data]);
+  return { tracks, ...query };
+}
+
+export function useUserPopularTracks(userUrn: string | undefined) {
+  return useQuery({
+    queryKey: ['user', userUrn, 'tracks', 'popular'],
+    queryFn: async () => {
+      const all: Track[] = [];
+      let cursor: string | undefined;
+      const pageSize = 50;
+
+      // Paginate through all tracks
+      for (;;) {
+        const params = new URLSearchParams({
+          limit: String(pageSize),
+          access: 'playable,preview,blocked',
+        });
+        if (cursor) params.set('cursor', cursor);
+        const page = await api<TrackListResponse>(
+          `/users/${encodeURIComponent(userUrn!)}/tracks?${params}`,
+        );
+        for (const t of (page.collection ?? [])) all.push(t);
+
+        const next = page.next_href ? extractPagination(page.next_href) : undefined;
+        if (!next?.cursor || (page.collection ?? []).length === 0) break;
+        cursor = next.cursor;
+      }
+
+      all.sort((a, b) => (b.playback_count ?? 0) - (a.playback_count ?? 0));
+      return all;
+    },
+    enabled: !!userUrn,
+    staleTime: 120_000,
+  });
+}
+
+export function useUserPlaylists(userUrn: string | undefined) {
+  const query = useInfiniteQuery({
+    queryKey: ['user', userUrn, 'playlists'],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: '30' });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<PlaylistListResponse>(
+        `/users/${encodeURIComponent(userUrn!)}/playlists?${params}`,
+      );
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+    enabled: !!userUrn,
+    refetchOnMount: 'always',
+  });
+
+  const playlists = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Playlist[] = [];
+    for (const page of query.data.pages) {
+      for (const p of (page.collection ?? [])) arr.push(p);
+    }
+    return arr;
+  }, [query.data]);
+  return { playlists, ...query };
+}
+
+export function useUserLikedTracks(userUrn: string | undefined) {
+  const query = useInfiniteQuery({
+    queryKey: ['user', userUrn, 'likes', 'tracks'],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: '30', access: 'playable,preview,blocked' });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<TrackListResponse>(
+        `/users/${encodeURIComponent(userUrn!)}/likes/tracks?${params}`,
+      );
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+    enabled: !!userUrn,
+    refetchOnMount: 'always',
+  });
+
+  const tracks = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Track[] = [];
+    for (const page of query.data.pages) {
+      for (const t of (page.collection ?? [])) arr.push(t);
+    }
+    return arr;
+  }, [query.data]);
+  return { tracks, ...query };
+}
+
+export function useUserFollowings(userUrn: string | undefined) {
+  const query = useInfiniteQuery({
+    queryKey: ['user', userUrn, 'followings'],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: '30' });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<UserListResponse>(`/users/${encodeURIComponent(userUrn!)}/followings?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+    enabled: !!userUrn,
+    refetchOnMount: 'always',
+  });
+
+  const users = useMemo(() => {
+    if (!query.data) return [];
+    const arr: SCUser[] = [];
+    for (const page of query.data.pages) {
+      for (const u of (page.collection ?? [])) arr.push(u);
+    }
+    return arr;
+  }, [query.data]);
+  return { users, ...query };
+}
+
+export function useUserWebProfiles(userUrn: string | undefined) {
+  return useQuery({
+    queryKey: ['user', userUrn, 'web-profiles'],
+    queryFn: () => api<WebProfile[]>(`/users/${encodeURIComponent(userUrn!)}/web-profiles`),
+    enabled: !!userUrn,
+    refetchOnMount: 'always',
+  });
+}
+
+/* ── My Library ────────────────────────────────────────────────── */
+
+export function useMyFollowings(limit = 30) {
+  const query = useInfiniteQuery({
+    queryKey: ['me', 'followings', limit],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<UserListResponse>(`/me/followings?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+  });
+
+  const users = useMemo(() => {
+    if (!query.data) return [];
+    const arr: SCUser[] = [];
+    for (const page of query.data.pages) {
+      for (const u of (page.collection ?? [])) arr.push(u);
+    }
+    return arr;
+  }, [query.data]);
+  return { users, ...query };
+}
+
+export function useMyLikedPlaylists(limit = 30) {
+  const query = useInfiniteQuery({
+    queryKey: ['me', 'likes', 'playlists', limit],
+    maxPages: INFINITE_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<PlaylistListResponse>(`/me/likes/playlists?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+  });
+
+  const playlists = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Playlist[] = [];
+    for (const page of query.data.pages) {
+      for (const p of (page.collection ?? [])) arr.push(p);
+    }
+    return arr;
+  }, [query.data]);
+  return { playlists, ...query };
+}
+
+export function useMyPlaylists(limit = 30, enabled = true) {
+  const query = useInfiniteQuery({
+    queryKey: ['me', 'playlists', limit],
+    maxPages: INFINITE_MAX_PAGES,
+    enabled,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      const res = await api<PlaylistListResponse | Playlist[]>(`/me/playlists?${params}`);
+      if (Array.isArray(res)) {
+        return { collection: res, next_href: null } as PlaylistListResponse;
+      }
+      return res;
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+  });
+
+  const playlists = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Playlist[] = [];
+    for (const page of query.data.pages) {
+      for (const p of (page.collection ?? [])) arr.push(p);
+    }
+    return arr;
+  }, [query.data]);
+  return { playlists, ...query };
+}
+
+/* ── Playlist Mutations ────────────────────────────────────────── */
+
+export function useUpdatePlaylistTracks(playlistUrn: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (trackUrns: string[]) =>
+      api<Playlist>(`/playlists/${encodeURIComponent(playlistUrn!)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ playlist: { tracks: trackUrns.map((urn) => ({ urn })) } }),
+      }),
+    onSuccess: (data) => {
+      qc.setQueryData(['playlist', playlistUrn], data);
+      qc.invalidateQueries({ queryKey: ['playlist', playlistUrn, 'tracks'] });
+      qc.invalidateQueries({ queryKey: ['me', 'playlists'] });
+    },
+  });
+}
+
+export function useAddToPlaylist() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      playlistUrn,
+      existingTrackUrns,
+      newTrackUrns,
+    }: {
+      playlistUrn: string;
+      existingTrackUrns: string[];
+      newTrackUrns: string[];
+    }) => {
+      const allUrns = [...existingTrackUrns, ...newTrackUrns];
+      return api<Playlist>(`/playlists/${encodeURIComponent(playlistUrn)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ playlist: { tracks: allUrns.map((urn) => ({ urn })) } }),
+      });
+    },
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['playlist', vars.playlistUrn] });
+      qc.invalidateQueries({ queryKey: ['playlist', vars.playlistUrn, 'tracks'] });
+      qc.invalidateQueries({ queryKey: ['me', 'playlists'] });
+    },
+  });
+}
+
+export function useCreatePlaylist() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { title: string; sharing?: 'public' | 'private'; trackUrns?: string[] }) =>
+      api<Playlist>('/playlists', {
+        method: 'POST',
+        body: JSON.stringify({
+          playlist: {
+            title: params.title,
+            sharing: params.sharing ?? 'public',
+            ...(params.trackUrns?.length
+              ? { tracks: params.trackUrns.map((urn) => ({ urn })) }
+              : {}),
+          },
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['me', 'playlists'] });
+    },
+  });
+}
+
+export function useDeletePlaylist() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (playlistUrn: string) =>
+      api(`/playlists/${encodeURIComponent(playlistUrn)}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['me', 'playlists'] });
+    },
+  });
+}
+
+/* ── Search ────────────────────────────────────────────────────── */
+
+export function useSearchTracks(q: string) {
+  const query = useInfiniteQuery({
+    queryKey: ['search', 'tracks', q],
+    maxPages: SEARCH_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({
+        q,
+        limit: '20',
+        linked_partitioning: 'true',
+      });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<TrackListResponse>(`/tracks?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+    enabled: !!q.trim(),
+    staleTime: 1000 * 60 * 5, // 5 min cache for search results
+  });
+
+  const tracks = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Track[] = [];
+    const seen = new Set<string>();
+    for (const page of query.data.pages) {
+      for (const t of (page.collection ?? [])) {
+        if (!t?.urn || seen.has(t.urn)) continue;
+        seen.add(t.urn);
+        arr.push(t);
+      }
+    }
+    return rankTracksByQuery(arr, q);
+  }, [query.data, q]);
+  return { tracks, ...query };
+}
+
+export function useSearchPlaylists(q: string) {
+  const query = useInfiniteQuery({
+    queryKey: ['search', 'playlists', q],
+    maxPages: SEARCH_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ q, limit: '20', linked_partitioning: 'true' });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<PlaylistListResponse>(`/playlists?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, _lastPageParam) => extractPagination(last.next_href),
+    enabled: !!q.trim(),
+  });
+
+  const playlists = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Playlist[] = [];
+    for (const page of query.data.pages) {
+      for (const p of (page.collection ?? [])) arr.push(p);
+    }
+    return arr;
+  }, [query.data]);
+  return { playlists, ...query };
+}
+
+export function useSearchUsers(q: string) {
+  const query = useInfiniteQuery({
+    queryKey: ['search', 'users', q],
+    maxPages: SEARCH_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ q, limit: '20', linked_partitioning: 'true' });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<UserListResponse>(`/users?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, _lastPageParam) => extractPagination(last.next_href),
+    enabled: !!q.trim(),
+  });
+
+  const users = useMemo(() => {
+    if (!query.data) return [];
+    const arr: SCUser[] = [];
+    for (const page of query.data.pages) {
+      for (const u of (page.collection ?? [])) arr.push(u);
+    }
+    return arr;
+  }, [query.data]);
+  return { users, ...query };
+}
+
+/* ── Fallback / Seed Tracks ────────────────────────────────────── */
+
+const FALLBACK_TRACK_IDS = '2028678528,2028677636,2078655668';
+
+export function useFallbackTracks() {
+  return useQuery({
+    queryKey: ['fallback', 'tracks'],
+    queryFn: () =>
+      api<TrackListResponse>(`/tracks?ids=${FALLBACK_TRACK_IDS}&linked_partitioning=true`),
+    staleTime: 1000 * 60 * 30,
+  });
+}
+
+/* ── Discover ──────────────────────────────────────────────────── */
+
+type RelatedPool = Map<string, { count: number; track: Track }>;
+
+const normalizeTrackRouteParam = (trackUrn: string): string => {
+  const parts = trackUrn.split(':');
+  const tail = parts[parts.length - 1] || trackUrn;
+  return /^\d+$/.test(tail) ? tail : trackUrn;
+};
+
+/**
+ * Shared pool: fetches related tracks for up to 30 random liked tracks,
+ * counts frequency of each related track. Used by both Recommended and Discover.
+ */
+export function useRelatedPool(likedTracks: Track[]) {
+  const seedUrns = useMemo(() => {
+    if (likedTracks.length === 0) return [];
+    const shuffled = [...likedTracks].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, Math.min(30, shuffled.length)).map((t) => t.urn);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: stable seeds
+  }, [likedTracks.length > 0]);
+
+  const likedUrns = useMemo(() => new Set(likedTracks.map((t) => t.urn)), [likedTracks]);
+
+  return useQuery({
+    queryKey: ['discover', 'related-pool', seedUrns],
+    queryFn: async () => {
+      const results = await Promise.all(
+        seedUrns.map((urn) =>
+          api<TrackListResponse>(
+            `/tracks/${encodeURIComponent(normalizeTrackRouteParam(urn))}/related?limit=20`,
+            { quietHttpErrors: true },
+          ).catch(
+            () => ({ collection: [] as Track[] }),
+          ),
+        ),
+      );
+
+      const freq: RelatedPool = new Map();
+      for (const res of results) {
+        for (const track of res.collection) {
+          if (likedUrns.has(track.urn)) continue;
+          const entry = freq.get(track.urn);
+          if (entry) entry.count++;
+          else freq.set(track.urn, { count: 1, track });
+        }
+      }
+      return freq;
+    },
+    enabled: seedUrns.length > 0,
+    staleTime: 1000 * 60 * 10,
+  });
+}
+
+/** Top related tracks sorted by frequency — "Recommended For You" */
+export function useRecommendedTracks(pool: RelatedPool | undefined, limit = 40) {
+  return useMemo(() => {
+    if (!pool) return [];
+    return [...pool.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit)
+      .map((e) => e.track);
+  }, [pool, limit]);
+}
+
+/** Related tracks grouped by genre, sorted by frequency — "Discover" */
+export function useDiscoverData(pool: RelatedPool | undefined, likedTracks: Track[]) {
+  // Genre ranking from liked tracks
+  const genreRanking = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of likedTracks) {
+      const g = t.genre?.trim().toLowerCase();
+      if (g) counts.set(g, (counts.get(g) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([g]) => g);
+  }, [likedTracks]);
+
+  return useMemo(() => {
+    if (!pool) return [];
+
+    // Group pool tracks by their genre, count frequency within genre
+    const byGenre = new Map<string, { count: number; track: Track }[]>();
+    for (const entry of pool.values()) {
+      const g = entry.track.genre?.trim().toLowerCase();
+      if (!g) continue;
+      const arr = byGenre.get(g);
+      if (arr) arr.push(entry);
+      else byGenre.set(g, [entry]);
+    }
+
+    // Sort tracks within each genre by frequency
+    for (const arr of byGenre.values()) {
+      arr.sort((a, b) => b.count - a.count);
+    }
+
+    // Walk genre ranking, skip genres with ≤3 tracks
+    const result: { genre: string; tracks: Track[] }[] = [];
+    for (const genre of genreRanking) {
+      const entries = byGenre.get(genre);
+      if (!entries || entries.length <= 3) continue;
+      result.push({ genre, tracks: entries.map((e) => e.track) });
+      if (result.length >= 7) break;
+    }
+
+    return result;
+  }, [pool, genreRanking]);
+}
+
+/* ── Infinite scroll ───────────────────────────────────────────── */
+
+export function useInfiniteScroll(
+  hasNextPage: boolean,
+  isFetchingNextPage: boolean,
+  fetchNextPage: () => void,
+) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !hasNextPage || isFetchingNextPage) return;
+
+    // Use the scrollable <main> as root so the observer
+    // fires correctly inside the overflow container.
+    const root = el.closest('main');
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          fetchNextPage();
+        }
+      },
+      { root, rootMargin: '400px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  return ref;
+}

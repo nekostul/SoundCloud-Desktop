@@ -1,0 +1,780 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-primary: rgba(10, 10, 12, 0.95);
+  --color-bg-glass: rgba(255, 255, 255, 0.03);
+  --color-bg-glass-hover: rgba(255, 255, 255, 0.06);
+  --color-bg-glass-active: rgba(255, 255, 255, 0.09);
+  --color-border-glass: rgba(255, 255, 255, 0.06);
+  --color-border-glass-hi: rgba(255, 255, 255, 0.12);
+  --color-text-primary: rgba(255, 255, 255, 0.92);
+  --color-text-secondary: rgba(255, 255, 255, 0.55);
+  --color-text-tertiary: rgba(255, 255, 255, 0.25);
+  --color-accent: #ff5500;
+  --color-accent-hover: #ff6a1a;
+  --color-accent-glow: rgba(255, 85, 0, 0.2);
+  --color-accent-selection: rgba(255, 85, 0, 0.3);
+  --color-accent-contrast: #ffffff;
+
+  --font-sans: "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root {
+  --bg-primary: rgb(8, 8, 10);
+  --bg-titlebar: rgba(8, 8, 10, 0.95);
+  --theme-app-background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0)),
+    linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0)),
+    linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0));
+  --theme-app-background-size: 100% 100%, 100% 100%, 100% 100%;
+  --theme-gradient-speed: 16s;
+  --theme-accent-gradient: linear-gradient(135deg, var(--color-accent), var(--color-accent-hover));
+  --theme-accent-gradient-hover: linear-gradient(
+    135deg,
+    var(--color-accent-hover),
+    var(--color-accent)
+  );
+  --theme-accent-gradient-soft: linear-gradient(
+    135deg,
+    rgba(255, 85, 0, 0.22),
+    rgba(255, 85, 0, 0.1)
+  );
+  --theme-accent-gradient-size: 100% 100%;
+  --theme-accent-shadow: 0 0 16px var(--color-accent-glow);
+  --theme-accent-shadow-strong: 0 0 26px var(--color-accent-glow);
+  --theme-accent-soft-border: rgba(255, 85, 0, 0.22);
+  --theme-glass-blur: 40px;
+  --theme-glass-saturate: 1.8;
+  --theme-glass-featured-saturate: 2;
+  --theme-glass-bg: rgba(255, 255, 255, 0.025);
+  --theme-glass-flat-bg: rgba(255, 255, 255, 0.025);
+  --theme-glass-hover: rgba(255, 255, 255, 0.05);
+  --theme-glass-featured-bg: rgba(255, 255, 255, 0.02);
+  --theme-glass-border: rgba(255, 255, 255, 0.05);
+  --theme-glass-border-hi: rgba(255, 255, 255, 0.1);
+  --theme-glass-shadow: 0 0 0 1px rgba(255, 255, 255, 0.03) inset, 0 8px 40px rgba(0, 0, 0, 0.3);
+  --theme-greeting-gradient: linear-gradient(
+    to right,
+    white,
+    rgba(255, 255, 255, 0.8),
+    var(--color-accent)
+  );
+  --theme-heading-shadow: none;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  background-image: var(--theme-app-background);
+  background-size: var(--theme-app-background-size);
+  background-position:
+    0% 50%,
+    0% 100%,
+    85% 12%;
+  background-repeat: no-repeat;
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
+}
+
+#root {
+  background-color: var(--bg-primary);
+  background-image: var(--theme-app-background);
+  background-size: var(--theme-app-background-size);
+  background-position:
+    0% 50%,
+    0% 100%,
+    85% 12%;
+  background-repeat: no-repeat;
+  overflow: hidden;
+  transition:
+    background-color 240ms ease,
+    background-image 240ms ease,
+    background-size 240ms ease;
+}
+
+@keyframes themeGradientFlow {
+  0% {
+    background-position:
+      0% 28%,
+      0% 100%,
+      84% 12%;
+  }
+  50% {
+    background-position:
+      100% 72%,
+      100% 0%,
+      88% 16%;
+  }
+  100% {
+    background-position:
+      0% 28%,
+      0% 100%,
+      84% 12%;
+  }
+}
+
+@keyframes themeGradientPulse {
+  0%,
+  100% {
+    background-size:
+      180% 180%,
+      160% 160%,
+      140% 140%;
+    background-position:
+      50% 50%,
+      18% 84%,
+      85% 12%;
+  }
+  50% {
+    background-size:
+      205% 205%,
+      180% 180%,
+      155% 155%;
+    background-position:
+      46% 54%,
+      22% 78%,
+      82% 18%;
+  }
+}
+
+@keyframes themeGradientBreathe {
+  0%,
+  100% {
+    background-position:
+      0% 50%,
+      18% 84%,
+      85% 12%;
+  }
+  50% {
+    background-position:
+      100% 50%,
+      12% 90%,
+      80% 18%;
+  }
+}
+
+:root[data-theme-gradient-animated="true"][data-theme-gradient-animation="flow"] #root {
+  animation: themeGradientFlow var(--theme-gradient-speed) ease-in-out infinite;
+  will-change: background-position;
+}
+
+:root[data-theme-gradient-animated="true"][data-theme-gradient-animation="pulse"] #root {
+  animation: themeGradientPulse var(--theme-gradient-speed) ease-in-out infinite;
+  will-change: background-position, background-size;
+}
+
+:root[data-theme-gradient-animated="true"][data-theme-gradient-animation="breathe"] #root {
+  animation: themeGradientBreathe var(--theme-gradient-speed) ease-in-out infinite;
+  will-change: background-position;
+}
+
+:root[data-theme-gradient-animated="true"][data-theme-gradient-animation="flow"]
+  .theme-accent-animated {
+  animation: themeGradientFlow var(--theme-gradient-speed) ease-in-out infinite;
+  will-change: background-position;
+}
+
+:root[data-theme-gradient-animated="true"][data-theme-gradient-animation="pulse"]
+  .theme-accent-animated {
+  animation: themeGradientPulse var(--theme-gradient-speed) ease-in-out infinite;
+  will-change: background-position, background-size;
+}
+
+:root[data-theme-gradient-animated="true"][data-theme-gradient-animation="breathe"]
+  .theme-accent-animated {
+  animation: themeGradientBreathe var(--theme-gradient-speed) ease-in-out infinite;
+  will-change: background-position;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #root {
+    animation: none !important;
+  }
+
+  .theme-accent-animated {
+    animation: none !important;
+  }
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* ── Glass ──────────────────────────────────────────────────── */
+.glass {
+  background: var(--theme-glass-bg);
+  backdrop-filter: blur(var(--theme-glass-blur)) saturate(var(--theme-glass-saturate));
+  border: 1px solid var(--theme-glass-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.glass-hover:hover {
+  background: var(--theme-glass-hover);
+  border-color: var(--theme-glass-border-hi);
+}
+
+.glass-flat {
+  background: var(--theme-glass-flat-bg);
+  border: 1px solid var(--theme-glass-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.theme-accent-fill {
+  background-color: var(--color-accent);
+  background-image: var(--theme-accent-gradient);
+  background-size: var(--theme-accent-gradient-size);
+  background-repeat: no-repeat;
+  color: var(--color-accent-contrast);
+  box-shadow: var(--theme-accent-shadow);
+}
+
+.theme-accent-fill:hover {
+  background-color: var(--color-accent-hover);
+  background-image: var(--theme-accent-gradient-hover);
+  background-size: var(--theme-accent-gradient-size);
+  box-shadow: var(--theme-accent-shadow-strong);
+}
+
+.theme-accent-progress {
+  background-color: var(--color-accent);
+  background-image: var(--theme-accent-gradient);
+  background-size: var(--theme-accent-gradient-size);
+  background-repeat: no-repeat;
+  box-shadow: var(--theme-accent-shadow);
+}
+
+.theme-accent-thumb {
+  background-color: var(--color-accent);
+  background-image: var(--theme-accent-gradient);
+  background-size: var(--theme-accent-gradient-size);
+  background-repeat: no-repeat;
+  box-shadow: var(--theme-accent-shadow-strong);
+}
+
+.theme-accent-soft {
+  background: var(--theme-accent-gradient-soft);
+  border-color: var(--theme-accent-soft-border);
+  box-shadow: var(--theme-accent-shadow);
+}
+
+.theme-accent-chip {
+  color: rgba(255, 255, 255, 0.92);
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.012)),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.34), rgba(0, 0, 0, 0.24)), var(--theme-accent-gradient);
+  background-size:
+    100% 100%,
+    100% 100%,
+    var(--theme-accent-gradient-size);
+  background-repeat: no-repeat;
+  border-color: var(--theme-accent-soft-border);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.035) inset,
+    var(--theme-accent-shadow);
+}
+
+:root[data-theme-preset="custom"] .bg-accent,
+:root[data-theme-preset="custom"] .bg-accent\/90 {
+  background-color: transparent !important;
+  background-image: var(--theme-accent-gradient) !important;
+  background-size: var(--theme-accent-gradient-size) !important;
+  background-repeat: no-repeat !important;
+}
+
+:root[data-theme-preset="custom"] .hover\:bg-accent-hover:hover {
+  background-color: transparent !important;
+  background-image: var(--theme-accent-gradient-hover) !important;
+  background-size: var(--theme-accent-gradient-size) !important;
+  background-repeat: no-repeat !important;
+}
+
+:root[data-theme-preset="custom"] .text-accent {
+  text-shadow: 0 0 12px var(--color-accent-glow);
+}
+
+/* ── Shimmer ───────────────────────────────────────────────── */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 25%,
+    rgba(255, 255, 255, 0.06) 50%,
+    rgba(255, 255, 255, 0.03) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+/* ── Scrollbar hide ────────────────────────────────────────── */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ── Selection ─────────────────────────────────────────────── */
+::selection {
+  background: var(--color-accent-selection);
+  color: white;
+}
+
+/* ── Focus reset ───────────────────────────────────────────── */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* ── Feed animations ──────────────────────────────────────── */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── MusiCenter Design ────────────────────────────────────── */
+.greeting-gradient {
+  background: var(--theme-greeting-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  filter: var(--theme-heading-shadow);
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s var(--ease-apple) both;
+}
+
+@keyframes fullscreenFromPlayer {
+  from {
+    opacity: 0;
+    transform: translateY(92px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fullscreen-from-player {
+  animation: fullscreenFromPlayer 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes fullscreenToPlayer {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(92px);
+  }
+}
+
+.animate-fullscreen-to-player {
+  animation: fullscreenToPlayer 0.46s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes noteGradientFlow {
+  0% {
+    background-position: 0 50%;
+  }
+  100% {
+    background-position: 144px 50%;
+  }
+}
+
+.animate-note-gradient {
+  animation: noteGradientFlow 3.2s linear infinite;
+}
+
+.note-gradient-text {
+  opacity: 1;
+  color: rgba(255, 255, 255, 0.24) !important;
+  -webkit-text-fill-color: currentColor;
+  background-image: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  filter: none;
+  background-position: 0 50%;
+  background-size: 144px 100%;
+  background-repeat: repeat-x;
+  transition:
+    color 0.3s var(--ease-apple),
+    opacity 0.3s var(--ease-apple),
+    filter 0.3s var(--ease-apple);
+  will-change: background-position, color, filter, opacity;
+  animation: noteGradientFlow var(--note-gradient-duration, 3.2s) linear infinite both;
+  animation-delay: var(--note-gradient-delay, 0s);
+  animation-play-state: paused;
+}
+
+.lyric-line[data-state="next-near"] .note-gradient-text {
+  color: rgba(255, 255, 255, 0.34) !important;
+}
+
+.lyric-line[data-state="next"] .note-gradient-text {
+  color: rgba(255, 255, 255, 0.24) !important;
+}
+
+.lyric-line[data-state="past-near"] .note-gradient-text {
+  color: rgba(255, 255, 255, 0.96) !important;
+  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.12));
+}
+
+.lyric-line[data-state="past"] .note-gradient-text {
+  color: rgba(255, 255, 255, 0.92) !important;
+  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.08));
+}
+
+.lyric-line[data-state="active"] .note-gradient-text {
+  opacity: 1;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.06) 0px,
+    rgba(255, 255, 255, 0.06) 16px,
+    rgba(255, 255, 255, 0.12) 30px,
+    rgba(255, 255, 255, 0.24) 46px,
+    rgba(255, 255, 255, 0.52) 64px,
+    rgba(255, 255, 255, 0.88) 78px,
+    rgba(255, 255, 255, 1) 88px,
+    rgba(255, 255, 255, 0.88) 98px,
+    rgba(255, 255, 255, 0.52) 112px,
+    rgba(255, 255, 255, 0.24) 126px,
+    rgba(255, 255, 255, 0.12) 136px,
+    rgba(255, 255, 255, 0.06) 144px
+  );
+  background-size: 144px 100%;
+  background-repeat: repeat-x;
+  filter: drop-shadow(0 0 22px rgba(255, 255, 255, 0.48));
+  animation-play-state: running;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes zoomIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s var(--ease-apple) both;
+}
+
+.animate-zoom-in {
+  animation: zoomIn 0.4s var(--ease-apple) both;
+}
+
+@keyframes star-float {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 0.4;
+  }
+  50% {
+    transform: translateY(-6px) scale(1.3);
+    opacity: 0.8;
+  }
+}
+
+@keyframes soundwavePulse {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+/* ── Dialog animations (Radix data-state) ────────────────── */
+@keyframes dialogOverlayIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes dialogOverlayOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes dialogContentIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes dialogContentOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+.dialog-overlay[data-state="open"] {
+  animation: dialogOverlayIn 0.2s var(--ease-apple) forwards;
+}
+.dialog-overlay[data-state="closed"] {
+  animation: dialogOverlayOut 0.15s var(--ease-apple) forwards;
+}
+.dialog-content[data-state="open"] {
+  animation: dialogContentIn 0.25s var(--ease-apple) forwards;
+}
+.dialog-content[data-state="closed"] {
+  animation: dialogContentOut 0.15s var(--ease-apple) forwards;
+}
+
+/* ── Featured card glass ──────────────────────────────────── */
+.glass-featured {
+  background: var(--theme-glass-featured-bg);
+  backdrop-filter: blur(calc(var(--theme-glass-blur) * 1.5))
+    saturate(var(--theme-glass-featured-saturate));
+  border: 1px solid var(--theme-glass-border-hi);
+  box-shadow: var(--theme-glass-shadow);
+}
+
+.glass-featured:hover {
+  background: var(--theme-glass-hover);
+  border-color: var(--theme-glass-border-hi);
+}
+
+/* ── Synced lyrics lines ─────────────────────────────────── */
+.lyric-line {
+  cursor: pointer;
+  padding: 8px 0;
+  line-height: 1.4;
+  font-size: 28px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.42);
+  transform-origin: left center;
+  will-change: transform, opacity, color;
+  transition:
+    color 0.42s var(--ease-apple),
+    opacity 0.42s var(--ease-apple),
+    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1);
+  -webkit-font-smoothing: antialiased;
+}
+
+.lyric-line[data-state="active"] {
+  color: #fff;
+  opacity: 1;
+  transform: scale(1.014);
+}
+
+.lyric-line[data-state="past"] {
+  color: rgba(255, 255, 255, 0.24);
+}
+
+.lyric-line[data-state="past-near"],
+.lyric-line[data-state="next-near"] {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.lyric-line[data-state="next"] {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Hardware Acceleration Layers ─────────────────────────── */
+body.hw-accel .glass-featured,
+body.hw-accel .glass,
+body.hw-accel .glass-flat,
+body.hw-accel .dialog-content {
+  transform: translateZ(0);
+}
+body.hw-accel img,
+body.hw-accel canvas {
+  transform: translateZ(0);
+}
+
+/* ── SoundWave hero block ──────────────────────────────────── */
+@keyframes sw-bar {
+  0%,
+  100% {
+    transform: scaleY(0.22);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* Particle drift — translate+opacity only (no scale). Scale on ~20 elements
+   forces relayout of their composite rect every frame; pure translate stays
+   on the GPU compositor. */
+@keyframes sw-drift {
+  0% {
+    transform: translate3d(0, 0, 0);
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: translate3d(0, -22px, 0);
+    opacity: 0;
+  }
+}
+
+/* Aurora orbs carry a heavy `filter: blur()`; rotate/scale would force the
+   blur kernel to recompute every frame (huge GPU cost). Stick to translate —
+   that's a cheap composite transform, blur result stays cached. */
+@keyframes sw-aurora {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(3%, -1.5%, 0);
+  }
+}
+
+@keyframes sw-shine {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+@keyframes sw-pulse-ring {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.75;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+.soundwave-bar {
+  transform-origin: center;
+  animation: sw-bar 1.4s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* Progress-based waveform: two stacked bar layers, the accent one clipped
+   by --sw-progress (0%–100%). Only the clip-path changes at runtime — GPU
+   composite-only, zero layout, zero React re-renders during playback. */
+.sw-bars {
+  --sw-progress: 0%;
+}
+
+.sw-bar {
+  min-height: 3px;
+  border-radius: 1.5px;
+}
+
+.sw-layer-muted .sw-bar {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.sw-layer-accent {
+  clip-path: inset(0 calc(100% - var(--sw-progress)) 0 0);
+  -webkit-clip-path: inset(0 calc(100% - var(--sw-progress)) 0 0);
+  /* No transition: the audio engine pushes time updates ~60Hz already,
+     so any CSS transition just adds 120ms of accumulated lag-chase as
+     each new --sw-progress restarts the previous animation mid-flight.
+     With instant updates the bars stay locked to the progress line. */
+  will-change: clip-path;
+}
+
+.sw-layer-accent .sw-bar {
+  background: var(--color-accent);
+  box-shadow: 0 0 6px var(--color-accent-glow);
+}
+
+.soundwave-title {
+  background-image: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0.98) 0%,
+    rgba(255, 255, 255, 0.72) 40%,
+    var(--color-accent) 100%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}

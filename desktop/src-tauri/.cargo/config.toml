@@ -1,0 +1,14 @@
+[profile.dev]
+opt-level = 0
+incremental = true
+codegen-units = 256
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+strip = true

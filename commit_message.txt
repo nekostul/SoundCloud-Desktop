@@ -1,0 +1,7 @@
+feat: Native Performance Controls & UX Enhancements
+
+- Native Framerate Cap / Unlock: Introduced a deeply integrated UI setting to natively limit or unlock the Webview2 engine's framerate using Chromium flags (--limit-fps, --disable-frame-rate-limit), effectively managing CSS compositor load.
+- FPS Counter: Added an optional Real-time FPS overlay to monitor client performance.
+- Smooth Playback Interpolation: The Now Playing progress slider now interpolates between standard 100ms ticks using a recursive requestAnimationFrame loop, producing butter-smooth 60Hz-144Hz visuals without compromising React render cycles.
+- Hardware Acceleration Toggle: Exposes hardware acceleration preferences to users for further graphic tuning.
+- i18n: Added English and Russian translations for all new menus and restart toast.

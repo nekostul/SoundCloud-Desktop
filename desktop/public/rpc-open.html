@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Открыть в приложении</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: "Inter", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1200px 500px at 10% -20%, rgba(255, 85, 0, 0.24), transparent),
+        radial-gradient(900px 420px at 110% 120%, rgba(15, 163, 255, 0.14), transparent),
+        #09090c;
+      color: rgba(255, 255, 255, 0.9);
+    }
+    .card {
+      width: min(520px, calc(100vw - 34px));
+      border-radius: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(18, 18, 24, 0.82);
+      box-shadow: 0 22px 68px rgba(0, 0, 0, 0.52);
+      backdrop-filter: blur(10px);
+      padding: 22px;
+    }
+    .title {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+      font-weight: 700;
+      color: #fff;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 14px;
+      line-height: 1.5;
+      color: rgba(255, 255, 255, 0.72);
+    }
+    .hint {
+      margin-top: 14px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.45);
+    }
+    .actions {
+      margin-top: 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .btn {
+      appearance: none;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 12px;
+      padding: 10px 14px;
+      background: rgba(255, 255, 255, 0.06);
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 120ms ease, filter 120ms ease, background 120ms ease;
+    }
+    .btn:hover {
+      filter: brightness(1.08);
+      transform: translateY(-1px);
+    }
+    .btn.primary {
+      border-color: rgba(255, 128, 69, 0.7);
+      background: linear-gradient(135deg, #ff6f2e, #ff5500);
+      color: #150a06;
+    }
+    .ok {
+      color: #86f7ba;
+    }
+    .err {
+      color: #ffd18f;
+    }
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1 class="title">Listen in App</h1>
+    <p id="status" class="status">Пробуем открыть трек в приложении...</p>
+    <p id="hint" class="hint">Если приложение не установлено, мы покажем кнопку скачивания.</p>
+
+    <div id="actions" class="actions hidden">
+      <button id="retryBtn" class="btn" type="button">Попробовать снова</button>
+      <a id="downloadBtn" class="btn primary" href="#" target="_blank" rel="noreferrer">Скачать приложение</a>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const urn = (params.get('urn') || '').trim();
+      const portRaw = Number(params.get('port') || '58334');
+      const port = Number.isFinite(portRaw) && portRaw > 0 && portRaw < 65536 ? portRaw : 58334;
+      const downloadUrl =
+        params.get('download') ||
+        'https://github.com/nekostul/SoundCloud-Desktop/releases/latest';
+
+      const statusEl = document.getElementById('status');
+      const hintEl = document.getElementById('hint');
+      const actionsEl = document.getElementById('actions');
+      const retryBtn = document.getElementById('retryBtn');
+      const downloadBtn = document.getElementById('downloadBtn');
+
+      downloadBtn.setAttribute('href', downloadUrl);
+
+      function setStatus(text, kind) {
+        statusEl.textContent = text;
+        statusEl.classList.remove('ok', 'err');
+        if (kind) statusEl.classList.add(kind);
+      }
+
+      function showDownloadActions() {
+        actionsEl.classList.remove('hidden');
+      }
+
+      function openInApp() {
+        if (!urn) {
+          setStatus('В ссылке отсутствует идентификатор трека.', 'err');
+          hintEl.textContent = 'Откройте кнопку снова из Discord или скачайте приложение.';
+          showDownloadActions();
+          return;
+        }
+
+        setStatus('Пробуем открыть трек в приложении...', null);
+        hintEl.textContent = 'Если не получилось, ниже появится кнопка скачивания.';
+
+        const img = new Image();
+        let done = false;
+
+        const finishFail = function () {
+          if (done) return;
+          done = true;
+          setStatus('Нет приложения? Скачайте!', 'err');
+          hintEl.textContent =
+            'Приложение не ответило на локальный RPC endpoint. Установите последнюю версию и попробуйте снова.';
+          showDownloadActions();
+        };
+
+        const failTimer = window.setTimeout(finishFail, 1900);
+
+        img.onload = function () {
+          if (done) return;
+          done = true;
+          window.clearTimeout(failTimer);
+          setStatus('Трек открыт в приложении. Можно вернуться в Discord.', 'ok');
+          hintEl.textContent = 'Если окно не на переднем плане, переключитесь на приложение вручную.';
+        };
+
+        img.onerror = finishFail;
+        img.src =
+          'http://127.0.0.1:' +
+          port +
+          '/rpc/pixel?urn=' +
+          encodeURIComponent(urn) +
+          '&_=' +
+          Date.now();
+      }
+
+      retryBtn.addEventListener('click', openInApp);
+      openInApp();
+    })();
+  </script>
+</body>
+</html>

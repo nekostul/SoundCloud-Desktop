@@ -1,0 +1,2927 @@
+import { isTauri } from '@tauri-apps/api/core';
+import { create } from 'zustand';
+import { api } from '../lib/api';
+import { type AudioFeatures, audioAnalyser } from '../lib/audio-analyser';
+import { getCacheFilePath } from '../lib/cache';
+import { type FeedItem, fetchAllLikedTracks, type Playlist } from '../lib/hooks';
+import {
+  analyzeTrackLanguage,
+  detectLanguage,
+  filterByLanguage,
+  SUPPORTED_LANGUAGES,
+  type TrackLanguageProfile,
+} from '../lib/language-detection';
+import { getLikedUrnsSnapshot, initLikedUrns } from '../lib/likes';
+import { rerankTracksWithLLM } from '../lib/llm-rerank';
+import { requestMertEmbedding } from '../lib/mert-analyser';
+import { fetchCrossPlatformRegionalTracks } from '../lib/popular-sources';
+import { QdrantClient, type QdrantScoredPoint } from '../lib/qdrant';
+import { useAuthStore } from './auth';
+import { useDislikesStore } from './dislikes';
+import { type Track, usePlayerStore } from './player';
+import { resolveQdrantApiKey, useSettingsStore } from './settings';
+
+export interface SoundWavePreset {
+  // ...
+  name: string;
+  icon: string;
+  tags?: string[];
+  mode?: 'favorite' | 'discover' | 'popular';
+  palette?: string;
+  timeHours?: number[];
+}
+
+export const ACTIVITY_PRESETS: Record<string, SoundWavePreset> = {
+  wakeup: {
+    name: 'Просыпаюсь',
+    icon: 'sun',
+    tags: ['chill', 'morning', 'acoustic', 'lo-fi'],
+    timeHours: [5, 6, 7, 8, 9],
+  },
+  commute: {
+    name: 'В дороге',
+    icon: 'car',
+    tags: ['electronic', 'pop', 'indie', 'drive'],
+    timeHours: [7, 8, 9, 17, 18, 19],
+  },
+  work: {
+    name: 'Работаю',
+    icon: 'laptop',
+    tags: ['focus', 'ambient', 'lo-fi', 'instrumental'],
+    timeHours: [9, 10, 11, 12, 13, 14, 15, 16, 17],
+  },
+  workout: {
+    name: 'Тренируюсь',
+    icon: 'dumbbell',
+    tags: ['workout', 'edm', 'trap', 'bass', 'energy', 'hype'],
+    timeHours: [6, 7, 8, 17, 18, 19, 20],
+  },
+  sleep: {
+    name: 'Засыпаю',
+    icon: 'moon',
+    tags: ['ambient', 'sleep', 'calm', 'piano', 'relax'],
+    timeHours: [21, 22, 23, 0, 1, 2, 3],
+  },
+};
+
+export const MOOD_PRESETS: Record<string, SoundWavePreset> = {
+  energetic: {
+    name: 'Бодрое',
+    icon: 'zap',
+    tags: ['energetic', 'upbeat', 'hype', 'edm', 'bass'],
+    palette: 'energetic',
+  },
+  happy: {
+    name: 'Весёлое',
+    icon: 'music',
+    tags: ['happy', 'fun', 'party', 'dance', 'pop'],
+    palette: 'happy',
+  },
+  calm: {
+    name: 'Спокойное',
+    icon: 'waves',
+    tags: ['calm', 'chill', 'peaceful', 'mellow', 'ambient'],
+    palette: 'calm',
+  },
+  sad: {
+    name: 'Грустное',
+    icon: 'frown',
+    tags: ['sad', 'emotional', 'melancholy', 'dark', 'indie'],
+    palette: 'sad',
+  },
+};
+
+export const CHARACTER_PRESETS: Record<string, SoundWavePreset> = {
+  favorite: { name: 'Любимое', icon: 'heart', mode: 'favorite' },
+  discover: { name: 'Незнакомое', icon: 'sparkles', mode: 'discover' },
+  popular: { name: 'Популярное', icon: 'zap', mode: 'popular' },
+};
+
+export type MoodLabel = 'energetic' | 'happy' | 'calm' | 'sad';
+
+const MOOD_TRAINING_PROFILES: Record<MoodLabel, Partial<AudioFeatures>> = {
+  energetic: { valence: 0.75, arousal: 0.92, rmsEnergy: 0.85, flux: 0.65 },
+  happy: { valence: 0.9, arousal: 0.64, rmsEnergy: 0.68, flux: 0.42 },
+  calm: { valence: 0.46, arousal: 0.22, rmsEnergy: 0.25, flux: 0.16 },
+  sad: { valence: 0.18, arousal: 0.2, rmsEnergy: 0.3, flux: 0.21 },
+};
+
+const withMoodProfile = (features: AudioFeatures | null, mood: MoodLabel): AudioFeatures => {
+  const base: AudioFeatures = features || {
+    rmsEnergy: 0.35,
+    centroid: 0.35,
+    flatness: 0.3,
+    rolloff: 0.32,
+    flux: 0.24,
+    valence: 0.5,
+    arousal: 0.5,
+    bpm: 0,
+  };
+
+  return {
+    ...base,
+    ...MOOD_TRAINING_PROFILES[mood],
+  };
+};
+
+const sanitizeCollectionPart = (value: string) => {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 48);
+  return normalized || 'user';
+};
+
+const buildScopedCollection = (baseCollection: string, userScope: string) => {
+  const base = sanitizeCollectionPart(baseCollection || 'sw_v2');
+  const scope = sanitizeCollectionPart(userScope || 'local');
+  return `${base}_${scope}`.slice(0, 120);
+};
+
+const extractPlaylistTracks = (
+  input: { collection: Playlist[] } | Playlist[] | null | undefined,
+) => {
+  if (!input) return [] as Track[];
+  const collection = Array.isArray(input) ? input : input.collection || [];
+  const tracks: Track[] = [];
+  for (const playlist of collection) {
+    if (!playlist?.tracks?.length) continue;
+    for (const track of playlist.tracks) {
+      if (track?.urn && track.user) tracks.push(track);
+    }
+  }
+  return tracks;
+};
+
+const parseRegions = (value: string): string[] =>
+  value
+    .split(',')
+    .map((r) => r.trim().toLowerCase())
+    .filter((r) => /^[a-z]{2}$/.test(r))
+    .slice(0, 12);
+
+const COUNTRY_LANGUAGE_HINTS: Record<string, string> = {
+  ru: 'ru',
+  russia: 'ru',
+  россия: 'ru',
+  ua: 'uk',
+  ukraine: 'uk',
+  украина: 'uk',
+  kz: 'kk',
+  kazakhstan: 'kk',
+  қазақстан: 'kk',
+  казахстан: 'kk',
+  de: 'de',
+  germany: 'de',
+  deutschland: 'de',
+  fr: 'fr',
+  france: 'fr',
+  es: 'es',
+  spain: 'es',
+  pt: 'pt',
+  portugal: 'pt',
+  br: 'pt',
+  brazil: 'pt',
+  pl: 'pl',
+  poland: 'pl',
+  tr: 'tr',
+  turkey: 'tr',
+  jp: 'ja',
+  japan: 'ja',
+  ja: 'ja',
+  kr: 'ko',
+  korea: 'ko',
+  ko: 'ko',
+  cn: 'zh',
+  china: 'zh',
+  zh: 'zh',
+  in: 'hi',
+  india: 'hi',
+  hi: 'hi',
+  sa: 'ar',
+  ae: 'ar',
+  arab: 'ar',
+  arabia: 'ar',
+};
+
+const userRegionLanguageCache = new Map<string, string | null>();
+const lyricsLanguageCache = new Map<number, string | null>();
+const IS_TAURI_RUNTIME = isTauri();
+
+const LANGUAGE_SCRIPT_REGEX: Record<string, RegExp> = {
+  ru: /[\u0400-\u04FF]/,
+  uk: /[іїєґІЇЄҐ]/,
+  kk: /[әіңғүұқөһӘІҢҒҮҰҚӨҺ]/,
+  ar: /[\u0600-\u06FF]/,
+  hi: /[\u0900-\u097F]/,
+  ja: /[\u3040-\u30FF\u4E00-\u9FFF]/,
+  ko: /[\uAC00-\uD7AF\u1100-\u11FF]/,
+  zh: /[\u4E00-\u9FFF\u3400-\u4DBF]/,
+};
+
+const LANGUAGE_SEARCH_TERMS: Record<string, string[]> = {
+  ru: ['русский рэп', 'русский поп', 'русская музыка'],
+  uk: ['українська музика', 'український реп', 'ukrainian pop', 'ukrainian rap'],
+  kk: ['қазақ музыкасы', 'қазақша әндер', 'qazaq music', 'kazakh pop', 'kazakh rap'],
+  de: ['deutsche musik', 'deutschrap', 'deutscher pop', 'german dance'],
+  fr: ['musique francaise', 'rap francais', 'chanson francaise', 'french dance'],
+  es: ['musica latina', 'rap espanol', 'spanish pop'],
+  pt: ['musica brasileira', 'rap brasileiro', 'portuguese music'],
+  it: ['musica italiana', 'italian rap', 'italian pop', 'canzone italiana'],
+  pl: ['polski rap', 'polska muzyka', 'polish music'],
+  tr: ['turkce muzik', 'turkish rap', 'turkish pop'],
+  ja: ['japanese music', 'jpop', 'japanese rap'],
+  ko: ['kpop', 'korean rap', 'korean music'],
+  zh: ['mandarin pop', 'chinese music', 'c-pop'],
+  ar: ['arabic music', 'arab pop', 'arabic rap'],
+  hi: ['hindi songs', 'bollywood music', 'hindi rap'],
+};
+
+const KAZAKHSTAN_SEARCH_TERMS = [
+  'казахстанская музыка',
+  'казахстанский рэп',
+  'казахстанский поп',
+  'қазақстан музыкасы',
+  'qazaq music',
+  'kazakh songs',
+];
+
+const inferLanguageFromRegion = (value: string | null | undefined): string | null => {
+  if (!value) return null;
+  const normalized = value.toLowerCase().trim();
+  if (!normalized) return null;
+
+  if (COUNTRY_LANGUAGE_HINTS[normalized]) {
+    return COUNTRY_LANGUAGE_HINTS[normalized];
+  }
+
+  for (const [key, lang] of Object.entries(COUNTRY_LANGUAGE_HINTS)) {
+    if (normalized.includes(key)) {
+      return lang;
+    }
+  }
+
+  return null;
+};
+
+const mapConcurrent = async <T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> => {
+  const output = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  const run = async () => {
+    while (nextIndex < items.length) {
+      const current = nextIndex++;
+      output[current] = await worker(items[current]);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(limit, 1), items.length) }, () => run()),
+  );
+
+  return output;
+};
+
+const fetchAuthorRegionLanguage = async (track: Track): Promise<string | null> => {
+  const userUrn = track.user?.urn;
+  if (!userUrn) return null;
+
+  if (userRegionLanguageCache.has(userUrn)) {
+    return userRegionLanguageCache.get(userUrn) ?? null;
+  }
+
+  const localUser = track.user as Track['user'] & { country?: string | null; city?: string | null };
+  const localHint =
+    inferLanguageFromRegion(localUser.country) || inferLanguageFromRegion(localUser.city);
+  if (localHint) {
+    userRegionLanguageCache.set(userUrn, localHint);
+    return localHint;
+  }
+
+  try {
+    const profile = await api<{ country?: string | null; city?: string | null }>(
+      `/users/${encodeURIComponent(userUrn)}`,
+      { quietHttpErrors: true },
+    );
+    const profileHint =
+      inferLanguageFromRegion(profile?.country) || inferLanguageFromRegion(profile?.city);
+    userRegionLanguageCache.set(userUrn, profileHint ?? null);
+    return profileHint ?? null;
+  } catch {
+    userRegionLanguageCache.set(userUrn, null);
+    return null;
+  }
+};
+
+const fetchLyricsLanguage = async (track: Track): Promise<string | null> => {
+  if (!IS_TAURI_RUNTIME) return null;
+  if (!track.id || !track.user?.username || !track.title) return null;
+
+  if (lyricsLanguageCache.has(track.id)) {
+    return lyricsLanguageCache.get(track.id) ?? null;
+  }
+
+  try {
+    const q = encodeURIComponent(
+      `${track.user.username} ${track.title}`.replace(/\s+/g, ' ').trim(),
+    );
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+    const response = await fetch(`https://lrclib.net/api/search?q=${q}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      lyricsLanguageCache.set(track.id, null);
+      return null;
+    }
+
+    const data = (await response.json()) as Array<{ plainLyrics?: string; syncedLyrics?: string }>;
+    const first = data?.[0];
+    const lyricsText = first?.plainLyrics || first?.syncedLyrics || '';
+
+    if (!lyricsText || lyricsText.length < 12) {
+      lyricsLanguageCache.set(track.id, null);
+      return null;
+    }
+
+    const detected = detectLanguage(lyricsText);
+    lyricsLanguageCache.set(track.id, detected);
+    return detected;
+  } catch {
+    lyricsLanguageCache.set(track.id, null);
+    return null;
+  }
+};
+
+const buildEnrichedLanguageProfile = async (track: Track): Promise<TrackLanguageProfile> => {
+  const base = analyzeTrackLanguage(track);
+  const titleLanguage = detectLanguage(track.title || '');
+  const [regionLanguage, lyricsLanguage] = await Promise.all([
+    fetchAuthorRegionLanguage(track),
+    fetchLyricsLanguage(track),
+  ]);
+
+  const votes = new Map<string, number>();
+  const addVote = (lang: string | null | undefined, weight: number) => {
+    if (!lang) return;
+    votes.set(lang, (votes.get(lang) || 0) + weight);
+  };
+
+  addVote(base.primaryLanguage, 1.4 + base.confidence);
+  addVote(titleLanguage, 1.1);
+  addVote(regionLanguage, 1.6);
+  addVote(lyricsLanguage, 2.4);
+
+  let primaryLanguage = base.primaryLanguage;
+  let maxVote = 0;
+  for (const [lang, weight] of votes.entries()) {
+    if (weight > maxVote) {
+      maxVote = weight;
+      primaryLanguage = lang;
+    }
+  }
+
+  return {
+    trackId: track.id,
+    languages: {
+      ...base.languages,
+      ...(regionLanguage ? { [regionLanguage]: (base.languages[regionLanguage] || 0) + 2 } : {}),
+      ...(lyricsLanguage ? { [lyricsLanguage]: (base.languages[lyricsLanguage] || 0) + 3 } : {}),
+      ...(titleLanguage ? { [titleLanguage]: (base.languages[titleLanguage] || 0) + 1 } : {}),
+    },
+    primaryLanguage,
+    confidence: Math.min(1, maxVote / 3.5),
+  };
+};
+
+const LANGUAGE_POOL_CACHE_TTL_MS = 1000 * 60 * 20;
+const GENRE_POOL_CACHE_TTL_MS = 1000 * 60 * 20;
+const GLOBAL_DISCOVERY_CACHE_TTL_MS = 1000 * 60 * 15;
+
+const languagePoolCache = new Map<string, { ts: number; tracks: Track[] }>();
+const languagePoolInFlight = new Map<string, Promise<Track[]>>();
+const genrePoolCache = new Map<string, { ts: number; tracks: Track[] }>();
+const genrePoolInFlight = new Map<string, Promise<Track[]>>();
+
+const PLAYED_FEATURE_UPSERT_TTL_MS = 1000 * 60 * 35;
+const PLAYED_FEATURE_UPSERT_MAX_TRACKS = 1800;
+const PLAYED_FEATURE_UPSERT_BATCH_SIZE = 24;
+const PLAYED_FEATURE_RETRY_DELAY_MS = 450;
+const PLAYED_FEATURE_MAX_RETRY_ATTEMPTS = 6;
+const MERT_ENRICH_UPSERT_TTL_MS = 1000 * 60 * 60 * 10;
+const MERT_ENRICH_MAX_TRACKS = 1800;
+const MERT_ENDPOINT_BASE_COOLDOWN_MS = 1000 * 5;
+const MERT_ENDPOINT_MAX_COOLDOWN_MS = 1000 * 20;
+
+const playedFeatureUpsertTs = new Map<string, number>();
+const playedFeatureUpsertQueue = new Map<
+  string,
+  { track: Track; features: AudioFeatures; isLiked: boolean }
+>();
+const playedFeatureRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const playedFeatureRetryAttempts = new Map<string, number>();
+const mertEnrichedUpsertTs = new Map<string, number>();
+const mertEnrichInFlight = new Map<string, Promise<void>>();
+
+let playedFeatureFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let playedFeatureFlushInFlight = false;
+let mertEndpointCooldownUntil = 0;
+let mertEndpointFailureStreak = 0;
+
+let globalDiscoveryCache: { ts: number; tracks: Track[] } | null = null;
+let globalDiscoveryInFlight: Promise<Track[]> | null = null;
+let inFlightGenerateBatch: Promise<Track[]> | null = null;
+let startupProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+const SUPPORTED_LANGUAGE_CODES = new Set(SUPPORTED_LANGUAGES.map((lang) => lang.code));
+
+const clampProgress = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
+
+type StartupStageKey =
+  | 'idle'
+  | 'preset'
+  | 'init'
+  | 'qdrant'
+  | 'likes'
+  | 'explore'
+  | 'weights'
+  | 'seed'
+  | 'batch'
+  | 'filter'
+  | 'language'
+  | 'done'
+  | 'caching';
+
+const isTrackLike = (value: unknown): value is Track => {
+  const track = value as Track;
+  return Boolean(track?.urn && track?.title && track?.user?.username);
+};
+
+const isTrackPlayable = (track: Track): boolean => {
+  if (!track?.urn || !track?.user?.username || !track?.title) return false;
+  if ((track.access || 'playable') === 'blocked') return false;
+  if (typeof track.duration === 'number' && track.duration > 0 && track.duration < 15000)
+    return false;
+  return true;
+};
+
+const normalizePreferredLanguageCodes = (value: string[] | string | null | undefined): string[] => {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === 'string' && value.trim() && value !== 'all'
+      ? [value]
+      : [];
+
+  const deduped = new Set<string>();
+  for (const entry of source) {
+    const normalized = entry.trim().toLowerCase();
+    if (!normalized || normalized === 'all' || !SUPPORTED_LANGUAGE_CODES.has(normalized)) continue;
+    deduped.add(normalized);
+  }
+
+  return Array.from(deduped);
+};
+
+const getPreferredLanguageCodes = (settings: {
+  preferredLanguages?: string[];
+  preferredLanguage?: string;
+}): string[] =>
+  normalizePreferredLanguageCodes(
+    Array.isArray(settings.preferredLanguages)
+      ? settings.preferredLanguages
+      : settings.preferredLanguage,
+  );
+
+const formatPreferredLanguageCodes = (preferredLanguages: string[]): string =>
+  preferredLanguages.length > 0 ? preferredLanguages.join(', ') : 'all';
+
+const trackMatchesPreferredLanguage = (track: Track, preferredLanguage: string): boolean => {
+  const text = `${track.title || ''} ${track.description || ''} ${track.user?.username || ''}`;
+  if (!text.trim()) return false;
+
+  if (preferredLanguage === 'uk' && /[іїєґІЇЄҐ]/.test(text)) return true;
+  const scriptRegex = LANGUAGE_SCRIPT_REGEX[preferredLanguage];
+  if (scriptRegex?.test(text)) return true;
+
+  return detectLanguage(text) === preferredLanguage;
+};
+
+const trackMatchesPreferredLanguages = (track: Track, preferredLanguages: string[]): boolean => {
+  if (preferredLanguages.length === 0) return true;
+  return preferredLanguages.some((preferredLanguage) =>
+    trackMatchesPreferredLanguage(track, preferredLanguage),
+  );
+};
+
+const normalizeGenreToken = (value: string): string =>
+  value
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9а-яё\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const GENRE_ALIAS_MAP: Record<string, string[]> = {
+  'hip hop': ['hip hop', 'hiphop', 'hip-hop', 'хип хоп', 'хип-хоп'],
+  rap: ['rap', 'рэп', 'hip hop', 'хип хоп'],
+  pop: ['pop', 'поп', 'попса'],
+  rock: ['rock', 'рок'],
+  indie: ['indie', 'инди'],
+  electronic: ['electronic', 'edm', 'electro', 'электроника', 'электро'],
+  house: ['house', 'хаус'],
+  techno: ['techno', 'техно'],
+  trance: ['trance', 'транс'],
+  'drum and bass': ['drum and bass', 'dnb', 'drum n bass', 'драм энд бэйс', 'днб'],
+  dubstep: ['dubstep', 'brostep', 'дабстеп', 'дубстеп'],
+  phonk: ['phonk', 'фонк'],
+  rnb: ['rnb', 'r&b', 'soul', 'соул'],
+  jazz: ['jazz', 'джаз'],
+  ambient: ['ambient', 'эмбиент'],
+  lofi: ['lofi', 'lo-fi', 'лофай', 'лоуфай'],
+  classical: ['classical', 'классика', 'classics'],
+};
+
+const buildGenreMatchTerms = (selectedGenres: string[]): string[] => {
+  const terms = new Set<string>();
+  for (const genre of selectedGenres) {
+    const normalized = normalizeGenreToken(genre);
+    if (!normalized) continue;
+
+    terms.add(normalized);
+
+    const aliases = GENRE_ALIAS_MAP[normalized] || [];
+    for (const alias of aliases) {
+      const normalizedAlias = normalizeGenreToken(alias);
+      if (normalizedAlias) {
+        terms.add(normalizedAlias);
+      }
+    }
+  }
+
+  return Array.from(terms);
+};
+
+const trackMatchesSelectedGenres = (track: Track, genreTerms: string[]): boolean => {
+  if (genreTerms.length === 0) return true;
+
+  const text = normalizeGenreToken(
+    `${track.genre || ''} ${track.tag_list || ''} ${track.title || ''} ${track.description || ''}`,
+  );
+  if (!text) return false;
+
+  for (const term of genreTerms) {
+    if (!term) continue;
+    if (text.includes(term)) return true;
+
+    const genreTokens = term.split(' ').filter((token) => token.length > 1);
+    if (genreTokens.length > 1 && genreTokens.every((token) => text.includes(token))) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const serializeSelectedGenres = (selectedGenres: string[]): string =>
+  selectedGenres
+    .map((genre) => normalizeGenreToken(genre))
+    .filter(Boolean)
+    .sort()
+    .join(',');
+
+const computePopularSocialBoost = (
+  playbackCount: number | undefined,
+  likesCount: number | undefined,
+  commentCount: number | undefined,
+): number => {
+  const plays = Math.max(0, Number(playbackCount || 0));
+  const likes = Math.max(0, Number(likesCount || 0));
+  const comments = Math.max(0, Number(commentCount || 0));
+
+  if (plays <= 0) return 0;
+
+  const likesPer1k = likes / Math.max(1, plays / 1000);
+  const commentsPer1k = comments / Math.max(1, plays / 1000);
+
+  let score = 0;
+  score += Math.min(5.2, likesPer1k * 0.85);
+  score += Math.min(4.3, commentsPer1k * 1.7);
+
+  if (plays >= 50000 && likes + comments * 5 < 150) {
+    score -= 3.4;
+  }
+
+  return score;
+};
+
+const rememberPlayedFeatureUpsert = (urn: string, ts: number) => {
+  playedFeatureUpsertTs.set(urn, ts);
+  while (playedFeatureUpsertTs.size > PLAYED_FEATURE_UPSERT_MAX_TRACKS) {
+    const oldest = playedFeatureUpsertTs.keys().next().value;
+    if (!oldest) break;
+    playedFeatureUpsertTs.delete(oldest);
+  }
+};
+
+const rememberMertFeatureUpsert = (urn: string, ts: number) => {
+  mertEnrichedUpsertTs.set(urn, ts);
+  while (mertEnrichedUpsertTs.size > MERT_ENRICH_MAX_TRACKS) {
+    const oldest = mertEnrichedUpsertTs.keys().next().value;
+    if (!oldest) break;
+    mertEnrichedUpsertTs.delete(oldest);
+  }
+};
+
+const schedulePlayedFeatureFlush = (getState: () => SoundWaveState, delayMs = 900) => {
+  if (playedFeatureFlushTimer) return;
+  playedFeatureFlushTimer = setTimeout(() => {
+    playedFeatureFlushTimer = null;
+    void flushPlayedFeatureQueue(getState);
+  }, delayMs);
+};
+
+const flushPlayedFeatureQueue = async (getState: () => SoundWaveState) => {
+  if (playedFeatureFlushInFlight) return;
+  if (playedFeatureUpsertQueue.size === 0) return;
+
+  const qdrant = getState().qdrant;
+  if (!qdrant) return;
+
+  playedFeatureFlushInFlight = true;
+  const batch = Array.from(playedFeatureUpsertQueue.values()).slice(
+    0,
+    PLAYED_FEATURE_UPSERT_BATCH_SIZE,
+  );
+  for (const item of batch) {
+    playedFeatureUpsertQueue.delete(item.track.urn);
+  }
+
+  try {
+    await qdrant.upsert(
+      batch.map((item) => ({
+        track: item.track,
+        features: item.features,
+        isLiked: item.isLiked,
+      })),
+    );
+
+    const now = Date.now();
+    for (const item of batch) {
+      rememberPlayedFeatureUpsert(item.track.urn, now);
+    }
+  } catch (error) {
+    for (const item of batch) {
+      if (!playedFeatureUpsertQueue.has(item.track.urn)) {
+        playedFeatureUpsertQueue.set(item.track.urn, item);
+      }
+    }
+    console.warn('[SoundWave] Played-feature upsert batch failed', error);
+  } finally {
+    playedFeatureFlushInFlight = false;
+    if (playedFeatureUpsertQueue.size > 0) {
+      schedulePlayedFeatureFlush(getState, 1400);
+    }
+  }
+};
+
+const enrichTrackWithMertInBackground = (
+  getState: () => SoundWaveState,
+  track: Track,
+  features: AudioFeatures,
+  isLiked: boolean,
+) => {
+  if (!track?.urn || !features) return;
+  if (mertEnrichInFlight.has(track.urn)) return;
+
+  const now = Date.now();
+  if (now < mertEndpointCooldownUntil) return;
+
+  const last = mertEnrichedUpsertTs.get(track.urn);
+  if (last && now - last < MERT_ENRICH_UPSERT_TTL_MS) return;
+
+  const task = (async () => {
+    const qdrant = getState().qdrant;
+    if (!qdrant) return;
+
+    const settings = useSettingsStore.getState();
+    if (!settings.qdrantEnabled) return;
+    if (!settings.llmRerankEnabled) return;
+
+    const endpoint = settings.llmEndpoint?.trim();
+    const configuredModel = settings.llmModel?.trim();
+    if (!endpoint || !configuredModel || !/mert/i.test(configuredModel)) return;
+    const model = configuredModel;
+
+    const cachePath = await getCacheFilePath(track.urn);
+    if (!cachePath) return;
+
+    const embedding = await requestMertEmbedding({
+      endpoint,
+      model,
+      filePath: cachePath,
+      trackUrn: track.urn,
+      timeoutMs: 15000,
+    });
+
+    if (!embedding?.length) {
+      mertEndpointFailureStreak += 1;
+      const backoff = Math.min(
+        MERT_ENDPOINT_MAX_COOLDOWN_MS,
+        MERT_ENDPOINT_BASE_COOLDOWN_MS * 2 ** Math.min(mertEndpointFailureStreak - 1, 4),
+      );
+      mertEndpointCooldownUntil = Date.now() + backoff;
+      return;
+    }
+
+    await qdrant.upsert([{ track, features, isLiked, mertEmbedding: embedding }]);
+    mertEndpointFailureStreak = 0;
+    rememberMertFeatureUpsert(track.urn, Date.now());
+    console.log(`[SoundWave] MERT enrichment indexed: ${track.title}`);
+  })()
+    .catch((error) => {
+      console.warn('[SoundWave] MERT enrichment skipped', error);
+    })
+    .finally(() => {
+      mertEnrichInFlight.delete(track.urn);
+    });
+
+  mertEnrichInFlight.set(track.urn, task);
+};
+
+const extractTracksFromPayload = (input: unknown): Track[] => {
+  const collection = Array.isArray(input)
+    ? input
+    : ((input as { collection?: unknown[] } | null)?.collection ?? []);
+  const result: Track[] = [];
+
+  for (const item of collection) {
+    const candidate =
+      (item as { track?: unknown; origin?: unknown } | null)?.track ||
+      (item as { track?: unknown; origin?: unknown } | null)?.origin ||
+      item;
+    if (isTrackLike(candidate) && isTrackPlayable(candidate)) {
+      result.push(candidate);
+    }
+  }
+
+  return result;
+};
+
+const buildFastLanguageProfile = (track: Track): TrackLanguageProfile => {
+  const base = analyzeTrackLanguage(track);
+  const text = `${track.title || ''} ${track.description || ''} ${track.user?.username || ''}`;
+  const detected = detectLanguage(text);
+
+  if (detected === base.primaryLanguage) {
+    return base;
+  }
+
+  if (
+    (base.primaryLanguage === 'en' && detected !== 'en') ||
+    (base.primaryLanguage === 'ru' && detected === 'uk')
+  ) {
+    return {
+      trackId: base.trackId,
+      languages: {
+        ...base.languages,
+        [detected]: (base.languages[detected] || 0) + 2,
+      },
+      primaryLanguage: detected,
+      confidence: Math.max(base.confidence, 0.6),
+    };
+  }
+
+  return base;
+};
+
+const fetchGlobalDiscoveryTracks = async (): Promise<Track[]> => {
+  if (
+    globalDiscoveryCache &&
+    Date.now() - globalDiscoveryCache.ts < GLOBAL_DISCOVERY_CACHE_TTL_MS
+  ) {
+    return globalDiscoveryCache.tracks;
+  }
+  if (globalDiscoveryInFlight) {
+    return globalDiscoveryInFlight;
+  }
+
+  globalDiscoveryInFlight = (async () => {
+    const endpoints = [
+      '/tracks?limit=200&linked_partitioning=true',
+      '/tracks?limit=200&linked_partitioning=true&offset=200',
+      '/tracks?limit=200&linked_partitioning=true&offset=400',
+      '/tracks?limit=200&linked_partitioning=true&offset=600',
+    ];
+
+    const responses = await Promise.all(
+      endpoints.map((endpoint) =>
+        api<unknown>(endpoint, { quietHttpErrors: true }).catch(() => ({ collection: [] })),
+      ),
+    );
+
+    const dedup = new Map<string, Track>();
+    for (const payload of responses) {
+      const tracks = extractTracksFromPayload(payload);
+      for (const track of tracks) {
+        if (!dedup.has(track.urn)) {
+          dedup.set(track.urn, track);
+        }
+      }
+    }
+
+    const tracks = Array.from(dedup.values()).slice(0, 700);
+    globalDiscoveryCache = { ts: Date.now(), tracks };
+    return tracks;
+  })().finally(() => {
+    globalDiscoveryInFlight = null;
+  });
+
+  return globalDiscoveryInFlight;
+};
+
+const fetchStrictGenreFallbackTracks = async (selectedGenres: string[]): Promise<Track[]> => {
+  const key = serializeSelectedGenres(selectedGenres);
+  if (!key) return [];
+
+  const cached = genrePoolCache.get(key);
+  if (cached && Date.now() - cached.ts < GENRE_POOL_CACHE_TTL_MS) {
+    return cached.tracks;
+  }
+  if (genrePoolInFlight.has(key)) {
+    return genrePoolInFlight.get(key) as Promise<Track[]>;
+  }
+
+  const task = (async () => {
+    const rawGenres = selectedGenres.map((genre) => genre.trim()).filter(Boolean);
+    const genreTerms = buildGenreMatchTerms(rawGenres);
+    const searchTerms = Array.from(new Set([...rawGenres, ...genreTerms])).slice(0, 10);
+
+    const byGenresParams = new URLSearchParams({
+      genres: rawGenres.join(','),
+      limit: '200',
+      linked_partitioning: 'true',
+    });
+
+    const byGenresOffsetParams = new URLSearchParams({
+      genres: rawGenres.join(','),
+      limit: '200',
+      linked_partitioning: 'true',
+      offset: '200',
+    });
+
+    const [genrePageOne, genrePageTwo, qTracks, globalDiscovery] = await Promise.all([
+      api<unknown>(`/tracks?${byGenresParams}`, { quietHttpErrors: true }).catch(() => ({
+        collection: [],
+      })),
+      api<unknown>(`/tracks?${byGenresOffsetParams}`, { quietHttpErrors: true }).catch(() => ({
+        collection: [],
+      })),
+      Promise.all(
+        searchTerms.map(async (genre) => {
+          try {
+            const params = new URLSearchParams({
+              q: genre,
+              limit: '80',
+              linked_partitioning: 'false',
+            });
+            const payload = await api<unknown>(`/tracks?${params}`, { quietHttpErrors: true });
+            return extractTracksFromPayload(payload);
+          } catch {
+            return [] as Track[];
+          }
+        }),
+      ),
+      fetchGlobalDiscoveryTracks().catch(() => [] as Track[]),
+    ]);
+
+    const dedup = new Map<string, Track>();
+    const candidates = [
+      ...extractTracksFromPayload(genrePageOne),
+      ...extractTracksFromPayload(genrePageTwo),
+      ...qTracks.flat(),
+      ...globalDiscovery,
+    ];
+
+    for (const track of candidates) {
+      if (!isTrackPlayable(track)) continue;
+      if (!trackMatchesSelectedGenres(track, genreTerms)) continue;
+      if (!dedup.has(track.urn)) {
+        dedup.set(track.urn, track);
+      }
+    }
+
+    const tracks = Array.from(dedup.values()).slice(0, 420);
+    genrePoolCache.set(key, { ts: Date.now(), tracks });
+    return tracks;
+  })().finally(() => {
+    genrePoolInFlight.delete(key);
+  });
+
+  genrePoolInFlight.set(key, task);
+  return task;
+};
+
+const applyLanguageFilterWithEnrichment = async <T extends Track>(
+  tracks: T[],
+  preferredLanguages: string[],
+): Promise<{ filtered: T[]; profiles: Map<number, TrackLanguageProfile> }> => {
+  const playableTracks = tracks.filter((track) => isTrackPlayable(track as Track));
+  const normalizedLanguages = normalizePreferredLanguageCodes(preferredLanguages);
+
+  const quickProfiles = new Map<number, TrackLanguageProfile>();
+  for (const track of playableTracks) {
+    quickProfiles.set(track.id, buildFastLanguageProfile(track as Track));
+  }
+
+  if (normalizedLanguages.length === 0) {
+    return { filtered: playableTracks, profiles: quickProfiles };
+  }
+
+  const preferredLanguageSet = new Set(normalizedLanguages);
+  let filtered = filterByLanguage(playableTracks, quickProfiles, normalizedLanguages);
+  const quickEnoughThreshold = Math.min(20, Math.max(10, Math.floor(playableTracks.length * 0.14)));
+  if (filtered.length >= quickEnoughThreshold) {
+    return { filtered, profiles: quickProfiles };
+  }
+
+  const candidatesForEnrichment = playableTracks
+    .filter((track) => {
+      const profile = quickProfiles.get(track.id);
+      if (!profile) return true;
+      if (preferredLanguageSet.has(profile.primaryLanguage)) return true;
+      if (profile.confidence < 0.55) return true;
+      if (profile.primaryLanguage === 'en') return true;
+      return false;
+    })
+    .slice(0, 140);
+
+  if (candidatesForEnrichment.length > 0) {
+    const deepProfiles = await mapConcurrent(candidatesForEnrichment, 6, async (track) =>
+      buildEnrichedLanguageProfile(track as Track),
+    );
+    for (const profile of deepProfiles) {
+      quickProfiles.set(profile.trackId, profile);
+    }
+    filtered = filterByLanguage(playableTracks, quickProfiles, normalizedLanguages);
+  }
+
+  if (filtered.length === 0) {
+    const scriptMatchesByTrackId = new Map<number, { track: T; language: string }>();
+
+    for (const preferredLanguage of normalizedLanguages) {
+      const scriptRegex = LANGUAGE_SCRIPT_REGEX[preferredLanguage];
+      if (!scriptRegex) continue;
+
+      for (const track of playableTracks) {
+        if (!scriptRegex.test(`${track.title || ''} ${track.description || ''}`)) continue;
+        if (!scriptMatchesByTrackId.has(track.id)) {
+          scriptMatchesByTrackId.set(track.id, { track, language: preferredLanguage });
+        }
+      }
+    }
+
+    if (scriptMatchesByTrackId.size > 0) {
+      filtered = Array.from(scriptMatchesByTrackId.values(), ({ track }) => track);
+      for (const { track, language } of scriptMatchesByTrackId.values()) {
+        const existing = quickProfiles.get(track.id);
+        quickProfiles.set(track.id, {
+          trackId: track.id,
+          languages: {
+            ...(existing?.languages || {}),
+            [language]: (existing?.languages?.[language] || 0) + 2,
+          },
+          primaryLanguage: language,
+          confidence: Math.max(existing?.confidence || 0, 0.65),
+        });
+      }
+    }
+  }
+
+  return { filtered, profiles: quickProfiles };
+};
+
+const getLanguagePoolCacheKey = (preferredLanguages: string[]): string =>
+  [...preferredLanguages].sort().join(',');
+
+const fetchLanguageSearchTracksForLanguage = async (
+  preferredLanguage: string,
+): Promise<Track[]> => {
+  const cached = languagePoolCache.get(preferredLanguage);
+  if (cached && Date.now() - cached.ts < LANGUAGE_POOL_CACHE_TTL_MS) {
+    return cached.tracks;
+  }
+  if (languagePoolInFlight.has(preferredLanguage)) {
+    return languagePoolInFlight.get(preferredLanguage) as Promise<Track[]>;
+  }
+
+  const task = (async () => {
+    const baseTerms = LANGUAGE_SEARCH_TERMS[preferredLanguage] || [];
+    const terms = Array.from(
+      new Set(
+        preferredLanguage === 'ru' || preferredLanguage === 'uk' || preferredLanguage === 'kk'
+          ? [...baseTerms, ...KAZAKHSTAN_SEARCH_TERMS]
+          : baseTerms,
+      ),
+    );
+
+    const trackResponses = await Promise.all(
+      terms.map(async (term) => {
+        try {
+          const params = new URLSearchParams({
+            q: term,
+            limit: '80',
+            linked_partitioning: 'false',
+          });
+          const res = await api<unknown>(`/tracks?${params}`, { quietHttpErrors: true });
+          return extractTracksFromPayload(res);
+        } catch {
+          return [] as Track[];
+        }
+      }),
+    );
+
+    const userResponses = await Promise.all(
+      terms.slice(0, 4).map(async (term) => {
+        try {
+          const userParams = new URLSearchParams({
+            q: term,
+            limit: '16',
+            linked_partitioning: 'false',
+          });
+          const usersRes = await api<{ collection?: Array<{ urn: string }> }>(
+            `/users?${userParams}`,
+            { quietHttpErrors: true },
+          );
+          const users = usersRes?.collection || [];
+
+          const tracksByUsers = await Promise.all(
+            users.slice(0, 10).map(async (user) => {
+              try {
+                const tracksParams = new URLSearchParams({
+                  limit: '36',
+                  linked_partitioning: 'false',
+                });
+                const tRes = await api<unknown>(
+                  `/users/${encodeURIComponent(user.urn)}/tracks?${tracksParams}`,
+                  { quietHttpErrors: true },
+                );
+                return extractTracksFromPayload(tRes);
+              } catch {
+                return [] as Track[];
+              }
+            }),
+          );
+
+          return tracksByUsers.flat();
+        } catch {
+          return [] as Track[];
+        }
+      }),
+    );
+
+    const globalDiscoveryTracks = await fetchGlobalDiscoveryTracks().catch(() => [] as Track[]);
+    const globalLanguageTracks = globalDiscoveryTracks.filter((track) =>
+      trackMatchesPreferredLanguages(track, [preferredLanguage]),
+    );
+
+    const dedup = new Map<string, Track>();
+    for (const list of [...trackResponses, ...userResponses, globalLanguageTracks]) {
+      for (const track of list) {
+        if (isTrackLike(track) && isTrackPlayable(track) && !dedup.has(track.urn)) {
+          dedup.set(track.urn, track);
+        }
+      }
+    }
+
+    const tracks = Array.from(dedup.values()).slice(0, 420);
+    languagePoolCache.set(preferredLanguage, { ts: Date.now(), tracks });
+    return tracks;
+  })().finally(() => {
+    languagePoolInFlight.delete(preferredLanguage);
+  });
+
+  languagePoolInFlight.set(preferredLanguage, task);
+  return task;
+};
+
+const fetchLanguageSearchTracks = async (preferredLanguages: string[]): Promise<Track[]> => {
+  const normalizedLanguages = normalizePreferredLanguageCodes(preferredLanguages);
+  if (normalizedLanguages.length === 0) {
+    return [];
+  }
+  if (normalizedLanguages.length === 1) {
+    return fetchLanguageSearchTracksForLanguage(normalizedLanguages[0]);
+  }
+
+  const cacheKey = getLanguagePoolCacheKey(normalizedLanguages);
+  const cached = languagePoolCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < LANGUAGE_POOL_CACHE_TTL_MS) {
+    return cached.tracks;
+  }
+  if (languagePoolInFlight.has(cacheKey)) {
+    return languagePoolInFlight.get(cacheKey) as Promise<Track[]>;
+  }
+
+  const task = (async () => {
+    const pools = await Promise.all(
+      normalizedLanguages.map((preferredLanguage) =>
+        fetchLanguageSearchTracksForLanguage(preferredLanguage),
+      ),
+    );
+
+    const dedup = new Map<string, Track>();
+    for (const track of pools.flat()) {
+      if (!dedup.has(track.urn)) {
+        dedup.set(track.urn, track);
+      }
+    }
+
+    const tracks = Array.from(dedup.values()).slice(0, 420);
+    languagePoolCache.set(cacheKey, { ts: Date.now(), tracks });
+    return tracks;
+  })().finally(() => {
+    languagePoolInFlight.delete(cacheKey);
+  });
+
+  languagePoolInFlight.set(cacheKey, task);
+  return task;
+};
+
+const rerankIfEnabled = async (
+  tracks: Track[],
+  preset: SoundWavePreset | null,
+): Promise<Track[]> => {
+  const settings = useSettingsStore.getState();
+  if (!settings.llmRerankEnabled) return tracks;
+  if ((settings.llmModel || '').toLowerCase().includes('mert')) return tracks;
+  return rerankTracksWithLLM({
+    endpoint: settings.llmEndpoint,
+    model: settings.llmModel,
+    tracks,
+    moodHint: preset?.name,
+    modeHint: preset?.mode,
+  });
+};
+
+interface HistoryEntry {
+  scTrackId: string;
+  playedAt?: string;
+}
+
+interface HistoryResponse {
+  collection: HistoryEntry[];
+}
+
+type RankedTrack = Track & {
+  _swScore: number;
+  _isLiked: boolean;
+  _isHeard: boolean;
+  _heardRank: number;
+};
+
+const normalizeTrackUrn = (value: string): string => {
+  if (!value) return '';
+  if (value.startsWith('soundcloud:tracks:')) return value;
+  const match = value.match(/(\d+)/);
+  return match ? `soundcloud:tracks:${match[1]}` : value;
+};
+
+const artistKey = (track: Track): string =>
+  (track.user?.urn || track.user?.username || 'unknown').toLowerCase().trim();
+
+const ratioByMode: Record<
+  'favorite' | 'discover' | 'popular',
+  { novel: number; heard: number; liked: number }
+> = {
+  discover: { novel: 0.92, heard: 0.08, liked: 0 },
+  favorite: { novel: 0.68, heard: 0.2, liked: 0.12 },
+  popular: { novel: 0.84, heard: 0.14, liked: 0.02 },
+};
+
+const modeKey = (preset: SoundWavePreset | null): 'favorite' | 'discover' | 'popular' => {
+  if (preset?.mode === 'discover') return 'discover';
+  if (preset?.mode === 'popular') return 'popular';
+  return 'favorite';
+};
+
+const selectBalancedTracks = (
+  input: RankedTrack[],
+  preset: SoundWavePreset | null,
+  limit: number,
+): RankedTrack[] => {
+  if (input.length === 0 || limit <= 0) return [];
+
+  const seen = new Set<string>();
+  const unique = input.filter((track) => {
+    if (!track.urn || seen.has(track.urn)) return false;
+    seen.add(track.urn);
+    return true;
+  });
+
+  unique.sort((a, b) => b._swScore - a._swScore);
+
+  const mode = modeKey(preset);
+  const ratio = ratioByMode[mode];
+  const targetLiked = Math.round(limit * ratio.liked);
+  const targetHeard = Math.round(limit * ratio.heard);
+  const targetNovel = Math.max(0, limit - targetLiked - targetHeard);
+
+  const novel = unique.filter((t) => !t._isLiked && !t._isHeard);
+  const heard = unique.filter((t) => !t._isLiked && t._isHeard);
+  const liked = unique.filter((t) => t._isLiked);
+
+  const picked: RankedTrack[] = [];
+  const pickedUrns = new Set<string>();
+  const artistCounts = new Map<string, number>();
+  let likedPicked = 0;
+  const maxPerArtist = mode === 'discover' ? 2 : 3;
+  const maxLiked = mode === 'favorite' ? Math.max(targetLiked, 2) : mode === 'popular' ? 1 : 0;
+
+  const takeFrom = (pool: RankedTrack[], amount: number) => {
+    if (amount <= 0) return;
+    let added = 0;
+    for (const track of pool) {
+      if (picked.length >= limit) return;
+      if (pickedUrns.has(track.urn)) continue;
+      if (track._isLiked && likedPicked >= maxLiked) continue;
+      const artist = artistKey(track);
+      const artistCount = artistCounts.get(artist) || 0;
+      if (artistCount >= maxPerArtist) continue;
+      picked.push(track);
+      pickedUrns.add(track.urn);
+      if (track._isLiked) likedPicked += 1;
+      artistCounts.set(artist, artistCount + 1);
+      added += 1;
+      if (added >= amount) {
+        return;
+      }
+    }
+  };
+
+  takeFrom(novel, targetNovel);
+  takeFrom(heard, targetHeard);
+  takeFrom(liked, targetLiked);
+
+  const fallbackPool = [...novel, ...heard, ...liked].sort((a, b) => b._swScore - a._swScore);
+  for (const track of fallbackPool) {
+    if (picked.length >= limit) break;
+    if (pickedUrns.has(track.urn)) continue;
+    if (track._isLiked && likedPicked >= maxLiked) continue;
+    const artist = artistKey(track);
+    const artistCount = artistCounts.get(artist) || 0;
+    if (artistCount >= maxPerArtist + 1) continue;
+    picked.push(track);
+    pickedUrns.add(track.urn);
+    if (track._isLiked) likedPicked += 1;
+    artistCounts.set(artist, artistCount + 1);
+  }
+
+  return picked;
+};
+
+const finalizeCandidates = async (
+  candidates: RankedTrack[],
+  preset: SoundWavePreset | null,
+  limit = 20,
+): Promise<Track[]> => {
+  if (candidates.length === 0) return [];
+
+  const preselected = selectBalancedTracks(candidates, preset, Math.max(limit + 12, 30));
+  const reranked = await rerankIfEnabled(preselected, preset);
+  const order = new Map(reranked.map((track, index) => [track.urn, index]));
+
+  const rescored = preselected.map((track) => {
+    const rank = order.has(track.urn) ? (order.get(track.urn) as number) : preselected.length;
+    return {
+      ...track,
+      _swScore: track._swScore + (preselected.length - rank) * 0.02,
+    } as RankedTrack;
+  });
+
+  return selectBalancedTracks(rescored, preset, limit).map((track) => track as Track);
+};
+
+const SOUNDWAVE_BATCH_LIMIT = 20;
+const SOUNDWAVE_HIDE_LIKED_POOL_TARGET = 40;
+const SOUNDWAVE_HIDE_LIKED_QDRANT_LIMIT = 180;
+const SOUNDWAVE_HIDE_LIKED_LEGACY_SEED_COUNT = 10;
+const SOUNDWAVE_HIDE_LIKED_RELATED_LIMIT = 40;
+
+const isHiddenLikedTrack = (track: Track, likedUrns: Set<string>): boolean => {
+  const rankedTrack = track as Partial<RankedTrack>;
+  return likedUrns.has(track.urn) || Boolean(track.user_favorite) || Boolean(rankedTrack._isLiked);
+};
+
+const dedupeTracksByUrn = <T extends Track>(tracks: T[]): T[] => {
+  const seen = new Set<string>();
+  return tracks.filter((track) => {
+    const urn = track?.urn;
+    if (!urn || seen.has(urn)) return false;
+    seen.add(urn);
+    return true;
+  });
+};
+
+const buildExcludedSoundWaveUrns = (playedUrns: Set<string>): Set<string> => {
+  const excludedUrns = new Set(playedUrns);
+  const { queue, queueSource } = usePlayerStore.getState();
+
+  if (queueSource !== 'soundwave') {
+    return excludedUrns;
+  }
+
+  for (const track of queue) {
+    if (track?.urn) {
+      excludedUrns.add(track.urn);
+    }
+  }
+
+  return excludedUrns;
+};
+
+const mergeTrackLanguageProfiles = (
+  base: Map<number, TrackLanguageProfile> | null,
+  extra: Map<number, TrackLanguageProfile>,
+): Map<number, TrackLanguageProfile> => {
+  const merged = new Map<number, TrackLanguageProfile>(base || []);
+  for (const [trackId, profile] of extra.entries()) {
+    merged.set(trackId, profile);
+  }
+  return merged;
+};
+
+const rankHideLikedTopUpTracks = (
+  tracks: Track[],
+  preset: SoundWavePreset | null,
+  heardUrnRank: Map<string, number>,
+): RankedTrack[] =>
+  tracks
+    .map((track) => {
+      const heardRank = heardUrnRank.has(track.urn) ? (heardUrnRank.get(track.urn) as number) : -1;
+      const isHeard = heardRank >= 0;
+      const recency = isHeard ? Math.max(0, 1 - heardRank / 220) : 0;
+      let score =
+        (preset?.mode === 'favorite' ? 4.9 : preset?.mode === 'popular' ? 5.3 : 5.8) +
+        Math.random() * 1.1;
+
+      if (isHeard) {
+        score -= preset?.mode === 'discover' ? 7.4 * recency + 0.9 : 3.2 * recency + 0.5;
+      } else {
+        score += preset?.mode === 'discover' ? 1.2 : 0.4;
+      }
+
+      return {
+        ...track,
+        _swScore: score,
+        _isLiked: false,
+        _isHeard: isHeard,
+        _heardRank: heardRank,
+      } as RankedTrack;
+    })
+    .sort((a, b) => b._swScore - a._swScore);
+
+const topUpCandidatesAfterHideLiked = async ({
+  sourceLabel,
+  candidates,
+  currentPreset,
+  settings,
+  seedTracks,
+  explorePool,
+  likedUrns,
+  excludedUrns,
+  dislikedUrns,
+  heardUrnRank,
+  enrichedProfiles,
+  targetSize = SOUNDWAVE_HIDE_LIKED_POOL_TARGET,
+}: {
+  sourceLabel: string;
+  candidates: RankedTrack[];
+  currentPreset: SoundWavePreset | null;
+  settings: ReturnType<typeof useSettingsStore.getState>;
+  seedTracks: Track[];
+  explorePool: Track[];
+  likedUrns: Set<string>;
+  excludedUrns: Set<string>;
+  dislikedUrns: string[];
+  heardUrnRank: Map<string, number>;
+  enrichedProfiles: Map<number, TrackLanguageProfile> | null;
+  targetSize?: number;
+}): Promise<{
+  candidates: RankedTrack[];
+  enrichedProfiles: Map<number, TrackLanguageProfile> | null;
+}> => {
+  if (!settings.soundwaveHideLiked || candidates.length >= targetSize) {
+    return { candidates, enrichedProfiles };
+  }
+
+  const existingUrns = new Set(candidates.map((track) => track.urn));
+  const modeFallbackPool =
+    currentPreset?.mode === 'favorite'
+      ? [...seedTracks, ...explorePool]
+      : [...explorePool, ...seedTracks];
+  const preferredLanguageCodes = getPreferredLanguageCodes(settings);
+  const languagePool =
+    settings.languageFilterEnabled && preferredLanguageCodes.length > 0
+      ? await fetchLanguageSearchTracks(preferredLanguageCodes)
+      : [];
+
+  let fallbackSource = dedupeTracksByUrn([...languagePool, ...modeFallbackPool]).filter((track) => {
+    if (!track?.urn || existingUrns.has(track.urn)) return false;
+    if (!isTrackPlayable(track)) return false;
+    if (excludedUrns.has(track.urn)) return false;
+    if (dislikedUrns.includes(track.urn)) return false;
+    if (isHiddenLikedTrack(track, likedUrns)) return false;
+    return true;
+  });
+
+  let nextProfiles = enrichedProfiles;
+  if (settings.languageFilterEnabled && preferredLanguageCodes.length > 0) {
+    const { filtered, profiles } = await applyLanguageFilterWithEnrichment(
+      fallbackSource.slice(0, 720),
+      preferredLanguageCodes,
+    );
+    fallbackSource = filtered;
+    nextProfiles = mergeTrackLanguageProfiles(nextProfiles, profiles);
+  }
+
+  const strictGenreSelection = settings.soundwaveGenreStrict
+    ? settings.soundwaveSelectedGenres.map((genre) => normalizeGenreToken(genre)).filter(Boolean)
+    : [];
+  const strictGenreTerms =
+    strictGenreSelection.length > 0 ? buildGenreMatchTerms(strictGenreSelection) : [];
+
+  if (strictGenreTerms.length > 0) {
+    fallbackSource = fallbackSource.filter((track) =>
+      trackMatchesSelectedGenres(track, strictGenreTerms),
+    );
+  }
+
+  if (fallbackSource.length === 0) {
+    return { candidates, enrichedProfiles: nextProfiles };
+  }
+
+  const merged = [...candidates];
+  for (const track of rankHideLikedTopUpTracks(fallbackSource, currentPreset, heardUrnRank)) {
+    if (existingUrns.has(track.urn)) continue;
+    merged.push(track);
+    existingUrns.add(track.urn);
+    if (merged.length >= targetSize) break;
+  }
+
+  if (merged.length > candidates.length) {
+    console.log(
+      `[SoundWave] ${sourceLabel} hide-liked top-up: ${merged.length}/${targetSize} candidates`,
+    );
+  }
+
+  return { candidates: merged, enrichedProfiles: nextProfiles };
+};
+
+interface SoundWaveState {
+  isActive: boolean;
+  isSuspended: boolean;
+  isInitialLoading: boolean;
+  startupProgress: number;
+  startupVisible: boolean;
+  startupStage: StartupStageKey;
+  currentPreset: SoundWavePreset | null;
+  seedTracks: Track[];
+  explorePool: Track[];
+  genreWeights: Record<string, number>;
+  artistWeights: Record<string, number>;
+  playedUrns: Set<string>;
+  heardUrns: Set<string>;
+  heardUrnRank: Map<string, number>;
+  sessionPositive: (number | number[])[];
+  sessionNegative: (number | number[])[];
+  qdrant: QdrantClient | null;
+  detectedLanguages: TrackLanguageProfile[];
+  languageProfilesMap: Map<number, TrackLanguageProfile>;
+  suspendedQueue: Track[] | null;
+  suspendedQueueIndex: number;
+  setStartupProgress: (progress: number, visible?: boolean, stage?: StartupStageKey) => void;
+
+  init: () => Promise<void>;
+  start: (preset: SoundWavePreset) => Promise<void>;
+  stop: () => void;
+  suspendForExternalPlayback: (queue: Track[], queueIndex: number) => void;
+  resumeSuspendedPlayback: () => boolean;
+  ingestPlayedTrackFeatures: (track: Track | null | undefined) => void;
+  markTrackPlayed: (track: Track | null | undefined) => void;
+  generateBatch: (options?: { startup?: boolean }) => Promise<Track[]>;
+  recordFeedback: (track: Track, type: 'positive' | 'negative') => void;
+  trainTrackMood: (track: Track, mood: MoodLabel) => void;
+}
+
+export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
+  isActive: false,
+  isSuspended: false,
+  isInitialLoading: false,
+  startupProgress: 0,
+  startupVisible: false,
+  startupStage: 'idle',
+  currentPreset: null,
+  seedTracks: [],
+  explorePool: [],
+  genreWeights: {},
+  artistWeights: {},
+  playedUrns: new Set(),
+  heardUrns: new Set(),
+  heardUrnRank: new Map(),
+  sessionPositive: [],
+  sessionNegative: [],
+  qdrant: null,
+  detectedLanguages: [],
+  languageProfilesMap: new Map(),
+  suspendedQueue: null,
+  suspendedQueueIndex: -1,
+
+  setStartupProgress: (progress, visible = true, stage) => {
+    if (startupProgressHideTimer) {
+      clearTimeout(startupProgressHideTimer);
+      startupProgressHideTimer = null;
+    }
+    set({
+      startupProgress: clampProgress(progress),
+      startupVisible: visible,
+      ...(stage ? { startupStage: stage } : {}),
+    });
+  },
+
+  init: async () => {
+    if (get().seedTracks.length > 0) return;
+    console.log('[SoundWave] Initialization started');
+    set({
+      isInitialLoading: true,
+      startupVisible: true,
+      startupStage: 'init',
+      startupProgress: Math.max(get().startupProgress, 10),
+    });
+    const updateStartup = (value: number, stage?: StartupStageKey) => {
+      const next = clampProgress(value);
+      if (next <= get().startupProgress) return;
+      set({
+        startupProgress: next,
+        startupVisible: true,
+        ...(stage ? { startupStage: stage } : {}),
+      });
+    };
+    try {
+      const settings = useSettingsStore.getState();
+      const auth = useAuthStore.getState();
+      const userScope =
+        auth.user?.urn || (auth.user?.id ? `id_${auth.user.id}` : auth.sessionId || 'local');
+      const scopedCollection = buildScopedCollection(
+        settings.qdrantCollection || 'sw_v2',
+        userScope,
+      );
+
+      if (IS_TAURI_RUNTIME && settings.qdrantEnabled && settings.qdrantUrl) {
+        updateStartup(16, 'qdrant');
+        console.log(
+          '[SoundWave] Qdrant enabled, connecting to:',
+          settings.qdrantUrl,
+          'collection:',
+          scopedCollection,
+        );
+        const client = new QdrantClient({
+          url: settings.qdrantUrl,
+          apiKey: resolveQdrantApiKey(settings.qdrantKey),
+          collection: scopedCollection,
+        });
+        try {
+          await client.initCollection();
+          console.log('[SoundWave] Qdrant collection initialized');
+          updateStartup(24, 'qdrant');
+          set({ qdrant: client });
+        } catch (qe) {
+          console.error('[SoundWave] Qdrant init failed, continuing without vector search', qe);
+        }
+      } else if (!IS_TAURI_RUNTIME && settings.qdrantEnabled) {
+        console.log('[SoundWave] Browser mode: Qdrant disabled to avoid CORS issues.');
+      }
+
+      updateStartup(30, 'likes');
+      console.log('[SoundWave] Fetching seed tracks (likes)...');
+      let tracks: Track[] = [];
+      try {
+        tracks = await fetchAllLikedTracks(200);
+        tracks = tracks.filter((track) => isTrackPlayable(track));
+        if (tracks.length > 0) {
+          initLikedUrns(tracks);
+        }
+        console.log(`[SoundWave] Found ${tracks.length} liked tracks`);
+        updateStartup(38, 'likes');
+      } catch (likesError) {
+        console.warn(
+          '[SoundWave] Failed to fetch likes, continuing with fallback sources',
+          likesError,
+        );
+      }
+
+      updateStartup(46, 'explore');
+      console.log(
+        '[SoundWave] Fetching exploration tracks (feed/following/playlists/popular/regional)...',
+      );
+      const regions = parseRegions(settings.regionalTrendRegions || '');
+      const historyPromise = Promise.all([
+        api<HistoryResponse>('/history?limit=200&offset=0', { quietHttpErrors: true }).catch(
+          () => ({ collection: [] }),
+        ),
+        api<HistoryResponse>('/history?limit=200&offset=200', { quietHttpErrors: true }).catch(
+          () => ({ collection: [] }),
+        ),
+      ]).then(([h1, h2]) => [...(h1.collection || []), ...(h2.collection || [])]);
+
+      const regionalPromise = settings.regionalTrendSeed
+        ? fetchCrossPlatformRegionalTracks(
+            async (query, limit = 6) => {
+              const encoded = encodeURIComponent(query);
+              const result = await api<{ collection: Track[] }>(
+                `/tracks?q=${encoded}&limit=${Math.max(1, Math.min(limit, 8))}`,
+                { quietHttpErrors: true },
+              );
+              return result.collection || [];
+            },
+            { regions, maxCandidates: 40, maxResolved: 16 },
+          ).catch(() => [] as Track[])
+        : Promise.resolve([] as Track[]);
+      const globalDiscoveryPromise = fetchGlobalDiscoveryTracks().catch(() => [] as Track[]);
+
+      const [
+        feedRes,
+        followingRes,
+        myPlaylistsRes,
+        likedPlaylistsRes,
+        popularRes,
+        globalDiscoveryTracks,
+        regionalTracks,
+        historyEntries,
+      ] = await Promise.all([
+        api<{ collection: FeedItem[] }>('/me/feed?limit=60', { quietHttpErrors: true }).catch(
+          () => ({ collection: [] }),
+        ),
+        api<{ collection: Track[] }>('/me/followings/tracks?limit=80', {
+          quietHttpErrors: true,
+        }).catch(() => ({
+          collection: [],
+        })),
+        api<{ collection: Playlist[] } | Playlist[]>('/me/playlists?limit=80', {
+          quietHttpErrors: true,
+        }).catch(() => []),
+        api<{ collection: Playlist[] } | Playlist[]>('/me/likes/playlists?limit=60', {
+          quietHttpErrors: true,
+        }).catch(() => []),
+        api<{ collection: Track[] }>('/tracks?limit=80&linked_partitioning=true', {
+          quietHttpErrors: true,
+        }).catch(() => ({
+          collection: [],
+        })),
+        globalDiscoveryPromise,
+        regionalPromise,
+        historyPromise,
+      ]);
+
+      const heardUrnRank = new Map<string, number>();
+      for (let i = 0; i < historyEntries.length; i++) {
+        const urn = normalizeTrackUrn(historyEntries[i].scTrackId || '');
+        if (!urn || heardUrnRank.has(urn)) continue;
+        heardUrnRank.set(urn, i);
+      }
+      const heardUrns = new Set(heardUrnRank.keys());
+
+      const feedTracks = (feedRes.collection || [])
+        .map((item) => item.origin)
+        .filter((origin) => origin?.urn && origin.user) as Track[];
+
+      const playlistTracks = [
+        ...extractPlaylistTracks(myPlaylistsRes),
+        ...extractPlaylistTracks(likedPlaylistsRes),
+      ];
+      console.log(`[SoundWave] Playlist-derived tracks: ${playlistTracks.length}`);
+
+      const likedUrns = new Set(tracks.map((t) => t.urn));
+      const exploreMap = new Map<string, Track>();
+      console.log(`[SoundWave] Global top/trending tracks: ${globalDiscoveryTracks.length}`);
+      console.log(`[SoundWave] Regional cross-platform mapped tracks: ${regionalTracks.length}`);
+
+      [
+        ...feedTracks,
+        ...(followingRes.collection || []),
+        ...playlistTracks,
+        ...(popularRes.collection || []),
+        ...globalDiscoveryTracks,
+        ...regionalTracks,
+      ].forEach((track) => {
+        if (!isTrackPlayable(track)) return;
+        if (likedUrns.has(track.urn)) return;
+        if (!exploreMap.has(track.urn)) {
+          exploreMap.set(track.urn, track);
+        }
+      });
+
+      const explorePool = [...exploreMap.values()].slice(0, 220);
+      console.log(`[SoundWave] Exploration pool size: ${explorePool.length}`);
+      updateStartup(64, 'explore');
+
+      if (tracks.length === 0) {
+        console.warn(
+          '[SoundWave] No liked tracks found, relying on playlists/feed/following for preferences.',
+        );
+      }
+
+      const preferenceMap = new Map<string, Track>();
+      [...tracks, ...playlistTracks].forEach((track) => {
+        if (!track?.urn || !track.user) return;
+        if (!preferenceMap.has(track.urn)) preferenceMap.set(track.urn, track);
+      });
+      const preferenceTracks = [...preferenceMap.values()];
+
+      const genreCounts: Record<string, number> = {};
+      const artistCounts: Record<string, number> = {};
+
+      preferenceTracks.forEach((t, idx) => {
+        // Newer likes weight more
+        const w = 0.3 + 0.7 * Math.exp(-idx / 80);
+        const g = t.genre?.toLowerCase().trim();
+        if (g) genreCounts[g] = (genreCounts[g] || 0) + w;
+
+        const artist = t.user?.username?.toLowerCase().trim();
+        if (artist) artistCounts[artist] = (artistCounts[artist] || 0) + w;
+      });
+
+      const maxG = Math.max(1, ...Object.values(genreCounts));
+      const genreWeights: Record<string, number> = {};
+      for (const [g, c] of Object.entries(genreCounts)) genreWeights[g] = c / maxG;
+
+      const maxA = Math.max(1, ...Object.values(artistCounts));
+      const artistWeights: Record<string, number> = {};
+      for (const [a, c] of Object.entries(artistCounts)) artistWeights[a] = c / maxA;
+
+      console.log('[SoundWave] Weights calculated, genres:', Object.keys(genreWeights).length);
+      updateStartup(74, 'weights');
+      set({
+        seedTracks: tracks,
+        explorePool,
+        genreWeights,
+        artistWeights,
+        heardUrns,
+        heardUrnRank,
+        isInitialLoading: false,
+      });
+
+      // Seed Qdrant in background if available
+      const q = get().qdrant;
+      if (q && (tracks.length > 0 || explorePool.length > 0)) {
+        console.log('[SoundWave] Seeding Qdrant in background...');
+        updateStartup(78, 'seed');
+        q.upsert([
+          ...tracks.map((t) => ({ track: t, features: null, isLiked: true })),
+          ...explorePool.map((t) => ({ track: t, features: null, isLiked: false })),
+        ]).catch((e) => console.error('[SoundWave] Qdrant seeding failed', e));
+      }
+    } catch (e) {
+      console.error('[SoundWave] Init failed critically', e);
+      set({
+        isInitialLoading: false,
+        startupProgress: 0,
+        startupVisible: false,
+        startupStage: 'idle',
+      });
+    }
+  },
+
+  start: async (preset: SoundWavePreset) => {
+    const { init, generateBatch, stop } = get();
+    console.log('[SoundWave] Starting preset:', preset.name);
+    stop(); // Clear previous session
+    set({ startupVisible: true, startupProgress: 8, startupStage: 'preset' });
+    await init();
+
+    set({
+      isActive: true,
+      isSuspended: false,
+      currentPreset: preset,
+      playedUrns: new Set(),
+      sessionPositive: [],
+      sessionNegative: [],
+      suspendedQueue: null,
+      suspendedQueueIndex: -1,
+      startupVisible: true,
+      startupProgress: Math.max(get().startupProgress, 82),
+      startupStage: 'batch',
+    });
+
+    try {
+      console.log('[SoundWave] Generating first batch...');
+      set({
+        startupVisible: true,
+        startupProgress: Math.max(get().startupProgress, 86),
+        startupStage: 'batch',
+      });
+      const batch = await generateBatch({ startup: true });
+      console.log(`[SoundWave] First batch generated: ${batch.length} tracks`);
+      if (batch.length > 0) {
+        usePlayerStore.getState().play(batch[0], batch, 'soundwave');
+        set({ startupVisible: true, startupProgress: 100, startupStage: 'done' });
+        if (startupProgressHideTimer) {
+          clearTimeout(startupProgressHideTimer);
+        }
+        startupProgressHideTimer = setTimeout(() => {
+          set({ startupVisible: false, startupProgress: 0, startupStage: 'idle' });
+          startupProgressHideTimer = null;
+        }, 520);
+      } else {
+        console.error('[SoundWave] Failed to generate initial batch');
+        set({ startupVisible: false, startupProgress: 0, startupStage: 'idle' });
+      }
+    } catch (e) {
+      console.error('[SoundWave] Start failed', e);
+      set({ isActive: false, startupVisible: false, startupProgress: 0, startupStage: 'idle' });
+    }
+  },
+
+  stop: () => {
+    console.log('[SoundWave] Stopped');
+    if (startupProgressHideTimer) {
+      clearTimeout(startupProgressHideTimer);
+      startupProgressHideTimer = null;
+    }
+    set({
+      isActive: false,
+      isSuspended: false,
+      startupVisible: false,
+      startupProgress: 0,
+      startupStage: 'idle',
+      currentPreset: null,
+      playedUrns: new Set(),
+      sessionPositive: [],
+      sessionNegative: [],
+      detectedLanguages: [],
+      languageProfilesMap: new Map(),
+      suspendedQueue: null,
+      suspendedQueueIndex: -1,
+    });
+  },
+
+  suspendForExternalPlayback: (queue, queueIndex) => {
+    if (!get().isActive || get().isSuspended) return;
+    if (!queue.length) return;
+
+    const safeIndex = Math.max(0, Math.min(queueIndex, queue.length - 1));
+    const snapshot = queue.map((track) => ({ ...track }));
+    set({
+      isSuspended: true,
+      startupStage: 'caching',
+      suspendedQueue: snapshot,
+      suspendedQueueIndex: safeIndex,
+    });
+    console.log('[SoundWave] External playback detected, entering caching pause mode');
+  },
+
+  resumeSuspendedPlayback: () => {
+    const { isActive, isSuspended, suspendedQueue, suspendedQueueIndex } = get();
+    if (!isActive || !isSuspended || !suspendedQueue || suspendedQueue.length === 0) {
+      return false;
+    }
+
+    const safeIndex = Math.max(0, Math.min(suspendedQueueIndex, suspendedQueue.length - 1));
+    const resumeTrack = suspendedQueue[safeIndex];
+    if (!resumeTrack) {
+      set({
+        isSuspended: false,
+        startupStage: 'idle',
+        suspendedQueue: null,
+        suspendedQueueIndex: -1,
+      });
+      return false;
+    }
+
+    usePlayerStore.getState().play(resumeTrack, suspendedQueue, 'soundwave');
+    set({
+      isSuspended: false,
+      startupStage: 'done',
+      suspendedQueue: null,
+      suspendedQueueIndex: -1,
+    });
+    console.log('[SoundWave] Resumed from caching pause mode');
+    return true;
+  },
+
+  ingestPlayedTrackFeatures: (track) => {
+    if (!track?.urn) return;
+
+    const { qdrant, seedTracks } = get();
+    if (!qdrant) return;
+
+    const now = Date.now();
+    const lastUpsertTs = playedFeatureUpsertTs.get(track.urn);
+    if (lastUpsertTs && now - lastUpsertTs < PLAYED_FEATURE_UPSERT_TTL_MS) {
+      const pendingRetry = playedFeatureRetryTimers.get(track.urn);
+      if (pendingRetry) {
+        clearTimeout(pendingRetry);
+        playedFeatureRetryTimers.delete(track.urn);
+      }
+      playedFeatureRetryAttempts.delete(track.urn);
+      return;
+    }
+
+    const features = audioAnalyser.getFeatures(track.urn);
+    if (!features) {
+      const attempts = playedFeatureRetryAttempts.get(track.urn) || 0;
+      if (attempts >= PLAYED_FEATURE_MAX_RETRY_ATTEMPTS) {
+        playedFeatureRetryAttempts.delete(track.urn);
+        return;
+      }
+
+      if (!playedFeatureRetryTimers.has(track.urn)) {
+        const retryTimer = setTimeout(() => {
+          playedFeatureRetryTimers.delete(track.urn);
+          playedFeatureRetryAttempts.set(track.urn, attempts + 1);
+          get().ingestPlayedTrackFeatures(track);
+        }, PLAYED_FEATURE_RETRY_DELAY_MS);
+        playedFeatureRetryTimers.set(track.urn, retryTimer);
+      }
+      return;
+    }
+
+    const pendingRetry = playedFeatureRetryTimers.get(track.urn);
+    if (pendingRetry) {
+      clearTimeout(pendingRetry);
+      playedFeatureRetryTimers.delete(track.urn);
+    }
+    playedFeatureRetryAttempts.delete(track.urn);
+
+    const hasMeaningfulSignal =
+      features.rmsEnergy > 0.02 ||
+      features.flux > 0.005 ||
+      (features.spectralContrast || 0) > 0.02 ||
+      (features.dynamicRange || 0) > 0.02;
+    if (!hasMeaningfulSignal) return;
+
+    const likedUrns = new Set(seedTracks.map((seedTrack) => seedTrack.urn));
+    const isLiked = likedUrns.has(track.urn) || Boolean(track.user_favorite);
+
+    playedFeatureUpsertQueue.set(track.urn, {
+      track,
+      features,
+      isLiked,
+    });
+
+    if (playedFeatureUpsertQueue.size >= PLAYED_FEATURE_UPSERT_BATCH_SIZE) {
+      enrichTrackWithMertInBackground(get, track, features, isLiked);
+      void flushPlayedFeatureQueue(get);
+      return;
+    }
+
+    enrichTrackWithMertInBackground(get, track, features, isLiked);
+    schedulePlayedFeatureFlush(get, 900);
+  },
+
+  markTrackPlayed: (track) => {
+    if (!track?.urn) return;
+    set((state) => {
+      if (state.playedUrns.has(track.urn)) {
+        return {};
+      }
+
+      const playedUrns = new Set(state.playedUrns);
+      playedUrns.add(track.urn);
+      return { playedUrns };
+    });
+  },
+
+  recordFeedback: (track: Track, type: 'positive' | 'negative') => {
+    const { qdrant, sessionPositive, sessionNegative } = get();
+    if (!qdrant) return;
+
+    const id = qdrant.urnToId(track.urn);
+    if (!id) return;
+
+    const features = audioAnalyser.getFeatures(track.urn);
+
+    console.log(`[SoundWave] Recording ${type} feedback for: ${track.title}`);
+
+    if (type === 'positive') {
+      if (!sessionPositive.includes(id)) {
+        set({ sessionPositive: [...sessionPositive, id].slice(-30) });
+      }
+    } else {
+      if (!sessionNegative.includes(id)) {
+        set({ sessionNegative: [...sessionNegative, id].slice(-20) });
+      }
+    }
+
+    // Index the track as a non-liked point for future recommendations
+    qdrant
+      .upsert([{ track, features, isLiked: false }])
+      .catch((e) => console.error('[SoundWave] Feedback indexing failed', e));
+  },
+
+  trainTrackMood: (track: Track, mood: MoodLabel) => {
+    const { qdrant, sessionPositive } = get();
+    if (!qdrant || !track?.urn) return;
+
+    const id = qdrant.urnToId(track.urn);
+    if (!id) return;
+
+    const current = audioAnalyser.getFeatures(track.urn);
+    const trainedFeatures = withMoodProfile(current, mood);
+
+    console.log(`[SoundWave] Mood training: ${track.title} -> ${mood}`);
+
+    if (!sessionPositive.includes(id)) {
+      set({ sessionPositive: [...sessionPositive, id].slice(-30) });
+    }
+
+    qdrant
+      .upsert([{ track, features: trainedFeatures, isLiked: false }])
+      .catch((e) => console.error('[SoundWave] Mood training indexing failed', e));
+  },
+
+  generateBatch: async (options) => {
+    const startup = Boolean(options?.startup);
+    if (inFlightGenerateBatch) {
+      return inFlightGenerateBatch;
+    }
+
+    const runGenerate = async (): Promise<Track[]> => {
+      const updateStartup = (value: number, stage?: StartupStageKey) => {
+        if (!startup) return;
+        const next = clampProgress(value);
+        if (next <= get().startupProgress) return;
+        set({
+          startupVisible: true,
+          startupProgress: next,
+          ...(stage ? { startupStage: stage } : {}),
+        });
+      };
+
+      const {
+        seedTracks,
+        explorePool,
+        genreWeights,
+        artistWeights,
+        currentPreset,
+        playedUrns,
+        heardUrns,
+        heardUrnRank,
+        qdrant,
+        sessionPositive,
+        sessionNegative,
+      } = get();
+      if (seedTracks.length === 0 && explorePool.length === 0) {
+        console.error('[SoundWave] Cannot generate batch: no seed tracks available');
+        return [];
+      }
+
+      const dislikedUrns = useDislikesStore.getState().dislikedTrackUrns;
+      const likedUrns = getLikedUrnsSnapshot();
+      const excludedUrns = buildExcludedSoundWaveUrns(playedUrns);
+      for (const track of seedTracks) {
+        likedUrns.add(track.urn);
+      }
+      const settings = useSettingsStore.getState();
+      const qdrantLimit = settings.soundwaveHideLiked ? SOUNDWAVE_HIDE_LIKED_QDRANT_LIMIT : 72;
+      const legacySeedCount = settings.soundwaveHideLiked
+        ? SOUNDWAVE_HIDE_LIKED_LEGACY_SEED_COUNT
+        : 5;
+      const legacyRelatedLimit = settings.soundwaveHideLiked
+        ? SOUNDWAVE_HIDE_LIKED_RELATED_LIMIT
+        : 20;
+
+      if (qdrant) {
+        try {
+          console.log('[SoundWave] Generating batch via Qdrant...');
+          updateStartup(88, 'batch');
+          // Use Qdrant Recommend API
+          let positive: (number | number[])[] = [...sessionPositive];
+          if (positive.length === 0) {
+            // Cold start: discover uses explore pool first, others use liked tracks
+            const discoverSelection =
+              currentPreset?.mode === 'discover'
+                ? [...explorePool].sort(() => Math.random() - 0.5).slice(0, 8)
+                : [];
+            const likedSelection = [...seedTracks].sort(() => Math.random() - 0.5).slice(0, 10);
+            const upsertBatch = [
+              ...discoverSelection.map((t) => ({ track: t, features: null, isLiked: false })),
+              ...likedSelection.map((t) => ({ track: t, features: null, isLiked: true })),
+            ];
+
+            if (upsertBatch.length > 0) {
+              await qdrant.upsert(upsertBatch);
+            }
+
+            positive = [...discoverSelection, ...likedSelection]
+              .map((t: Track) => qdrant.urnToId(t.urn))
+              .filter((id) => id > 0);
+            console.log('[SoundWave] Using cold-start seeds:', positive.length);
+          }
+
+          if (positive.length === 0) {
+            throw new Error('No valid positive seeds for Qdrant recommend');
+          }
+
+          const discoverNegatives =
+            currentPreset?.mode === 'discover' && sessionNegative.length === 0
+              ? [...seedTracks]
+                  .sort(() => Math.random() - 0.5)
+                  .slice(0, 8)
+                  .map((t) => qdrant.urnToId(t.urn))
+                  .filter((id) => id > 0)
+              : [];
+
+          const targetVector = qdrant.buildTargetVector({
+            mode: currentPreset?.mode,
+            tags: currentPreset?.tags,
+            regionHints: settings.regionalTrendSeed
+              ? parseRegions(settings.regionalTrendRegions || '')
+              : [],
+          });
+
+          const results = await qdrant.recommendHybrid({
+            positive,
+            negative: [...sessionNegative, ...discoverNegatives],
+            limit: qdrantLimit,
+            targetVector,
+          });
+          console.log(`[SoundWave] Qdrant returned ${results.length} recommendations`);
+          updateStartup(90, 'filter');
+
+          const rankedCandidates = results
+            .map((r: QdrantScoredPoint) => {
+              const payload = (r?.payload || {}) as Record<string, unknown>;
+              const urn = (payload.urn as string) || (r?.id ? `soundcloud:tracks:${r.id}` : '');
+              if (!urn) return null;
+              const fallbackId = typeof r?.id === 'number' ? r.id : qdrant.urnToId(urn);
+              const artist = (payload.artist as string) || 'Unknown Artist';
+
+              const isLiked = likedUrns.has(urn) || Boolean(payload.isLiked);
+              const heardRank = heardUrnRank.has(urn) ? (heardUrnRank.get(urn) as number) : -1;
+              const isHeard = heardRank >= 0;
+              const recency = isHeard ? Math.max(0, 1 - heardRank / 220) : 0;
+
+              if (currentPreset?.mode === 'discover' && isLiked) return null;
+              if (currentPreset?.mode === 'discover' && isHeard && heardRank < 120) return null;
+
+              let score = Number(r.score || 0) * 10;
+              if (isLiked) {
+                score +=
+                  currentPreset?.mode === 'favorite'
+                    ? 2.6
+                    : currentPreset?.mode === 'popular'
+                      ? -2.4
+                      : -4.8;
+              }
+              if (isHeard) {
+                score -=
+                  currentPreset?.mode === 'discover' ? 9 * recency + 1.6 : 4.2 * recency + 0.8;
+              } else {
+                score += currentPreset?.mode === 'discover' ? 2.8 : 1.2;
+              }
+
+              if (currentPreset?.mode === 'popular') {
+                score += computePopularSocialBoost(
+                  payload.playback_count as number,
+                  ((payload.likes_count as number) ||
+                    (payload.favoritings_count as number)) as number,
+                  payload.comment_count as number,
+                );
+              }
+
+              const trackText =
+                `${payload.genre || ''} ${payload.tag_list || ''} ${payload.title || ''}`.toLowerCase();
+              if (currentPreset?.tags?.length) {
+                let matches = 0;
+                for (const tag of currentPreset.tags) {
+                  if (trackText.includes(tag.toLowerCase())) matches++;
+                }
+                score += matches * 0.7;
+              }
+
+              return {
+                id: (payload.id as number) || fallbackId || 0,
+                urn,
+                title: (payload.title as string) || 'Unknown Track',
+                duration: (payload.duration as number) || 210000,
+                artwork_url: (payload.artwork_url as string | null) || null,
+                permalink_url: (payload.track_permalink_url as string) || undefined,
+                genre: (payload.genre as string) || '',
+                tag_list: (payload.tag_list as string) || '',
+                playback_count: (payload.playback_count as number) || 0,
+                comment_count: (payload.comment_count as number) || 0,
+                likes_count:
+                  (payload.likes_count as number) || (payload.favoritings_count as number) || 0,
+                favoritings_count:
+                  (payload.favoritings_count as number) || (payload.likes_count as number) || 0,
+                user: {
+                  id: 0,
+                  urn: (payload.user_urn as string) || 'soundcloud:users:0',
+                  username: artist,
+                  avatar_url: (payload.user_avatar_url as string) || '',
+                  permalink_url: (payload.user_permalink_url as string) || '',
+                },
+                isLiked,
+                _qdrant: true,
+                _swScore: score,
+                _isLiked: isLiked,
+                _isHeard: isHeard,
+                _heardRank: heardRank,
+              } as RankedTrack;
+            })
+            .filter((track): track is RankedTrack => {
+              if (!track) return false;
+              if (!track.urn) return false;
+              if (!isTrackPlayable(track)) return false;
+              if (excludedUrns.has(track.urn)) return false;
+              if (dislikedUrns.includes(track.urn)) return false;
+              return true;
+            });
+
+          console.log(`[SoundWave] Filtered batch: ${rankedCandidates.length} candidates`);
+          updateStartup(92, 'filter');
+
+          if (currentPreset?.mode === 'discover' && rankedCandidates.length < 14) {
+            const needed = 14 - rankedCandidates.length;
+            const exploreFill = [...explorePool]
+              .filter((t) => {
+                if (!t.urn) return false;
+                if (excludedUrns.has(t.urn)) return false;
+                if (dislikedUrns.includes(t.urn)) return false;
+                if (likedUrns.has(t.urn)) return false;
+                const heardRank = heardUrnRank.has(t.urn)
+                  ? (heardUrnRank.get(t.urn) as number)
+                  : -1;
+                return heardRank < 0 || heardRank > 120;
+              })
+              .sort(() => Math.random() - 0.5)
+              .slice(0, needed);
+
+            if (exploreFill.length > 0) {
+              console.log(`[SoundWave] Added ${exploreFill.length} explore fallback tracks`);
+              rankedCandidates.push(
+                ...exploreFill.map(
+                  (track) =>
+                    ({
+                      ...track,
+                      _swScore: 5 + Math.random() * 1.5,
+                      _isLiked: false,
+                      _isHeard: heardUrns.has(track.urn),
+                      _heardRank: heardUrnRank.has(track.urn)
+                        ? (heardUrnRank.get(track.urn) as number)
+                        : -1,
+                    }) as RankedTrack,
+                ),
+              );
+            }
+          }
+
+          if (rankedCandidates.length > 0) {
+            const hasStrictGenreFilter =
+              settings.soundwaveGenreStrict &&
+              settings.soundwaveSelectedGenres.some(
+                (genre) => normalizeGenreToken(genre).length > 0,
+              );
+            const preferredLanguageCodes = getPreferredLanguageCodes(settings);
+            const preferredLanguageLabel = formatPreferredLanguageCodes(preferredLanguageCodes);
+            let candidatesForFinalize = rankedCandidates;
+            let enrichedProfiles: Map<number, TrackLanguageProfile> | null = null;
+
+            if (settings.languageFilterEnabled && preferredLanguageCodes.length > 0) {
+              updateStartup(94, 'language');
+              const minLanguageCandidates = 12;
+              const { filtered: languageScoped, profiles } =
+                await applyLanguageFilterWithEnrichment(rankedCandidates, preferredLanguageCodes);
+              enrichedProfiles = profiles;
+              if (languageScoped.length >= minLanguageCandidates) {
+                console.log(
+                  `[SoundWave] Language filter '${preferredLanguageLabel}': ${languageScoped.length}/${rankedCandidates.length} candidates`,
+                );
+                candidatesForFinalize = languageScoped;
+                updateStartup(95, 'language');
+              } else {
+                const languageSearchTracks =
+                  await fetchLanguageSearchTracks(preferredLanguageCodes);
+                const modeFallbackPool =
+                  currentPreset?.mode === 'favorite'
+                    ? [...seedTracks, ...explorePool]
+                    : [...explorePool, ...seedTracks];
+                const fallbackSource = [...languageSearchTracks, ...modeFallbackPool]
+                  .filter(
+                    (t) =>
+                      isTrackPlayable(t) &&
+                      !excludedUrns.has(t.urn) &&
+                      !dislikedUrns.includes(t.urn),
+                  )
+                  .slice(0, 520);
+
+                const { filtered: languageFallback, profiles: fallbackProfiles } =
+                  await applyLanguageFilterWithEnrichment(fallbackSource, preferredLanguageCodes);
+
+                if (languageFallback.length > 0) {
+                  const fallbackRanked = languageFallback.map((track) => {
+                    const heardRank = heardUrnRank.has(track.urn)
+                      ? (heardUrnRank.get(track.urn) as number)
+                      : -1;
+                    return {
+                      ...track,
+                      _swScore:
+                        (currentPreset?.mode === 'favorite' ? 4.8 : 5.6) + Math.random() * 1.2,
+                      _isLiked: likedUrns.has(track.urn) || Boolean(track.user_favorite),
+                      _isHeard: heardRank >= 0,
+                      _heardRank: heardRank,
+                    } as RankedTrack;
+                  });
+
+                  if (languageScoped.length > 0) {
+                    const scopedUrns = new Set(languageScoped.map((track) => track.urn));
+                    const topup = fallbackRanked.filter((track) => !scopedUrns.has(track.urn));
+                    candidatesForFinalize = [...languageScoped, ...topup];
+                    console.warn(
+                      `[SoundWave] Language filter '${preferredLanguageLabel}' low (${languageScoped.length}), topped up with fallback to ${candidatesForFinalize.length}`,
+                    );
+                  } else {
+                    console.warn(
+                      `[SoundWave] Qdrant has 0 '${preferredLanguageLabel}' candidates, using language fallback pool: ${fallbackRanked.length}`,
+                    );
+                    candidatesForFinalize = fallbackRanked;
+                  }
+
+                  updateStartup(95, 'language');
+
+                  const mergedProfiles = new Map<number, TrackLanguageProfile>(profiles);
+                  for (const [trackId, profile] of fallbackProfiles.entries()) {
+                    mergedProfiles.set(trackId, profile);
+                  }
+                  enrichedProfiles = mergedProfiles;
+                } else {
+                  if (languageScoped.length > 0) {
+                    console.warn(
+                      `[SoundWave] Language filter '${preferredLanguageLabel}' limited to ${languageScoped.length} tracks (fallback empty)`,
+                    );
+                    candidatesForFinalize = languageScoped;
+                  } else {
+                    if (hasStrictGenreFilter) {
+                      console.warn(
+                        `[SoundWave] No '${preferredLanguageLabel}' tracks in language pool, continuing with strict genre fallback`,
+                      );
+                      candidatesForFinalize = [];
+                    } else {
+                      console.warn(
+                        `[SoundWave] No '${preferredLanguageLabel}' tracks found even in fallback pool`,
+                      );
+                      return [];
+                    }
+                  }
+                }
+              }
+            }
+
+            const strictGenreSelection = settings.soundwaveGenreStrict
+              ? settings.soundwaveSelectedGenres
+                  .map((genre) => normalizeGenreToken(genre))
+                  .filter(Boolean)
+              : [];
+            const strictGenreTerms =
+              strictGenreSelection.length > 0 ? buildGenreMatchTerms(strictGenreSelection) : [];
+
+            if (strictGenreTerms.length > 0) {
+              const minGenreCandidates = 12;
+              const genreScoped = candidatesForFinalize.filter((track) =>
+                trackMatchesSelectedGenres(track, strictGenreTerms),
+              );
+
+              if (genreScoped.length >= minGenreCandidates) {
+                console.log(
+                  `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}]: ${genreScoped.length}/${candidatesForFinalize.length} candidates`,
+                );
+                candidatesForFinalize = genreScoped;
+              } else {
+                updateStartup(95, 'filter');
+                const fallbackSource = (
+                  await fetchStrictGenreFallbackTracks(settings.soundwaveSelectedGenres)
+                ).filter(
+                  (track) =>
+                    isTrackPlayable(track) &&
+                    !excludedUrns.has(track.urn) &&
+                    !dislikedUrns.includes(track.urn),
+                );
+
+                let strictGenreFallbackTracks = fallbackSource;
+                let strictGenreFallbackProfiles: Map<number, TrackLanguageProfile> | null = null;
+
+                if (settings.languageFilterEnabled && preferredLanguageCodes.length > 0) {
+                  const { filtered: languageScopedFallback, profiles: languageFallbackProfiles } =
+                    await applyLanguageFilterWithEnrichment(fallbackSource, preferredLanguageCodes);
+                  strictGenreFallbackTracks = languageScopedFallback;
+                  strictGenreFallbackProfiles = languageFallbackProfiles;
+                }
+
+                strictGenreFallbackTracks = strictGenreFallbackTracks.filter((track) =>
+                  trackMatchesSelectedGenres(track, strictGenreTerms),
+                );
+
+                if (strictGenreFallbackTracks.length > 0) {
+                  const fallbackRanked = strictGenreFallbackTracks.map((track) => {
+                    const heardRank = heardUrnRank.has(track.urn)
+                      ? (heardUrnRank.get(track.urn) as number)
+                      : -1;
+                    return {
+                      ...track,
+                      _swScore: 4.4 + Math.random() * 1.2,
+                      _isLiked: likedUrns.has(track.urn) || Boolean(track.user_favorite),
+                      _isHeard: heardRank >= 0,
+                      _heardRank: heardRank,
+                    } as RankedTrack;
+                  });
+
+                  if (genreScoped.length > 0) {
+                    const genreScopedUrns = new Set(genreScoped.map((track) => track.urn));
+                    const topup = fallbackRanked.filter((track) => !genreScopedUrns.has(track.urn));
+                    candidatesForFinalize = [...genreScoped, ...topup];
+                    console.warn(
+                      `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}] low (${genreScoped.length}), topped up to ${candidatesForFinalize.length}`,
+                    );
+                  } else {
+                    candidatesForFinalize = fallbackRanked;
+                    console.warn(
+                      `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}] fallback pool: ${fallbackRanked.length}`,
+                    );
+                  }
+
+                  if (strictGenreFallbackProfiles) {
+                    const mergedProfiles = new Map<number, TrackLanguageProfile>(
+                      enrichedProfiles || [],
+                    );
+                    for (const [trackId, profile] of strictGenreFallbackProfiles.entries()) {
+                      mergedProfiles.set(trackId, profile);
+                    }
+                    enrichedProfiles = mergedProfiles;
+                  }
+                } else {
+                  if (genreScoped.length > 0) {
+                    console.warn(
+                      `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}] limited to ${genreScoped.length} tracks (fallback empty)`,
+                    );
+                    candidatesForFinalize = genreScoped;
+                  } else {
+                    console.warn(
+                      `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}] returned 0 candidates`,
+                    );
+                    return [];
+                  }
+                }
+              }
+            }
+
+            if (settings.soundwaveHideLiked) {
+              const before = candidatesForFinalize.length;
+              candidatesForFinalize = candidatesForFinalize.filter(
+                (track) => !isHiddenLikedTrack(track, likedUrns),
+              );
+              if (before !== candidatesForFinalize.length) {
+                console.log(
+                  `[SoundWave] Hide liked tracks: ${candidatesForFinalize.length}/${before} candidates kept`,
+                );
+              }
+
+              const topup = await topUpCandidatesAfterHideLiked({
+                sourceLabel: 'Qdrant',
+                candidates: candidatesForFinalize,
+                currentPreset,
+                settings,
+                seedTracks,
+                explorePool,
+                likedUrns,
+                excludedUrns,
+                dislikedUrns,
+                heardUrnRank,
+                enrichedProfiles,
+              });
+              candidatesForFinalize = topup.candidates;
+              enrichedProfiles = topup.enrichedProfiles;
+            }
+
+            const finalTracks = await finalizeCandidates(
+              candidatesForFinalize,
+              currentPreset,
+              SOUNDWAVE_BATCH_LIMIT,
+            );
+            updateStartup(98, 'done');
+
+            const languageProfiles = finalTracks.map(
+              (t) => enrichedProfiles?.get(t.id) || analyzeTrackLanguage(t),
+            );
+            const existingProfiles = get().detectedLanguages;
+            const existingIds = new Set(existingProfiles.map((p) => p.trackId));
+            const newProfiles = languageProfiles.filter((p) => !existingIds.has(p.trackId));
+            if (newProfiles.length > 0) {
+              const updatedProfiles = [...existingProfiles, ...newProfiles].slice(-200);
+              const profilesMap = new Map<number, TrackLanguageProfile>();
+              for (const p of updatedProfiles) {
+                profilesMap.set(p.trackId, p);
+              }
+              set({ detectedLanguages: updatedProfiles, languageProfilesMap: profilesMap });
+            }
+
+            return finalTracks;
+          }
+
+          console.warn(
+            '[SoundWave] Qdrant produced no usable tracks, falling back to legacy algorithm',
+          );
+        } catch (e) {
+          console.error('[SoundWave] Qdrant recommend failed, falling back to legacy algorithm', e);
+        }
+      }
+
+      console.log('[SoundWave] Generating batch via Legacy Algorithm...');
+      updateStartup(90, 'filter');
+
+      // Fallback to legacy algorithm...
+
+      // Pick random seeds from user's likes
+      const seedBase = seedTracks.length > 0 ? seedTracks : explorePool;
+      if (seedBase.length === 0) {
+        return [];
+      }
+      const seeds = [...seedBase].sort(() => Math.random() - 0.5).slice(0, legacySeedCount);
+      const candidates: RankedTrack[] = [];
+      const seenUrns = new Set<string>();
+
+      // Step 1: Fetch related tracks for each seed
+      const results = await Promise.all(
+        seeds.map((s) =>
+          api<{ collection: Track[] }>(
+            `/tracks/${encodeURIComponent(s.urn)}/related?limit=${legacyRelatedLimit}`,
+            {
+              quietHttpErrors: true,
+            },
+          )
+            .then((res) => res.collection || [])
+            .catch(() => []),
+        ),
+      );
+      updateStartup(93, 'filter');
+
+      // Step 2: Scoring
+      const flat = results.flat();
+
+      for (const track of flat) {
+        if (
+          !track.urn ||
+          seenUrns.has(track.urn) ||
+          excludedUrns.has(track.urn) ||
+          dislikedUrns.includes(track.urn)
+        )
+          continue;
+        seenUrns.add(track.urn);
+
+        let score = 0;
+        const genre = track.genre?.toLowerCase().trim();
+        const artist = track.user?.username?.toLowerCase().trim();
+        const isLiked = likedUrns.has(track.urn) || Boolean(track.user_favorite);
+        const heardRank = heardUrnRank.has(track.urn)
+          ? (heardUrnRank.get(track.urn) as number)
+          : -1;
+        const isHeard = heardRank >= 0;
+        const recency = isHeard ? Math.max(0, 1 - heardRank / 240) : 0;
+
+        if (currentPreset?.mode === 'discover' && isLiked) {
+          continue;
+        }
+
+        if (currentPreset?.mode === 'discover' && isHeard && heardRank < 140) {
+          continue;
+        }
+
+        // Affinity scores
+        if (currentPreset?.mode === 'discover') {
+          const gw = genre && genreWeights[genre] ? genreWeights[genre] : 0;
+          const aw = artist && artistWeights[artist] ? artistWeights[artist] : 0;
+          score += (1 - gw) * 4;
+          score += aw > 0 ? -aw * 6 : 1.5;
+        } else {
+          if (genre && genreWeights[genre]) score += genreWeights[genre] * 5;
+          if (artist && artistWeights[artist]) score += artistWeights[artist] * 3;
+          if (currentPreset?.mode === 'popular' && isLiked) score -= 12;
+          else if (currentPreset?.mode !== 'favorite' && isLiked) score -= 8;
+        }
+
+        if (isHeard) {
+          score -= currentPreset?.mode === 'discover' ? 14 * recency + 4 : 5 * recency + 1.2;
+        } else {
+          score += currentPreset?.mode === 'discover' ? 3.2 : 1.1;
+        }
+
+        // Preset matching
+        if (currentPreset?.tags) {
+          const trackText =
+            `${track.genre} ${track.tag_list} ${track.title} ${track.description}`.toLowerCase();
+          let matchCount = 0;
+          for (const tag of currentPreset.tags) {
+            if (trackText.includes(tag.toLowerCase())) matchCount++;
+          }
+          score += matchCount * 4;
+        }
+
+        // Mode adjustments
+        const plays = track.playback_count || 0;
+        if (currentPreset?.mode === 'popular') {
+          score += Math.min(10, plays / 100000);
+          score += computePopularSocialBoost(
+            track.playback_count,
+            track.likes_count,
+            track.comment_count,
+          );
+          const createdAtTs = track.created_at ? Date.parse(track.created_at) : Number.NaN;
+          if (Number.isFinite(createdAtTs)) {
+            const ageDays = (Date.now() - createdAtTs) / (1000 * 60 * 60 * 24);
+            if (ageDays <= 45) score += 4.5;
+            else if (ageDays <= 90) score += 2.2;
+          }
+        } else if (currentPreset?.mode === 'discover') {
+          if (plays < 5000) score += 10;
+          else if (plays < 50000) score += 5;
+          else score -= 5;
+        }
+
+        // Penalty for "Type Beats"
+        if (/\b(free|type\s*beat|instrumental|prod|минус|бит)\b/i.test(track.title || '')) {
+          score -= 15;
+        }
+
+        candidates.push({
+          ...track,
+          _swScore: score + Math.random() * 0.08,
+          _isLiked: isLiked,
+          _isHeard: isHeard,
+          _heardRank: heardRank,
+        });
+      }
+
+      const hasStrictGenreFilter =
+        settings.soundwaveGenreStrict &&
+        settings.soundwaveSelectedGenres.some((genre) => normalizeGenreToken(genre).length > 0);
+      const preferredLanguageCodes = getPreferredLanguageCodes(settings);
+      const preferredLanguageLabel = formatPreferredLanguageCodes(preferredLanguageCodes);
+      let candidatesForFinalize = candidates;
+      let enrichedProfiles: Map<number, TrackLanguageProfile> | null = null;
+
+      if (settings.languageFilterEnabled && preferredLanguageCodes.length > 0) {
+        updateStartup(94, 'language');
+        const minLanguageCandidates = 12;
+        const { filtered: languageScoped, profiles } = await applyLanguageFilterWithEnrichment(
+          candidates,
+          preferredLanguageCodes,
+        );
+        enrichedProfiles = profiles;
+        if (languageScoped.length >= minLanguageCandidates) {
+          console.log(
+            `[SoundWave] Language filter '${preferredLanguageLabel}': ${languageScoped.length}/${candidates.length} candidates`,
+          );
+          candidatesForFinalize = languageScoped;
+          updateStartup(95, 'language');
+        } else {
+          const languageSearchTracks = await fetchLanguageSearchTracks(preferredLanguageCodes);
+          const modeFallbackPool =
+            currentPreset?.mode === 'favorite'
+              ? [...seedTracks, ...explorePool]
+              : [...explorePool, ...seedTracks];
+          const fallbackSource = [...languageSearchTracks, ...modeFallbackPool]
+            .filter(
+              (t) =>
+                isTrackPlayable(t) && !excludedUrns.has(t.urn) && !dislikedUrns.includes(t.urn),
+            )
+            .slice(0, 520);
+
+          const { filtered: languageFallback, profiles: fallbackProfiles } =
+            await applyLanguageFilterWithEnrichment(fallbackSource, preferredLanguageCodes);
+
+          if (languageFallback.length > 0) {
+            const fallbackRanked = languageFallback.map((track) => {
+              const heardRank = heardUrnRank.has(track.urn)
+                ? (heardUrnRank.get(track.urn) as number)
+                : -1;
+              return {
+                ...track,
+                _swScore: (currentPreset?.mode === 'favorite' ? 4.4 : 5.3) + Math.random() * 1.1,
+                _isLiked: likedUrns.has(track.urn) || Boolean(track.user_favorite),
+                _isHeard: heardRank >= 0,
+                _heardRank: heardRank,
+              } as RankedTrack;
+            });
+
+            if (languageScoped.length > 0) {
+              const scopedUrns = new Set(languageScoped.map((track) => track.urn));
+              const topup = fallbackRanked.filter((track) => !scopedUrns.has(track.urn));
+              candidatesForFinalize = [...languageScoped, ...topup];
+              console.warn(
+                `[SoundWave] Language filter '${preferredLanguageLabel}' low (${languageScoped.length}), topped up with fallback to ${candidatesForFinalize.length}`,
+              );
+            } else {
+              console.warn(
+                `[SoundWave] Legacy has 0 '${preferredLanguageLabel}' candidates, using language fallback pool: ${fallbackRanked.length}`,
+              );
+              candidatesForFinalize = fallbackRanked;
+            }
+
+            updateStartup(95, 'language');
+
+            const mergedProfiles = new Map<number, TrackLanguageProfile>(profiles);
+            for (const [trackId, profile] of fallbackProfiles.entries()) {
+              mergedProfiles.set(trackId, profile);
+            }
+            enrichedProfiles = mergedProfiles;
+          } else {
+            if (languageScoped.length > 0) {
+              console.warn(
+                `[SoundWave] Language filter '${preferredLanguageLabel}' limited to ${languageScoped.length} tracks (fallback empty)`,
+              );
+              candidatesForFinalize = languageScoped;
+            } else {
+              if (hasStrictGenreFilter) {
+                console.warn(
+                  `[SoundWave] No '${preferredLanguageLabel}' tracks in language pool, continuing with strict genre fallback`,
+                );
+                candidatesForFinalize = [];
+              } else {
+                console.warn(
+                  `[SoundWave] No '${preferredLanguageLabel}' tracks found even in fallback pool`,
+                );
+                return [];
+              }
+            }
+          }
+        }
+      }
+
+      const strictGenreSelection = settings.soundwaveGenreStrict
+        ? settings.soundwaveSelectedGenres
+            .map((genre) => normalizeGenreToken(genre))
+            .filter(Boolean)
+        : [];
+      const strictGenreTerms =
+        strictGenreSelection.length > 0 ? buildGenreMatchTerms(strictGenreSelection) : [];
+
+      if (strictGenreTerms.length > 0) {
+        const minGenreCandidates = 12;
+        const genreScoped = candidatesForFinalize.filter((track) =>
+          trackMatchesSelectedGenres(track, strictGenreTerms),
+        );
+
+        if (genreScoped.length >= minGenreCandidates) {
+          console.log(
+            `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}]: ${genreScoped.length}/${candidatesForFinalize.length} candidates`,
+          );
+          candidatesForFinalize = genreScoped;
+        } else {
+          updateStartup(95, 'filter');
+          const fallbackSource = (
+            await fetchStrictGenreFallbackTracks(settings.soundwaveSelectedGenres)
+          ).filter(
+            (track) =>
+              isTrackPlayable(track) &&
+              !excludedUrns.has(track.urn) &&
+              !dislikedUrns.includes(track.urn),
+          );
+
+          let strictGenreFallbackTracks = fallbackSource;
+          let strictGenreFallbackProfiles: Map<number, TrackLanguageProfile> | null = null;
+
+          if (settings.languageFilterEnabled && preferredLanguageCodes.length > 0) {
+            const { filtered: languageScopedFallback, profiles: languageFallbackProfiles } =
+              await applyLanguageFilterWithEnrichment(fallbackSource, preferredLanguageCodes);
+            strictGenreFallbackTracks = languageScopedFallback;
+            strictGenreFallbackProfiles = languageFallbackProfiles;
+          }
+
+          strictGenreFallbackTracks = strictGenreFallbackTracks.filter((track) =>
+            trackMatchesSelectedGenres(track, strictGenreTerms),
+          );
+
+          if (strictGenreFallbackTracks.length > 0) {
+            const fallbackRanked = strictGenreFallbackTracks.map((track) => {
+              const heardRank = heardUrnRank.has(track.urn)
+                ? (heardUrnRank.get(track.urn) as number)
+                : -1;
+              return {
+                ...track,
+                _swScore: (currentPreset?.mode === 'favorite' ? 4.5 : 5.4) + Math.random() * 1.1,
+                _isLiked: likedUrns.has(track.urn) || Boolean(track.user_favorite),
+                _isHeard: heardRank >= 0,
+                _heardRank: heardRank,
+              } as RankedTrack;
+            });
+
+            if (genreScoped.length > 0) {
+              const genreScopedUrns = new Set(genreScoped.map((track) => track.urn));
+              const topup = fallbackRanked.filter((track) => !genreScopedUrns.has(track.urn));
+              candidatesForFinalize = [...genreScoped, ...topup];
+              console.warn(
+                `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}] low (${genreScoped.length}), topped up to ${candidatesForFinalize.length}`,
+              );
+            } else {
+              candidatesForFinalize = fallbackRanked;
+              console.warn(
+                `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}] fallback pool: ${fallbackRanked.length}`,
+              );
+            }
+
+            if (strictGenreFallbackProfiles) {
+              const mergedProfiles = new Map<number, TrackLanguageProfile>(enrichedProfiles || []);
+              for (const [trackId, profile] of strictGenreFallbackProfiles.entries()) {
+                mergedProfiles.set(trackId, profile);
+              }
+              enrichedProfiles = mergedProfiles;
+            }
+          } else {
+            if (genreScoped.length > 0) {
+              console.warn(
+                `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}] limited to ${genreScoped.length} tracks (fallback empty)`,
+              );
+              candidatesForFinalize = genreScoped;
+            } else {
+              console.warn(
+                `[SoundWave] Genre strict filter [${strictGenreSelection.join(', ')}] returned 0 candidates`,
+              );
+              return [];
+            }
+          }
+        }
+      }
+
+      if (settings.soundwaveHideLiked) {
+        const before = candidatesForFinalize.length;
+        candidatesForFinalize = candidatesForFinalize.filter(
+          (track) => !isHiddenLikedTrack(track, likedUrns),
+        );
+        if (before !== candidatesForFinalize.length) {
+          console.log(
+            `[SoundWave] Hide liked tracks: ${candidatesForFinalize.length}/${before} candidates kept`,
+          );
+        }
+
+        const topup = await topUpCandidatesAfterHideLiked({
+          sourceLabel: 'Legacy',
+          candidates: candidatesForFinalize,
+          currentPreset,
+          settings,
+          seedTracks,
+          explorePool,
+          likedUrns,
+          excludedUrns,
+          dislikedUrns,
+          heardUrnRank,
+          enrichedProfiles,
+        });
+        candidatesForFinalize = topup.candidates;
+        enrichedProfiles = topup.enrichedProfiles;
+      }
+
+      const selected = await finalizeCandidates(
+        candidatesForFinalize,
+        currentPreset,
+        SOUNDWAVE_BATCH_LIMIT,
+      );
+      updateStartup(98, 'done');
+
+      const languageProfiles = selected.map(
+        (t) => enrichedProfiles?.get(t.id) || analyzeTrackLanguage(t),
+      );
+      const existingProfiles = get().detectedLanguages;
+      const existingIds = new Set(existingProfiles.map((p) => p.trackId));
+      const newProfiles = languageProfiles.filter((p) => !existingIds.has(p.trackId));
+      if (newProfiles.length > 0) {
+        const updatedProfiles = [...existingProfiles, ...newProfiles].slice(-200);
+        const profilesMap = new Map<number, TrackLanguageProfile>();
+        for (const p of updatedProfiles) {
+          profilesMap.set(p.trackId, p);
+        }
+        set({ detectedLanguages: updatedProfiles, languageProfilesMap: profilesMap });
+      }
+
+      return selected;
+    };
+
+    inFlightGenerateBatch = runGenerate()
+      .catch((error) => {
+        console.error('[SoundWave] generateBatch failed', error);
+        return [];
+      })
+      .finally(() => {
+        inFlightGenerateBatch = null;
+      });
+
+    return inFlightGenerateBatch;
+  },
+}));

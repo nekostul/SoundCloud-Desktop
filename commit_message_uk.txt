@@ -1,0 +1,5 @@
+feat(i18n): Added Ukrainian localization
+
+- Added `uk.json`.
+- Integrated `uk` option into the Settings menu language selector.
+- Registered translations with `react-i18next` instance.
