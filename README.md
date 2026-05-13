@@ -149,11 +149,11 @@ https://github.com/nekostul/SoundCloud-Desktop/releases/latest
 
 # Скриншоты
 
-![fullscreen](https://s10.iimage.su/s/13/gqFLhv5xuaCKGfT0qRznBA8yjwv0C49CfJBFrrDhP.png)
+![fullscreen](https://s10.iimage.su/s/13/g9818J2xef9z7bB4g8ziX86HN2jZeVmkNiKe92azh.png)
 
-![lyrics](https://s10.iimage.su/s/13/g7b7SgYxckGoQDuwzgNHUwD3lg7FnTrPHIvhSJYzj.png)
+![lyrics](https://s10.iimage.su/s/13/gSCkiZtxCh7JXDV9djGaOgHHBz4R5VH9wKYZauWEf.png)
 
-![player](https://s10.iimage.su/s/13/gKqyOvcxGOWmusqFXqs4hBdkz65Ga5FEK9q9jqJHl.png)
+![player](https://s10.iimage.su/s/13/gfG4bmxxbYkzzu8slFSIPlIXCciplg6JcQreUyOF4.png)
 
 ---
 
