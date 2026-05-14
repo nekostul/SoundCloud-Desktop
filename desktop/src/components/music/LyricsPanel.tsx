@@ -1660,28 +1660,6 @@ const ReleaseSyncedLyrics = React.memo(({ lines }: { lines: LyricLine[] }) => (
   <ReleaseSyncedLyricsWithProgress lines={lines} />
 ));
 
-const SyncedLyricsWithWarmup = React.memo(
-  ({
-    lines,
-    motionHints,
-    reactiveEnabled = true,
-  }: {
-    lines: LyricLine[];
-    motionHints: ReturnType<typeof getLyricMotionHintsForTrack>;
-    reactiveEnabled?: boolean;
-  }) => {
-    const displayLines = useMemo(() => buildDisplayLinesWithPausePlaceholders(lines), [lines]);
-
-    return (
-      <SyncedLyricsWithProgress
-        lines={displayLines}
-        motionHints={motionHints}
-        reactiveEnabled={reactiveEnabled}
-      />
-    );
-  },
-);
-
 const SyncedLyricsWithProgress = React.memo(
   ({
     lines,
@@ -2988,9 +2966,7 @@ const FullscreenLyricsColumn = React.memo(
     lyrics,
     isLoading,
     warmupEnabled,
-    motionHints,
     pseudoSynced,
-    hintLabel,
     suppressFallback,
     onOpenSearch,
   }: {
