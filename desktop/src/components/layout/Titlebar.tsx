@@ -41,7 +41,7 @@ export const Titlebar = React.memo(() => {
   const close = () => getCurrentWindow().close();
 
   return (
-    <div className="h-10 flex items-center px-4 select-none shrink-0 border-b border-white/[0.04]">
+    <div className="h-10 flex items-center px-4 select-none shrink-0 border-b border-white/[0]">
       <div className="flex items-center gap-1.5">
         <div className="flex items-center gap-1.5 min-w-0" data-tauri-drag-region>
           <Disc3 size={14} className="text-accent" strokeWidth={2} />

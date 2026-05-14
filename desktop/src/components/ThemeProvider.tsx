@@ -256,7 +256,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     root.dataset.themeGradientAnimated = animateGradient ? 'true' : 'false';
     root.dataset.themeGradientAnimation = animateGradient ? themeGradientAnimation : 'none';
     root.style.backgroundColor = bgPrimary;
-    document.body.style.backgroundColor = bgPrimary;
+document.body.style.backgroundColor = '#000000';
   }, [
     bgPrimary,
     effectiveAccentColor,

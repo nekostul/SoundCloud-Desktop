@@ -53,7 +53,7 @@ export const Sidebar = React.memo(() => {
 
   return (
     <aside
-      className="shrink-0 flex z-20 flex-col h-screen border-r border-white/[0.04] transition-[width] duration-200 ease-[var(--ease-apple)]"
+      className="shrink-0 flex z-20 flex-col h-screen border-r border-white/[0] transition-[width] duration-200 ease-[var(--ease-apple)]"
       style={{ width: collapsed ? 56 : 200 }}
     >
       <nav className="flex flex-col gap-0.5 px-2 pt-2">

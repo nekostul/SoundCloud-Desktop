@@ -352,41 +352,55 @@ export const AppShell = React.memo(() => {
 
   const isMobile = useIsMobile();
 
-  return (
-    <div className="flex flex-col h-screen relative overflow-hidden">
-      <CustomBackground />
-      <AmbientGlow />
-      <Titlebar />
-      <div
-        className={`flex flex-1 min-h-0 relative z-0 ${isMobile ? 'mb-[136px]' : 'mb-[96px]'}`}
-        style={{
-          isolation: 'isolate',
-          opacity: shellSuppressed ? 0 : 1,
-          visibility: shellSuppressed ? 'hidden' : 'visible',
-          pointerEvents: shellSuppressed ? 'none' : 'auto',
-          transition: shellSuppressed ? 'opacity 180ms ease' : 'opacity 220ms ease',
-        }}
-      >
-        {!isMobile && <Sidebar />}
-<main className="flex-1 mx-3 mt-3 mb-[14px] rounded-[15px] overflow-hidden border border-white/[0.04]">
-  <div className="h-full overflow-y-auto overflow-x-hidden">
-    <StableOutlet />
+  return (<div
+  className="flex flex-col h-screen relative overflow-hidden"
+  style={{ background: '#000000' }}
+>
+  <Titlebar />
+
+  <div
+    className={`flex flex-1 min-h-0 relative z-0 ${isMobile ? 'mb-[136px]' : 'mb-[96px]'}`}
+    style={{
+      isolation: 'isolate',
+      opacity: shellSuppressed ? 0 : 1,
+      visibility: shellSuppressed ? 'hidden' : 'visible',
+      pointerEvents: shellSuppressed ? 'none' : 'auto',
+      transition: shellSuppressed ? 'opacity 180ms ease' : 'opacity 220ms ease',
+    }}
+  >
+    {!isMobile && <Sidebar />}
+
+    <main
+      className="flex-2 mx-3 mt-[6px] mb-[16px] rounded-[17px] overflow-hidden border border-white/[0.15] relative"
+      style={{
+        background: 'var(--bg-primary)',
+      }}
+    >
+      <div className="absolute inset-0 z-0">
+        <CustomBackground />
+        <AmbientGlow />
+      </div>
+
+      <div className="h-full overflow-y-auto overflow-x-hidden relative z-10">
+        <StableOutlet />
+      </div>
+    </main>
   </div>
-</main>
+
+  <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-10 flex flex-col">
+    <NowPlayingBar onQueueToggle={onQueueToggle} queueOpen={queueOpen} />
+
+    {isMobile && (
+      <div className="pointer-events-auto">
+        <MobileNav />
       </div>
-      <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-10 flex flex-col">
-        <NowPlayingBar onQueueToggle={onQueueToggle} queueOpen={queueOpen} />
-        {isMobile && (
-          <div className="pointer-events-auto">
-            <MobileNav />
-          </div>
-        )}
-      </div>
-      <QueuePanel open={queueOpen} onClose={onQueueClose} />
-      <FullscreenPanels />
-      <KeybindingsDialog open={kbOpen} onOpenChange={setKbOpen} />
-      <HardwareAccelSync />
-      <FpsCounter />
-    </div>
-  );
+    )}
+  </div>
+
+  <QueuePanel open={queueOpen} onClose={onQueueClose} />
+  <FullscreenPanels />
+  <KeybindingsDialog open={kbOpen} onOpenChange={setKbOpen} />
+  <HardwareAccelSync />
+  <FpsCounter />
+</div>);
 });
