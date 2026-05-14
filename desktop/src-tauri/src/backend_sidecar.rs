@@ -127,7 +127,23 @@ impl BackendState {
         *child_lock = Some(child);
         if let Err(error) = self.wait_until_ready(&mut *child_lock) {
             if let Some(child) = child_lock.as_mut() {
-                let _ = child.kill();
+#[cfg(target_os = "windows")]
+{
+    let _ = Command::new("taskkill")
+        .args([
+            "/F",
+            "/T",
+            "/PID",
+            &child.id().to_string(),
+        ])
+        .spawn();
+}
+
+#[cfg(not(target_os = "windows"))]
+{
+    let _ = child.kill();
+    let _ = child.wait();
+}
             }
             *child_lock = None;
             self.append_startup_log(&format!("Backend bootstrap failed: {error}"));
@@ -308,7 +324,23 @@ impl Drop for BackendState {
     fn drop(&mut self) {
         if let Ok(mut child_lock) = self.child.lock() {
             if let Some(child) = child_lock.as_mut() {
-                let _ = child.kill();
+#[cfg(target_os = "windows")]
+{
+    let _ = Command::new("taskkill")
+        .args([
+            "/F",
+            "/T",
+            "/PID",
+            &child.id().to_string(),
+        ])
+        .spawn();
+}
+
+#[cfg(not(target_os = "windows"))]
+{
+    let _ = child.kill();
+    let _ = child.wait();
+}
             }
         }
     }

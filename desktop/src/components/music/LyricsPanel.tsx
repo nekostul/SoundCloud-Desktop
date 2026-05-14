@@ -1122,16 +1122,6 @@ function getAudioTextHintLabel(motionHints: Array<{ language: string }>) {
   return null;
 }
 
-function AudioTextWarmupHint({ label }: { label: string | null }) {
-  if (!label) return null;
-  return (
-    <div className="px-12 pt-2 pb-0">
-      <div className="inline-flex items-center rounded-full border border-white/[0.06] bg-white/[0.04] px-2.5 py-1 text-[10px] font-semibold text-white/28">
-        Light audio-text warmup {label}
-      </div>
-    </div>
-  );
-}
 
 function useWarmLyricMotionHints(
   trackUrn: string | undefined,
@@ -2638,7 +2628,7 @@ export const LyricsPanel = React.memo(
     );
 const warmupEnabled =
   interactiveVisible && generatedFromPlain;
-    const { motionHints, hintLabel } = useAudioTextWarmup(
+    const {} = useAudioTextWarmup(
       warmupEnabled,
       track,
       reqArtist,
@@ -2831,13 +2821,8 @@ const warmupEnabled =
                   }}
                 />
                 {shouldShowPseudoSyncHint(lyrics, pseudoSynced) ? <PseudoSyncHint /> : null}
-                {warmupEnabled ? <AudioTextWarmupHint label={hintLabel} /> : null}
                 {interactiveVisible ? (
-                  <SyncedLyricsWithWarmup
-                    lines={lyrics.synced}
-                    motionHints={warmupEnabled ? motionHints : []}
-                    reactiveEnabled
-                  />
+<StaticSyncedLyrics lines={lyrics.synced} />
                 ) : (
                   <StaticSyncedLyrics lines={lyrics.synced} />
                 )}
@@ -3036,9 +3021,8 @@ const FullscreenLyricsColumn = React.memo(
                 <LyricsSourceBadge source={lyrics.source} onSearch={onOpenSearch} />
               </div>
               {shouldShowPseudoSyncHint(lyrics, pseudoSynced) ? <PseudoSyncHint /> : null}
-              {warmupEnabled ? <AudioTextWarmupHint label={hintLabel} /> : null}
               {warmupEnabled ? (
-                <SyncedLyricsWithWarmup lines={lyrics.synced} motionHints={motionHints} />
+                <StaticSyncedLyrics lines={lyrics.synced} />
               ) : (
                 <SyncedLyricsWithPlaceholders lines={lyrics.synced} />
               )}
