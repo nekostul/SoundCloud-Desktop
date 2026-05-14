@@ -34,11 +34,10 @@ export const TrackCard = React.memo(
           if (!isShelf) onMouseEnter();
           preloadTrack(track.urn);
         }}
-        onMouseMove={isShelf ? undefined : onMouseMove}
         onMouseLeave={isShelf ? undefined : onMouseLeave}
       >
         <div
-          className={`relative aspect-square rounded-2xl overflow-hidden bg-white/[0.03] cursor-pointer ring-1 ring-white/[0.06] ${
+          className={`relative aspect-square rounded-2xl overflow-hidden isolate bg-white/[0.03] cursor-pointer ring-1 ring-white/[0.06] ${
             isShelf
               ? 'transition-colors duration-200 group-hover:bg-white/[0.045]'
               : 'group-hover:ring-white/[0.12] transition-all duration-300 ease-[var(--ease-apple)]'
@@ -66,10 +65,10 @@ export const TrackCard = React.memo(
           <div
             className={`absolute inset-0 flex items-center justify-center transition-all duration-300 ${
               isThisPlaying
-                ? 'bg-black/30 backdrop-blur-sm opacity-100'
+                ? 'bg-black/30 opacity-100'
                 : isShelf
                   ? 'bg-black/0 opacity-0 group-hover:bg-black/25 group-hover:opacity-100'
-                  : 'bg-black/0 opacity-0 group-hover:bg-black/30 group-hover:backdrop-blur-sm group-hover:opacity-100'
+                  : 'bg-black/0 opacity-0 group-hover:bg-black/30 group-hover:opacity-100'
             }`}
           >
             <div

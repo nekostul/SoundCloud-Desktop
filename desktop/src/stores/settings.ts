@@ -213,6 +213,8 @@ export interface SettingsState {
   pinnedPlaylists: SidebarPinnedPlaylist[];
   crossfadeEnabled: boolean;
   crossfadeDuration: number;
+  crossfadeMode: 'off' | 'smart' | 'manual';
+  setCrossfadeMode: (mode: 'off' | 'smart' | 'manual') => void;
   floatingComments: boolean;
   discordRpc: boolean;
   discordRpcMode: DiscordRpcMode;
@@ -429,6 +431,7 @@ const DEFAULTS = {
   customApiKey: '',
   crossfadeEnabled: false,
   crossfadeDuration: 6,
+  crossfadeMode: 'smart' as const,
   sidebarCollapsed: false,
   pinnedPlaylists: [] as SidebarPinnedPlaylist[],
   floatingComments: true,
@@ -568,6 +571,7 @@ export const useSettingsStore = create<SettingsState>()(
         })),
       setCrossfadeEnabled: (crossfadeEnabled) => set({ crossfadeEnabled }),
       setCrossfadeDuration: (crossfadeDuration) => set({ crossfadeDuration }),
+      setCrossfadeMode: (crossfadeMode) => set({ crossfadeMode }),
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setFloatingComments: (floatingComments) => set({ floatingComments }),
       setDiscordRpc: (discordRpc) => set({ discordRpc }),

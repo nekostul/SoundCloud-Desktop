@@ -295,10 +295,10 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
         <div className="w-full rounded-[24px] border border-white/[0.06] bg-white/[0.03] p-3 backdrop-blur-lg space-y-3">
           <div className="space-y-1.5">
             <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-white/35">
-              SoundCloud OAuth
+              {t('auth.oauthTitle')}
             </p>
             <p className="text-[12px] leading-relaxed text-white/45">
-              Enter your SoundCloud OAuth app credentials once. They are stored locally on this device and reused for future sign-ins.
+              {t('auth.oauthDescription')}
             </p>
           </div>
 
@@ -307,7 +307,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
               type="text"
               value={soundcloudClientId}
               onChange={(e) => setSoundcloudClientId(e.target.value)}
-              placeholder="Client ID"
+              placeholder={t('auth.clientId')}
               className="w-full rounded-2xl border border-white/[0.06] bg-white/[0.04] px-4 py-3 text-[13px] text-white/85 placeholder:text-white/20 outline-none transition-all focus:border-white/[0.12] focus:bg-white/[0.06]"
             />
             <input
@@ -315,13 +315,13 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
               autoComplete="current-password"
               value={soundcloudClientSecret}
               onChange={(e) => setSoundcloudClientSecret(e.target.value)}
-              placeholder="Client Secret"
+              placeholder={t('auth.clientSecret')}
               className="w-full rounded-2xl border border-white/[0.06] bg-white/[0.04] px-4 py-3 text-[13px] text-white/85 placeholder:text-white/20 outline-none transition-all focus:border-white/[0.12] focus:bg-white/[0.06]"
             />
             {hasCredentials ? (
-              <p className="text-[11px] text-green-400/70">Credentials saved locally and ready for sign-in</p>
+              <p className="text-[11px] text-green-400/70">{t('auth.oauthSaved')}</p>
             ) : (
-              <p className="text-[11px] text-red-300/80">Client ID and Client Secret are required</p>
+              <p className="text-[11px] text-red-300/80">{t('auth.oauthRequired')}</p>
             )}
           </div>
         </div>

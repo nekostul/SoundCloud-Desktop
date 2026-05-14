@@ -778,3 +778,26 @@ body.hw-accel canvas {
   color: transparent;
   -webkit-text-fill-color: transparent;
 }
+@keyframes introNoteBounce {
+  0%,
+  100% {
+    transform: translateY(0px);
+    opacity: 0.45;
+  }
+
+  50% {
+    transform: translateY(-10px);
+    opacity: 1;
+  }
+}
+@keyframes introNoteExit {
+  0% {
+    opacity: 1;
+    transform: translateY(0px) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-18px) scale(0.9);
+  }
+}

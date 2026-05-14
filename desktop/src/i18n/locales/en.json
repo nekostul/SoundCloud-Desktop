@@ -68,7 +68,13 @@
     "copyLink": "Steal link",
     "copied": "Yoinked!",
     "restoringSession": "Resurrecting your bullshit",
-    "startingApp": "Launching this abomination..."
+    "startingApp": "Launching this abomination...",
+    "oauthTitle": "SOUNDCLOUD OAUTH",
+    "oauthDescription": "Enter your SoundCloud OAuth app credentials once. They are stored locally on this device and reused for future sign-ins.",
+    "oauthSaved": "Credentials saved locally and ready for sign-in",
+    "oauthRequired": "Client ID and Client Secret are required",
+    "clientId": "Client ID",
+    "clientSecret": "Client Secret"
   },
   "search": {
     "placeholder": "Search tracks, playlists or random mfs...",
@@ -273,8 +279,10 @@
     "crossfade": "Smooth transition crap",
     "crossfadeDesc": "Tracks melt into each other",
     "crossfadeDuration": "How long this goo lasts",
-    "experimentalRuAudioTextWarmup": "Experimental Russian yapping voodoo",
-    "experimentalRuAudioTextWarmupDesc": "Tiny experimental bullshit for syncing RU lyrics timing.",
+    "crossfadeSmartDesc": "Smart track smearing",
+    "crossfadeOff": "Off",
+    "crossfadeManual": "Manual",
+    "crossfadeSmart": "Smart",
     "lowPerformanceMode": "Potato PC mode",
     "lowPerformanceModeDesc": "Turns off fancy crap so your toaster survives",
     "discordRpc": "Flex music on Discord",

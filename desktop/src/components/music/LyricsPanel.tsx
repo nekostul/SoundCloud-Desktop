@@ -36,7 +36,7 @@ import {
   X,
 } from '../../lib/icons';
 import { optimisticToggleLike, useLiked } from '../../lib/likes';
-import type { LyricLine, LyricsSource, TimedCommentLike } from '../../lib/lyrics';
+import type { LyricLine, LyricsSource } from '../../lib/lyrics';
 import {
   getLyricMotionHintsForTrack,
   LYRICS_SEARCH_QUERY_VERSION,
@@ -73,47 +73,6 @@ const SOURCE_LABELS: Record<LyricsSource, string> = {
   vosk: 'Genius',
 };
 
-interface TimedComment {
-  id: number;
-  body: string;
-  timestamp: number | null;
-  user: {
-    username: string;
-    avatar_url: string;
-  };
-}
-
-function useTimedComments(trackUrn: string | undefined, enabled: boolean) {
-  return useQuery({
-    queryKey: ['comments', trackUrn],
-    queryFn: async () => {
-      const res = await api<{ collection: TimedComment[] }>(
-        `/tracks/${encodeURIComponent(trackUrn!)}/comments?limit=200`,
-      );
-      return res.collection || [];
-    },
-    enabled: enabled && !!trackUrn,
-    staleTime: 60 * 60 * 1000,
-  });
-}
-
-function toTimedCommentLikes(comments: TimedComment[] | undefined): TimedCommentLike[] {
-  return (comments || []).map((comment) => ({
-    id: comment.id,
-    body: comment.body,
-    timestamp: comment.timestamp,
-  }));
-}
-
-function PseudoSyncHint() {
-  return (
-    <div className="px-12 pt-2 pb-0">
-      <div className="inline-flex items-center rounded-full border border-white/[0.06] bg-white/[0.04] px-2.5 py-1 text-[10px] font-semibold text-white/28">
-        Approx sync from timed comments
-      </div>
-    </div>
-  );
-}
 
 function useResolvedLyrics(
   visible: boolean,
@@ -137,16 +96,6 @@ function useResolvedLyrics(
     retry: 1,
   });
 
-  const shouldLoadComments =
-    visible &&
-    !!trackUrn &&
-    Boolean(lyricsQuery.data?.plain && !lyricsQuery.data?.synced);
-  const commentsQuery = useTimedComments(trackUrn, shouldLoadComments);
-  const timedComments = useMemo(
-    () => toTimedCommentLikes(commentsQuery.data),
-    [commentsQuery.data],
-  );
-
   const resolvedQuery = useQuery({
     queryKey: [
       'lyrics-resolved',
@@ -157,21 +106,19 @@ function useResolvedLyrics(
       lyricsQuery.data?.source ?? null,
       lyricsQuery.data?.plain ?? null,
       lyricsQuery.data?.synced?.length ?? 0,
-      timedComments.length,
       trackDurationMs,
     ],
     queryFn: () =>
       resolveLyricsAutoSyncFromCommentsOrAsr(
         trackUrn ?? '',
         lyricsQuery.data ?? null,
-        timedComments,
+        [],
         reqArtist,
         reqTitle,
       ),
-    enabled:
-      visible &&
-      Boolean(lyricsQuery.data?.plain && !lyricsQuery.data?.synced) &&
-      !commentsQuery.isLoading,
+enabled:
+  visible &&
+  Boolean(lyricsQuery.data?.plain && !lyricsQuery.data?.synced),
     staleTime: Number.POSITIVE_INFINITY,
     retry: 1,
   });
@@ -186,7 +133,6 @@ function useResolvedLyrics(
     generatedFromPlain &&
       lyricsQuery.data &&
       data?.source === lyricsQuery.data.source &&
-      timedComments.length >= 2 &&
       (lyricsQuery.data.source === 'genius' || lyricsQuery.data.source === 'musixmatch'),
   );
 
@@ -196,7 +142,6 @@ function useResolvedLyrics(
     loadingSource: lyricsQuery.data?.source ?? null,
     isLoading:
       lyricsQuery.isLoading ||
-      (shouldLoadComments && commentsQuery.isLoading) ||
       resolvedQuery.isLoading,
     pseudoSynced,
     generatedFromPlain,
@@ -243,18 +188,6 @@ function shouldRenderPlainLyrics(
     | undefined,
 ): lyrics is { plain: string; source: LyricsSource; synced: null } {
   return Boolean(lyrics?.plain && !lyrics?.synced);
-}
-
-function shouldShowPseudoSyncHint(
-  lyrics:
-    | { plain: string | null; source: LyricsSource; synced: LyricLine[] | null }
-    | null
-    | undefined,
-  pseudoSynced: boolean,
-): boolean {
-  return Boolean(
-    pseudoSynced && lyrics && (lyrics.source === 'genius' || lyrics.source === 'musixmatch'),
-  );
 }
 
 const resolveTrackPermalink = async (track: Track): Promise<string | null> => {
@@ -662,7 +595,7 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
         switchTimerRef.current = window.setTimeout(() => {
           setIsSwitching(false);
           switchTimerRef.current = null;
-        }, 900);
+        }, 2200);
       }
     }
   }, [track.urn, artwork200, artwork500]);
@@ -1305,6 +1238,11 @@ const ReleaseSyncedLyricsWithProgress = React.memo(
     const unlockFramerate = useSettingsStore((s) => s.unlockFramerate);
     const noteGradientDurationSec = getPauseNoteAnimationDurationSec(playbackRate);
     const [isUserScrolling, setIsUserScrolling] = useState(false);
+    const [activeIndex, setActiveIndex] = useState(-1);
+    const [timeUntilLyrics, setTimeUntilLyrics] = useState(999);
+    const [introExitProgress, setIntroExitProgress] = useState(0);
+    const firstLineTime = lines[0]?.time ?? 0;
+
     const containerRef = useRef<HTMLDivElement>(null);
     const activeRef = useRef(-1);
     const lastScrollTsRef = useRef(0);
@@ -1463,7 +1401,7 @@ const ReleaseSyncedLyricsWithProgress = React.memo(
           manualScrollDetachedRef.current = false;
           userScrollTimeoutRef.current = null;
           scrollToActiveLine('smooth');
-        }, 5000);
+        }, 900);
       };
 
       const markManualScroll = () => {
@@ -1497,6 +1435,13 @@ const tick = (ts: number) => {
   lastFrameTs = ts;
 
   const time = getCurrentTime();
+  setTimeUntilLyrics(firstLineTime - time);
+setIntroExitProgress(
+  Math.max(
+    0,
+    Math.min(1, (time - (firstLineTime - 0.8)) / 0.8),
+  ),
+);
   const activeTime = getActiveLyricTime(time);
   const visualTime = getSmoothLyricTime();
   const currentLines = linesRef.current;
@@ -1504,8 +1449,9 @@ const tick = (ts: number) => {
   const idx = findActiveIndex(currentLines, activeTime);
   const prev = activeRef.current;
 
-      if (idx !== activeRef.current) {
-        activeRef.current = idx;
+if (idx !== activeRef.current) {
+  activeRef.current = idx;
+  setActiveIndex(idx);
 
         if (idx >= 0 && idx < lineEls.length) {
           const el = lineEls[idx];
@@ -1568,22 +1514,56 @@ const tick = (ts: number) => {
       };
     }, [lines, targetFramerate, unlockFramerate]);
 
-    return (
-      <div
-        ref={containerRef}
-        data-user-scrolling={isUserScrolling ? 'true' : 'false'}
-        className="flex-1 overflow-y-auto scrollbar-hide px-12 py-16"
-      >
-        <div className="flex flex-col gap-2">
+return (
+  <div
+    ref={containerRef}
+    data-user-scrolling={isUserScrolling ? 'true' : 'false'}
+    className="flex-1 overflow-y-auto scrollbar-hide px-12 py-16"
+  >
+    <div className="flex flex-col gap-2">
+      {activeIndex < 0 && (
+        <div className="flex w-full justify-center py-10 pointer-events-none">
+          <div className="flex items-end gap-2">
+            {[0, 1, 2].map((i) => {
+              const visible =
+                i === 0
+                  ? timeUntilLyrics > 0
+                  : i === 1
+                    ? timeUntilLyrics > 1
+                    : timeUntilLyrics > 2;
+
+              return (
+                <span
+                  key={i}
+                  className="text-[42px] font-bold text-white/70 leading-none select-none"
+                  style={{
+                    animation: visible
+                      ? 'introNoteBounce 1.2s ease-in-out infinite'
+                      : 'introNoteExit 420ms cubic-bezier(0.22,1,0.36,1) forwards',
+
+                    animationDelay: `${i * 0.18}s`,
+                  }}
+                >
+                  ♪
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
           {lines.map((line, i) => {
             const isPlaceholder = 'isPlaceholder' in line && line.isPlaceholder;
-            const displayText = line.text.trim().length === 0 ? PAUSE_MARKER : line.text;
+
+const displayText =
+     line.text.trim().length === 0
+      ? PAUSE_MARKER
+      : line.text;
             const isPauseDisplay = displayText === PAUSE_MARKER;
             const noteGradientDelay = getPauseNoteAnimationDelay(line.time);
             return (
               <div
                 key={`${line.time}-${i}-${isPlaceholder ? 'ph' : 'lyric'}`}
-                className={`lyric-line group relative origin-left will-change-transform py-3 text-[38px] font-bold tracking-tight antialiased text-white/55 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ${isPauseDisplay ? 'flex w-full justify-center px-0 pr-0 opacity-55 scale-[0.995] translate-x-0 blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.03] data-[state=active]:translate-x-0 data-[state=active]:blur-0 data-[state=past-near]:opacity-78 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-0 data-[state=past]:opacity-42 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-74 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-0 data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]' : 'cursor-pointer pr-12 opacity-55 scale-[0.985] translate-x-0 blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.08] data-[state=active]:translate-x-0 data-[state=active]:blur-0 data-[state=active]:[text-shadow:0_0_32px_rgba(255,255,255,0.22)] data-[state=past-near]:opacity-78 data-[state=past-near]:scale-[0.985] data-[state=past-near]:-translate-x-1 data-[state=past-near]:blur-[2px] data-[state=past]:opacity-38 data-[state=past]:scale-[0.94] data-[state=past]:-translate-x-2 data-[state=past]:blur-[3px] data-[state=next-near]:opacity-72 data-[state=next-near]:scale-[0.985] data-[state=next-near]:translate-x-1 data-[state=next-near]:blur-[2px] data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:translate-x-3 data-[state=next]:blur-[4px]'}`}
+                className={`lyric-line group relative ${activeIndex < 0? 'blur-[3px] opacity-40': ''} origin-left will-change-transform py-3 text-[38px] font-bold tracking-tight antialiased text-white/55 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ${isPauseDisplay ? 'flex w-full justify-center px-0 pr-0 opacity-55 scale-[0.995] translate-x-0 blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.03] data-[state=active]:translate-x-0 data-[state=active]:blur-0 data-[state=past-near]:opacity-78 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-0 data-[state=past]:opacity-42 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-74 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-0 data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]' : 'cursor-pointer pr-12 opacity-55 scale-[0.985] translate-x-0 blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.08] data-[state=active]:translate-x-0 data-[state=active]:blur-0 data-[state=active]:[text-shadow:0_0_32px_rgba(255,255,255,0.22)] data-[state=past-near]:opacity-78 data-[state=past-near]:scale-[0.985] data-[state=past-near]:-translate-x-1 data-[state=past-near]:blur-[2px] data-[state=past]:opacity-38 data-[state=past]:scale-[0.94] data-[state=past]:-translate-x-2 data-[state=past]:blur-[3px] data-[state=next-near]:opacity-72 data-[state=next-near]:scale-[0.985] data-[state=next-near]:translate-x-1 data-[state=next-near]:blur-[2px] data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:translate-x-3 data-[state=next]:blur-[4px]'}`}
                 style={{
                   textRendering: 'optimizeLegibility',
                   ['--lyric-progress' as string]: '0%',
@@ -1708,7 +1688,7 @@ const SyncedLyricsWithProgress = React.memo(
 
       while (lo <= hi) {
         const mid = (lo + hi) >> 1;
-        if (source[mid].time <= time + 0.02) {
+        if (source[mid].time <= time + 0.35) {
           ans = mid;
           lo = mid + 1;
         } else {
@@ -2067,7 +2047,7 @@ const SyncedLyricsWithProgress = React.memo(
           manualScrollDetachedRef.current = false;
           userScrollTimeoutRef.current = null;
           scrollToActiveLine('smooth');
-        }, 5000);
+        }, 2200);
       };
 
       const markManualScroll = () => {
@@ -2595,7 +2575,6 @@ export const LyricsPanel = React.memo(
     const {
       data: lyrics,
       isLoading,
-      pseudoSynced,
       generatedFromPlain,
     } = useResolvedLyrics(
       interactiveVisible,
@@ -2798,7 +2777,6 @@ const warmupEnabled =
                     setIsEditing(true);
                   }}
                 />
-                {shouldShowPseudoSyncHint(lyrics, pseudoSynced) ? <PseudoSyncHint /> : null}
                 {interactiveVisible ? (
 <StaticSyncedLyrics lines={lyrics.synced} />
                 ) : (
@@ -2966,7 +2944,6 @@ const FullscreenLyricsColumn = React.memo(
     lyrics,
     isLoading,
     warmupEnabled,
-    pseudoSynced,
     suppressFallback,
     onOpenSearch,
   }: {
@@ -2996,7 +2973,6 @@ const FullscreenLyricsColumn = React.memo(
               <div className="flex items-center justify-end gap-2 px-3 pt-2 pb-1 shrink-0">
                 <LyricsSourceBadge source={lyrics.source} onSearch={onOpenSearch} />
               </div>
-              {shouldShowPseudoSyncHint(lyrics, pseudoSynced) ? <PseudoSyncHint /> : null}
               {warmupEnabled ? (
                 <StaticSyncedLyrics lines={lyrics.synced} />
               ) : (

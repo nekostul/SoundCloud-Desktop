@@ -68,7 +68,13 @@
     "copyLink": "Скопировать хуйню",
     "copied": "Спизжено!",
     "restoringSession": "Поднимаем твою хуйню обратно",
-    "startingApp": "Запускаем ебалово..."
+    "startingApp": "Запускаем ебалово...",
+    "oauthTitle": "SC АВТОРИЗАЦИЯ",
+    "oauthDescription": "Введи данные OAuth приложения один раз. Они сохраняются локально и будут использоваться для будущих входов.",
+    "oauthSaved": "Данные сохранены локально и готовы для входа",
+    "oauthRequired": "Нужны Client ID и Client Secret",
+    "clientId": "Client ID",
+    "clientSecret": "Client Secret"
   },
   "search": {
     "placeholder": "Ищи треки, плейлисты или рандомных типов...",
@@ -274,6 +280,10 @@
     "crossfade": "Плавная хуйня",
     "crossfadeDesc": "Треки будут перетекать друг в друга",
     "crossfadeDuration": "Сколько секунд мазни",
+    "crossfadeSmartDesc": "Умная мазня между треками",
+    "crossfadeOff": "Выкл",
+    "crossfadeManual": "Вручную",
+    "crossfadeSmart": "Авто",
     "lowPerformanceMode": "Режим для калькуляторов",
     "lowPerformanceModeDesc": "Убирает тяжёлую шизу чтобы комп не сдох",
     "discordRpc": "Палить музло в Discord",

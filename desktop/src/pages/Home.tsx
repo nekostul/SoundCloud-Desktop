@@ -95,27 +95,23 @@ function SectionHeader({
   icon: React.ReactNode;
   onSeeAll?: () => void;
 }) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex items-center justify-between mb-2 pr-20">
-      <div className="flex items-center gap-2.5">
-        <div className="w-8 h-8 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center">
-          {icon}
-        </div>
-        <h2 className="text-[15px] font-semibold tracking-tight text-white/90">{title}</h2>
-      </div>
-      {onSeeAll && (
-        <button
-          type="button"
-          onClick={onSeeAll}
-          className="flex items-center gap-1 text-[11px] text-white/30 hover:text-white/60 transition-colors duration-200 cursor-pointer"
-        >
-          {t('common.seeAll')}
-          <ChevronRight size={12} />
-        </button>
-      )}
+  const {} = useTranslation();
+  return (<div className="flex items-center justify-between mb-2 pr-20">
+  <button
+    type="button"
+    onClick={onSeeAll}
+    className="flex items-center gap-2.5 cursor-pointer group"
+  >
+    <div className="w-8 h-8 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center">
+      {icon}
     </div>
-  );
+
+    <h2 className="text-[15px] font-semibold tracking-tight text-white/90 group-hover:text-white transition-colors">
+      {title}
+    </h2>
+  </button>
+</div>
+);
 }
 
 /* ── Skeletons ────────────────────────────────────────────── */

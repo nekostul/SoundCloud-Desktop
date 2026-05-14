@@ -27,7 +27,6 @@ export const MixCard: React.FC<MixCardProps> = ({
       className="mix-card w-[200px] shrink-0 cursor-pointer group select-none"
       onClick={onClick}
       onMouseEnter={onMouseEnter}
-      onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
     >
       <div
