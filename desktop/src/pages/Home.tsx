@@ -354,7 +354,7 @@ const FeedPlaylistCard = React.memo(
 
           {/* Track count pill */}
           {origin.track_count != null && (
-            <div className="absolute bottom-1.5 right-1.5 flex items-center gap-0.5 text-[9px] font-medium bg-black/50 backdrop-blur-md text-white/70 px-1.5 py-0.5 rounded-full">
+            <div className="absolute bottom-1.5 right-1.5 flex items-center gap-0.5 text-[9px] font-medium bg-black/50 backdrop-blur-sm text-white/70 px-1.5 py-0.5 rounded-full">
               {listMusic8}
               {origin.track_count}
             </div>

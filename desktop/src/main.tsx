@@ -181,7 +181,7 @@ function BootstrapScreen({
         <div className="absolute bottom-0 right-[10%] h-80 w-80 rounded-full bg-cyan-400/[0.08] blur-[140px]" />
       </div>
       <div className="relative flex h-full items-center justify-center p-6">
-        <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-[28px] border border-white/8 bg-white/[0.04] px-7 py-8 text-center backdrop-blur-xl">
+        <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-[28px] border border-white/8 bg-white/[0.04] px-7 py-8 text-center backdrop-blur-lg">
           {!error ? (
             <div className="h-10 w-10 rounded-full border-2 border-white/10 border-t-accent animate-spin" />
           ) : (

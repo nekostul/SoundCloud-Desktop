@@ -264,7 +264,7 @@ const LibraryHero = React.memo(function LibraryHero({
         onClick={onTabLikes}
       >
         <div className="absolute inset-0 bg-gradient-to-br from-violet-500/20 via-fuchsia-500/10 to-orange-500/20" />
-        <div className="absolute inset-0 backdrop-blur-[40px] bg-white/[0.03] border border-white/[0.08] rounded-[32px]" />
+        <div className="absolute inset-0 backdrop-blur-lg bg-white/[0.03] border border-white/[0.08] rounded-[32px]" />
 
         <div className="relative z-10">
           <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center backdrop-blur-md mb-4 shadow-inner ring-1 ring-white/10">
@@ -313,7 +313,7 @@ const LibraryHero = React.memo(function LibraryHero({
         onClick={onTabFollowing}
       >
         <div className="absolute inset-0 bg-gradient-to-bl from-blue-500/10 via-cyan-500/10 to-emerald-500/10" />
-        <div className="absolute inset-0 backdrop-blur-[40px] bg-white/[0.02] border border-white/[0.08] rounded-[32px]" />
+        <div className="absolute inset-0 backdrop-blur-lg bg-white/[0.02] border border-white/[0.08] rounded-[32px]" />
 
         <div className="relative z-10">
           <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center backdrop-blur-md mb-4 shadow-inner ring-1 ring-white/10">

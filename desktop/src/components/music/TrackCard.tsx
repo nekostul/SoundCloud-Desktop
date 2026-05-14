@@ -66,10 +66,10 @@ export const TrackCard = React.memo(
           <div
             className={`absolute inset-0 flex items-center justify-center transition-all duration-300 ${
               isThisPlaying
-                ? 'bg-black/30 backdrop-blur-[2px] opacity-100'
+                ? 'bg-black/30 backdrop-blur-sm opacity-100'
                 : isShelf
                   ? 'bg-black/0 opacity-0 group-hover:bg-black/25 group-hover:opacity-100'
-                  : 'bg-black/0 opacity-0 group-hover:bg-black/30 group-hover:backdrop-blur-[2px] group-hover:opacity-100'
+                  : 'bg-black/0 opacity-0 group-hover:bg-black/30 group-hover:backdrop-blur-sm group-hover:opacity-100'
             }`}
           >
             <div
@@ -93,7 +93,7 @@ export const TrackCard = React.memo(
             {track.access === 'preview' && (
               <div
                 className={`text-[10px] font-medium text-white px-2 py-0.5 rounded-full ${
-                  isShelf ? 'bg-amber-500/75' : 'bg-amber-500/80 backdrop-blur-md'
+                  isShelf ? 'bg-amber-500/75' : 'bg-amber-500/80 backdrop-blur-sm'
                 }`}
               >
                 {t('track.preview')}
@@ -101,7 +101,7 @@ export const TrackCard = React.memo(
             )}
             <div
               className={`text-[10px] font-medium text-white/80 px-2 py-0.5 rounded-full ${
-                isShelf ? 'bg-black/45' : 'bg-black/50 backdrop-blur-md'
+                isShelf ? 'bg-black/45' : 'bg-black/50 backdrop-blur-sm'
               }`}
             >
               {dur(track.duration)}
@@ -116,7 +116,7 @@ export const TrackCard = React.memo(
                 <button
                   type="button"
                   onClick={(e) => e.stopPropagation()}
-                  className="cursor-pointer w-8 h-8 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white/80 hover:text-white hover:bg-black/70 transition-all duration-200"
+                  className="cursor-pointer w-8 h-8 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center text-white/80 hover:text-white hover:bg-black/70 transition-all duration-200"
                   title={t('playlist.addToPlaylist')}
                 >
                   <ListPlus size={14} />

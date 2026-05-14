@@ -79,8 +79,8 @@ const KeybindingsDialog = React.memo(
     return (
       <Dialog.Root open={open} onOpenChange={onOpenChange}>
         <Dialog.Portal>
-          <Dialog.Overlay className="dialog-overlay fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm" />
-          <Dialog.Content className="dialog-content fixed z-[80] top-1/2 left-1/2 w-full max-w-[520px] bg-[#1a1a1e]/95 backdrop-blur-2xl border border-white/[0.08] rounded-3xl shadow-2xl overflow-hidden">
+          <Dialog.Overlay className="dialog-overlay fixed inset-0 z-[80] bg-black/60 backdrop-blur-md" />
+          <Dialog.Content className="dialog-content fixed z-[80] top-1/2 left-1/2 w-full max-w-[520px] bg-[#1a1a1e]/95 backdrop-blur-lg border border-white/[0.08] rounded-3xl shadow-2xl overflow-hidden">
             {/* Header */}
             <div className="px-7 pt-6 pb-4 border-b border-white/[0.06]">
               <Dialog.Title className="text-[18px] font-bold text-white/90 tracking-tight">
@@ -159,7 +159,7 @@ const AmbientGlow = React.memo(() => {
   if (!artwork) return null;
   return (
     <div
-      className="absolute bottom-0 left-0 right-0 h-[400px] opacity-[0.06] blur-[100px] pointer-events-none transition-all duration-[2s] ease-out"
+      className="absolute bottom-0 left-0 right-0 h-[400px] opacity-[0.03] blur-[30px] pointer-events-none transition-all duration-[2s] ease-out"
       style={{
         backgroundImage: `url(${artwork})`,
         backgroundSize: 'cover',
@@ -216,7 +216,7 @@ const FpsCounter = React.memo(() => {
   if (!showFpsCounter) return null;
 
   return (
-    <div className="fixed top-4 right-4 px-2 py-1 bg-black/60 backdrop-blur-md rounded-md border border-white/10 text-[11px] font-mono text-white/80 z-[9999] pointer-events-none shadow-lg transition-opacity">
+    <div className="fixed top-4 right-4 px-2 py-1 bg-black/60 backdrop-blur-sm rounded-md border border-white/10 text-[11px] font-mono text-white/80 z-[9999] pointer-events-none shadow-lg transition-opacity">
       {fps} FPS
     </div>
   );

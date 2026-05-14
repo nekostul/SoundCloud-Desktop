@@ -405,7 +405,7 @@ const DEFAULTS = {
   themeGradientColorB: '#1a1b3a',
   themeGradientColorC: '#402014',
   themeGradientAngle: 135,
-  themeGradientAnimated: true,
+  themeGradientAnimated: false,
   themeGradientAnimation: 'flow' as ThemeGradientAnimation,
   themeGradientSpeed: 16,
   themeGlowEnabled: true,

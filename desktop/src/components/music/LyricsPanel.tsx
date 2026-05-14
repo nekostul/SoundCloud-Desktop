@@ -715,7 +715,7 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
   const fullArtModal =
     showFullArt && fullscreenArtSrc && typeof document !== 'undefined'
       ? createPortal(
-          <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/90 p-8 backdrop-blur-xl sm:p-12">
+          <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/90 p-8 backdrop-blur-md sm:p-12">
             <div
               className="absolute inset-0 cursor-pointer"
               onClick={() => setShowFullArt(false)}
@@ -748,7 +748,7 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
               </div>
             </div>
             <div className="pointer-events-none absolute bottom-8 left-1/2 z-10 w-[min(560px,calc(100vw-3rem))] -translate-x-1/2 px-3">
-              <div className="mx-auto flex w-fit max-w-full flex-col items-center gap-0.5 rounded-2xl border border-white/10 bg-black/42 px-4 py-3 text-center shadow-[0_18px_60px_rgba(0,0,0,0.42)] backdrop-blur-xl">
+              <div className="mx-auto flex w-fit max-w-full flex-col items-center gap-0.5 rounded-2xl border border-white/10 bg-black/42 px-4 py-3 text-center shadow-[0_8px_32px_rgba(0,0,0,0.3)] backdrop-blur-lg">
                 <p className="max-w-[min(480px,calc(100vw-6rem))] truncate text-lg font-bold text-white/92">
                   {track.title}
                 </p>
@@ -802,7 +802,7 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
             <button
               type="button"
               onClick={() => setShowFullArt(true)}
-              className="absolute inset-0 bg-black/40 opacity-0 group-hover/art:opacity-100 transition-opacity duration-300 flex items-center justify-center text-white/90 backdrop-blur-[2px] cursor-pointer outline-none"
+              className="absolute inset-0 bg-black/40 opacity-0 group-hover/art:opacity-100 transition-opacity duration-300 flex items-center justify-center text-white/90 backdrop-blur-sm cursor-pointer outline-none"
             >
               <div className="flex flex-col items-center gap-2 scale-90 group-hover/art:scale-100 transition-transform duration-300">
                 <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center border border-white/20">
@@ -843,7 +843,7 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
       </div>
 
       <div
-        className={`relative z-20 flex ${columnMaxWidthClass} flex-col items-center gap-3 rounded-[22px] border border-white/[0.08] bg-black/28 px-4 py-3 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-xl`}
+        className={`relative z-20 flex ${columnMaxWidthClass} flex-col items-center gap-3 rounded-[22px] border border-white/[0.08] bg-black/28 px-4 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.25)] backdrop-blur-lg`}
         style={columnWidthTransitionStyle}
       >
         <FullscreenVolumeSlider />
@@ -2213,9 +2213,9 @@ const tick = (ts: number) => {
 
 return (
   <div className="relative flex-1 overflow-hidden">
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-40 bg-gradient-to-b from-black via-black/75 to-transparent backdrop-blur-[10px]" />
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-40 bg-gradient-to-b from-black via-black/75 to-transparent backdrop-blur-md" />
 
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-40 bg-gradient-to-t from-black via-black/75 to-transparent backdrop-blur-[10px]" />
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-40 bg-gradient-to-t from-black via-black/75 to-transparent backdrop-blur-md" />
 
     <div
       ref={containerRef}

@@ -48,7 +48,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
             <div className="absolute bottom-[8%] right-[10%] h-80 w-80 rounded-full bg-accent/[0.08] blur-[140px]" />
           </div>
           <div className="relative flex h-full items-center justify-center p-6">
-            <div className="w-full max-w-lg rounded-[28px] border border-white/8 bg-white/[0.04] px-7 py-8 backdrop-blur-xl">
+            <div className="w-full max-w-lg rounded-[28px] border border-white/8 bg-white/[0.04] px-7 py-8 backdrop-blur-lg">
               <div className="text-lg font-semibold tracking-tight text-white/92">Renderer crashed</div>
               <div className="mt-2 text-sm text-white/55">
                 The app hit a React error before the main UI finished rendering.
@@ -226,7 +226,7 @@ function AppInner() {
         />
         {isBooting && (
           <div
-            className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2.5 px-5 py-2.5 rounded-full border border-white/[0.08] bg-white/[0.06] backdrop-blur-[20px] shadow-[0_8px_32px_rgba(0,0,0,0.4)] animate-fade-in whitespace-nowrap"
+            className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2.5 px-5 py-2.5 rounded-full border border-white/[0.08] bg-white/[0.06] backdrop-blur-lg shadow-[0_4px_16px_rgba(0,0,0,0.3)] animate-fade-in whitespace-nowrap"
           >
             <span className="text-[12px] font-medium text-white/70">
               {sessionId ? t('auth.restoringSession') : t('auth.startingApp')}

@@ -280,7 +280,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
       >
         <div className="relative">
           <div className="absolute inset-0 bg-accent/20 blur-2xl rounded-full scale-150" />
-          <div className="relative w-20 h-20 rounded-[22px] bg-white/[0.04] backdrop-blur-xl border border-white/[0.08] flex items-center justify-center shadow-[0_0_40px_rgba(255,85,0,0.1)]">
+          <div className="relative w-20 h-20 rounded-[22px] bg-white/[0.04] backdrop-blur-lg border border-white/[0.08] flex items-center justify-center shadow-[0_0_20px_rgba(255,85,0,0.05)]">
             <Disc3 size={36} className="text-accent" strokeWidth={1.5} />
           </div>
         </div>
@@ -292,7 +292,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
           </p>
         </div>
 
-        <div className="w-full rounded-[24px] border border-white/[0.06] bg-white/[0.03] p-3 backdrop-blur-xl space-y-3">
+        <div className="w-full rounded-[24px] border border-white/[0.06] bg-white/[0.03] p-3 backdrop-blur-lg space-y-3">
           <div className="space-y-1.5">
             <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-white/35">
               SoundCloud OAuth

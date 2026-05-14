@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { artworkPanelApi, lyricsPanelApi } from '../../components/music/LyricsPanel';
 import { api, getTrackComments } from '../../lib/api';
 import { isAppBackgrounded } from '../../lib/app-visibility';
+import { useArtworkGradientPalette } from '../../lib/artwork-palette';
 import {
   getCurrentTime,
   getDuration,
@@ -46,6 +47,26 @@ import { type MoodLabel, useSoundWaveStore } from '../../stores/soundwave';
 import { EqualizerPanel } from '../music/EqualizerPanel';
 import { PlaybackSpeedPresets } from '../music/PlaybackSpeedPresets';
 import { StreamQualityBadge } from '../music/StreamQualityBadge';
+
+function hexToRgba(hex?: string | null, alpha = 1) {
+  if (!hex || typeof hex !== 'string') {
+    return `rgba(0, 0, 0, ${alpha})`;
+  }
+
+  const normalized = hex.trim().replace('#', '');
+
+  if (!/^[0-9A-Fa-f]{6}$/.test(normalized)) {
+    return `rgba(0, 0, 0, ${alpha})`;
+  }
+
+  const bigint = Number.parseInt(normalized, 16);
+
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 /* ── Download Progress Panel ────────────────────────────────── */
 
@@ -194,7 +215,7 @@ return (
 
       {hoverPercent !== null && !isFullscreenOverlayOpen && (
         <div
-          className="absolute top-[50px] px-2 py-1 rounded-xl bg-black/80 border border-white/10 text-white text-[10px] font-medium pointer-events-none backdrop-blur-xl"
+          className="absolute top-[65px] px-2 py-1 rounded-xl bg-black/80 border border-white/10 text-white text-[10px] font-medium pointer-events-none backdrop-blur-sm"
           style={{
             left: `${hoverPercent * 100}%`,
             transform: 'translateX(-50%)',
@@ -738,7 +759,7 @@ const PlaybackTuningMenu = React.memo(({ disabled = false }: { disabled?: boolea
         }`}
         aria-hidden={!open}
       >
-        <div className="overflow-hidden rounded-[22px] border border-white/[0.14] bg-[#101012]/96 p-3 shadow-[0_24px_90px_rgba(0,0,0,0.62)] backdrop-blur-2xl">
+        <div className="overflow-hidden rounded-[22px] border border-white/[0.14] bg-[#101012]/96 p-3 shadow-[0_8px_32px_rgba(0,0,0,0.4)] backdrop-blur-lg">
           <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-white/[0.06] to-transparent pointer-events-none" />
           <div className="relative space-y-2.5">
             <div className="flex items-center gap-2 px-0.5">
@@ -886,7 +907,7 @@ const BackgroundGlow = React.memo(() => {
   if (!artwork) return null;
   return (
     <div
-      className="absolute inset-0 opacity-[0.05] blur-3xl pointer-events-none"
+      className="absolute inset-0 opacity-[0.02] blur-lg pointer-events-none"
       style={{
         backgroundImage: `url(${artwork})`,
         backgroundSize: 'cover',
@@ -963,13 +984,39 @@ export const NowPlayingBar = React.memo(
     const isMobile = useIsMobile();
     const isPlaying = usePlayerStore((s) => s.isPlaying);
     const togglePlay = usePlayerStore((s) => s.togglePlay);
+    const currentArtworkUrl = usePlayerStore((s) => s.currentTrack?.artwork_url ?? null);
     const lyricsOpen = useLyricsStore((s) => s.open);
     const artworkOpen = useArtworkStore((s) => s.open);
     const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
+    const themeGradientFollowArtwork = useSettingsStore((s) => s.themeGradientFollowArtwork);
     const visualizerPlaybar = useSettingsStore((s) => s.visualizerPlaybar);
+    const artworkGradientPalette = useArtworkGradientPalette(
+      themeGradientFollowArtwork ? currentArtworkUrl : null,
+    );
+const palette = artworkGradientPalette ?? {
+  gradientA: '#ffffff',
+  gradientB: '#ffffff',
+  gradientC: '#000000',
+  accent: '#ffffff',
+};
     const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
     const desktopBarOffset = sidebarCollapsed ? 66 : 210;
-
+    const desktopDockStyle = isMobile
+      ? undefined
+      : {
+          marginLeft: `${desktopBarOffset}px`,
+          ...(themeGradientFollowArtwork && artworkGradientPalette
+            ? {
+                background: `
+                  linear-gradient(180deg, rgba(255,255,255,0.042), rgba(255,255,255,0.06)),
+                  radial-gradient(circle at 16% 18%, ${hexToRgba(palette.gradientA, 0.12)} 0%, ${hexToRgba(palette.gradientB, 0.07)} 34%, rgba(0,0,0,0) 62%),
+                  linear-gradient(135deg, ${hexToRgba(palette.gradientB, 0.06)} 0%, ${hexToRgba(palette.gradientC, 0.04)} 52%, rgba(8,8,10,0.78) 100%)
+                `,
+                borderColor: hexToRgba(palette.gradientA, 0.1),
+                boxShadow: `0 12px 34px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.04), 0 0 20px ${hexToRgba(palette.gradientA, 0.05)}`,
+              }
+            : null),
+        };
     return (
       <div
         className={`shrink-0 relative group/trackinfo ${isMobile ? 'h-[72px]' : 'pointer-events-none'}`}
@@ -984,9 +1031,9 @@ export const NowPlayingBar = React.memo(
  className={
   isMobile
     ? 'h-[72px] flex items-center px-5 gap-3 relative'
-    : 'pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] bg-black/40 backdrop-blur-2xl border border-white/[0.04] transition-[margin] duration-200 ease-[var(--ease-apple)]'
+    : 'pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] bg-black/40 backdrop-blur-lg border border-white/[0.04] transition-[margin,background,border-color,box-shadow] duration-200 ease-[var(--ease-apple)]'
 }
-  style={isMobile ? undefined : { marginLeft: `${desktopBarOffset}px` }}
+  style={desktopDockStyle}
   >
     <div className="absolute top-[-1px] left-0 right-0 z-20">
       {!isMobile && <ProgressSlider />}

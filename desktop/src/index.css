@@ -468,7 +468,7 @@ body,
 
 .lyric-line[data-state="past-near"] .note-gradient-text {
   color: rgba(255, 255, 255, 0.96) !important;
-  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.12));
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.08));
 }
 
 .lyric-line[data-state="past"] .note-gradient-text {
@@ -499,7 +499,7 @@ body,
   );
   background-size: 144px 100%;
   background-repeat: repeat-x;
-  filter: drop-shadow(0 0 22px rgba(255, 255, 255, 0.48));
+  filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.32));
   animation-play-state: running;
 }
 
@@ -609,7 +609,7 @@ body,
 /* ── Featured card glass ──────────────────────────────────── */
 .glass-featured {
   background: var(--theme-glass-featured-bg);
-  backdrop-filter: blur(calc(var(--theme-glass-blur) * 1.5))
+  backdrop-filter: blur(calc(var(--theme-glass-blur) * 1.1))
     saturate(var(--theme-glass-featured-saturate));
   border: 1px solid var(--theme-glass-border-hi);
   box-shadow: var(--theme-glass-shadow);
