@@ -1860,14 +1860,10 @@ const PlaybackSection = React.memo(function PlaybackSection() {
   const showFpsCounter = useSettingsStore((s) => s.showFpsCounter);
   const hardwareAcceleration = useSettingsStore((s) => s.hardwareAcceleration);
   const lowPerformanceMode = useSettingsStore((s) => s.lowPerformanceMode);
-  const experimentalRuAudioTextWarmup = useSettingsStore((s) => s.experimentalRuAudioTextWarmup);
   const setTargetFramerate = useSettingsStore((s) => s.setTargetFramerate);
   const setShowFpsCounter = useSettingsStore((s) => s.setShowFpsCounter);
   const setHardwareAcceleration = useSettingsStore((s) => s.setHardwareAcceleration);
   const setLowPerformanceMode = useSettingsStore((s) => s.setLowPerformanceMode);
-  const setExperimentalRuAudioTextWarmup = useSettingsStore(
-    (s) => s.setExperimentalRuAudioTextWarmup,
-  );
   const crossfadeEnabled = useSettingsStore((s) => s.crossfadeEnabled);
   const crossfadeDuration = useSettingsStore((s) => s.crossfadeDuration);
   const setCrossfadeEnabled = useSettingsStore((s) => s.setCrossfadeEnabled);

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useMemo, useRef } from 'react';
 
 interface Props {
   /** Number of drifting accent particles. Fewer on smaller blocks. */
@@ -22,7 +22,6 @@ export const AmbientLayer = React.memo(function AmbientLayer({
   particleCount = 12,
   blur = 45,
   intensity = 0.55,
-  reactive = false,
 }: Props) {
   const particles = useMemo(
     () => Array.from({ length: particleCount }, (_, i) => i),
