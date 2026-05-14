@@ -1,7 +1,7 @@
 import * as Slider from '@radix-ui/react-slider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Sparkles, Volume, Volume2, VolumeX } from 'lucide-react';
-import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { CSSProperties, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -76,17 +76,17 @@ function hexToRgba(hex?: string | null, alpha = 1) {
 export const ProgressSlider = React.memo(() => {
   const duration = useSyncExternalStore(subscribe, getDuration);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
-  const currentTrack = usePlayerStore((s) => s.currentTrack);
+  const currentTrackUrn = usePlayerStore((s) => s.currentTrack?.urn);
   const lyricsOpen = useLyricsStore((s) => s.open);
-const artworkOpen = useArtworkStore((s) => s.open);
+  const artworkOpen = useArtworkStore((s) => s.open);
 
-const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
+  const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
   const targetFramerate = useSettingsStore((s) => s.targetFramerate);
   const unlockFramerate = useSettingsStore((s) => s.unlockFramerate);
 
   const { data: comments } = useQuery({
-    queryKey: ['comments', currentTrack?.urn],
-    queryFn: () => getTrackComments(currentTrack!.urn),
+    queryKey: ['comments', currentTrackUrn],
+    queryFn: () => getTrackComments(currentTrackUrn!),
     enabled: false,
     staleTime: 60 * 60 * 1000,
   });
@@ -914,6 +914,7 @@ const BackgroundGlow = React.memo(() => {
         backgroundPosition: 'center',
         contain: 'strict',
         transform: 'translateZ(0)',
+        willChange: 'opacity',
       }}
     />
   );
@@ -957,7 +958,12 @@ const DiscordLyricsSyncer = React.memo(() => {
       return;
     }
 
+    let lastUpdateTime = 0;
     const unsub = subscribe(() => {
+      const now = Date.now();
+      if (now - lastUpdateTime < 500) return; // Throttle to every 500ms
+      lastUpdateTime = now;
+
       const t = getCurrentTime();
       let activeText: string | null = null;
 
@@ -993,30 +999,39 @@ export const NowPlayingBar = React.memo(
     const artworkGradientPalette = useArtworkGradientPalette(
       themeGradientFollowArtwork ? currentArtworkUrl : null,
     );
-const palette = artworkGradientPalette ?? {
-  gradientA: '#ffffff',
-  gradientB: '#ffffff',
-  gradientC: '#000000',
-  accent: '#ffffff',
-};
+    const palette = artworkGradientPalette ?? {
+      gradientA: '#ffffff',
+      gradientB: '#ffffff',
+      gradientC: '#000000',
+      accent: '#ffffff',
+    };
     const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
     const desktopBarOffset = sidebarCollapsed ? 66 : 210;
-    const desktopDockStyle = isMobile
-      ? undefined
-      : {
-          marginLeft: `${desktopBarOffset}px`,
-          ...(themeGradientFollowArtwork && artworkGradientPalette
-            ? {
-                background: `
-                  linear-gradient(180deg, rgba(255,255,255,0.042), rgba(255,255,255,0.06)),
-                  radial-gradient(circle at 16% 18%, ${hexToRgba(palette.gradientA, 0.12)} 0%, ${hexToRgba(palette.gradientB, 0.07)} 34%, rgba(0,0,0,0) 62%),
-                  linear-gradient(135deg, ${hexToRgba(palette.gradientB, 0.06)} 0%, ${hexToRgba(palette.gradientC, 0.04)} 52%, rgba(8,8,10,0.78) 100%)
-                `,
-                borderColor: hexToRgba(palette.gradientA, 0.1),
-                boxShadow: `0 12px 34px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.04), 0 0 20px ${hexToRgba(palette.gradientA, 0.05)}`,
-              }
-            : null),
+    
+    // Memoize desktopDockStyle to prevent style object recreation
+    const desktopDockStyle = useMemo(() => {
+      if (isMobile) return undefined;
+      
+      const baseStyle: CSSProperties = {
+        marginLeft: `${desktopBarOffset}px`,
+      };
+      
+      if (themeGradientFollowArtwork && artworkGradientPalette) {
+        return {
+          ...baseStyle,
+          background: `
+            linear-gradient(180deg, rgba(255,255,255,0.042), rgba(255,255,255,0.06)),
+            radial-gradient(circle at 16% 18%, ${hexToRgba(palette.gradientA, 0.12)} 0%, ${hexToRgba(palette.gradientB, 0.07)} 34%, rgba(0,0,0,0) 62%),
+            linear-gradient(135deg, ${hexToRgba(palette.gradientB, 0.06)} 0%, ${hexToRgba(palette.gradientC, 0.04)} 52%, rgba(8,8,10,0.78) 100%)
+          `,
+          borderColor: hexToRgba(palette.gradientA, 0.1),
+          boxShadow: `0 12px 34px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.04), 0 0 20px ${hexToRgba(palette.gradientA, 0.05)}`,
         };
+      }
+      
+      return baseStyle;
+    }, [isMobile, desktopBarOffset, themeGradientFollowArtwork, artworkGradientPalette, palette]);
+
     return (
       <div
         className={`shrink-0 relative group/trackinfo ${isMobile ? 'h-[72px]' : 'pointer-events-none'}`}
@@ -1026,18 +1041,18 @@ const palette = artworkGradientPalette ?? {
 
         {visualizerPlaybar && !isMobile && !isFullscreenOverlayOpen}
 
-<div className={`relative z-10 ${isMobile ? '' : 'pointer-events-none'}`} style={{ isolation: 'isolate' }}>
-  <div
- className={
-  isMobile
-    ? 'h-[72px] flex items-center px-5 gap-3 relative'
-    : 'pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] bg-black/40 backdrop-blur-lg border border-white/[0.04] transition-[margin,background,border-color,box-shadow] duration-200 ease-[var(--ease-apple)]'
-}
-  style={desktopDockStyle}
-  >
-    <div className="absolute top-[-1px] left-0 right-0 z-20">
-      {!isMobile && <ProgressSlider />}
-    </div>
+        <div className={`relative z-10 ${isMobile ? '' : 'pointer-events-none'}`} style={{ isolation: 'isolate' }}>
+          <div
+            className={
+              isMobile
+                ? 'h-[72px] flex items-center px-5 gap-3 relative'
+                : 'pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] bg-black/40 backdrop-blur-lg border border-white/[0.04] transition-[margin,background,border-color,box-shadow] duration-200 ease-[var(--ease-apple)]'
+            }
+            style={desktopDockStyle}
+          >
+            <div className="absolute top-[-1px] left-0 right-0 z-20">
+              {!isMobile && <ProgressSlider />}
+            </div>
             {/* Left: track info */}
             <div className="w-full min-w-0 max-w-[320px]">
               <TrackInfo />

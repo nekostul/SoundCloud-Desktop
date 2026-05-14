@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { LikeButton } from '../components/music/LikeButton';
@@ -97,7 +97,7 @@ function SectionHeader({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center justify-between mb-5">
+    <div className="flex items-center justify-between mb-2 pr-20">
       <div className="flex items-center gap-2.5">
         <div className="w-8 h-8 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center">
           {icon}
@@ -250,7 +250,9 @@ const FeedTrackCard = React.memo(
       </div>
     );
   },
-  (prev, next) => prev.item.origin.urn === next.item.origin.urn,
+  (prev, next) => 
+    prev.item.origin.urn === next.item.origin.urn &&
+    prev.queue === next.queue,
 );
 
 /* ── Feed Playlist Card ───────────────────────────────────── */
@@ -270,14 +272,22 @@ const FeedPlaylistCard = React.memo(
       () => new Set((origin.tracks ?? []).map((t: Track) => t.urn)),
       [origin.tracks],
     );
+    
+    // Use single selector instead of multiple
     const isPlayingFromThis = usePlayerStore(
-      (s) => s.isPlaying && s.currentTrack != null && trackUrns.has(s.currentTrack.urn),
+      (s) => {
+        if (!s.isPlaying || s.currentTrack == null) return false;
+        return trackUrns.has(s.currentTrack.urn);
+      },
     );
     const isPausedFromThis = usePlayerStore(
-      (s) => !s.isPlaying && s.currentTrack != null && trackUrns.has(s.currentTrack.urn),
+      (s) => {
+        if (s.isPlaying || s.currentTrack == null) return false;
+        return trackUrns.has(s.currentTrack.urn);
+      },
     );
 
-    const handlePlay = async (e: React.MouseEvent) => {
+    const handlePlay = useCallback(async (e: React.MouseEvent) => {
       e.stopPropagation();
       const { play, pause, resume } = usePlayerStore.getState();
       if (isPlayingFromThis) {
@@ -308,7 +318,7 @@ const FeedPlaylistCard = React.memo(
       } finally {
         setLoading(false);
       }
-    };
+    }, [isPlayingFromThis, isPausedFromThis, origin, navigate]);
 
     return (
       <div
