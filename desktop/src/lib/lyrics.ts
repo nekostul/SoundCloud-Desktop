@@ -855,14 +855,6 @@ function decodeLyricsHtmlWithBreaks(html: string): string {
   );
 }
 
-function extractGeniusLyricsFromContainer(container: Element): string {
-  const clone = container.cloneNode(true) as Element;
-  clone
-    .querySelectorAll('[data-exclude-from-selection="true"], script, style')
-    .forEach((node) => node.remove());
-  return cleanGeniusLyricsText(decodeLyricsHtmlWithBreaks(clone.innerHTML));
-}
-
 function extractLegacyGeniusLyricsFromHtml(html: string): string | null {
   const scriptMatch = html.match(/"lyricsData":\s*(\{[\s\S]*?\})\s*,\s*"album"/);
   if (scriptMatch?.[1]) {
@@ -892,16 +884,29 @@ function extractLegacyGeniusLyricsFromHtml(html: string): string | null {
 function extractGeniusLyricsFromHtml(html: string): string | null {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
-  const containers = Array.from(doc.querySelectorAll('div[data-lyrics-container="true"]'));
+
+  const containers = Array.from(
+    doc.querySelectorAll('[data-lyrics-container="true"]'),
+  );
 
   if (containers.length > 0) {
-    const plain = cleanGeniusLyricsText(
-      containers
-        .map((container) => extractGeniusLyricsFromContainer(container))
-        .filter((chunk) => chunk.length > 0)
-        .join('\n\n'),
-    );
-    if (plain.length > 20) return plain;
+    const text = containers
+      .map((container) => {
+        const clone = container.cloneNode(true) as HTMLElement;
+
+        clone.querySelectorAll('br').forEach((br) => {
+          br.replaceWith('\n');
+        });
+
+        return clone.textContent || '';
+      })
+      .join('\n\n');
+
+    const cleaned = cleanGeniusLyricsText(text);
+
+    if (cleaned.length > 20) {
+      return cleaned;
+    }
   }
 
   return extractLegacyGeniusLyricsFromHtml(html);
@@ -947,7 +952,6 @@ async function requestText(url: string, signal?: AbortSignal): Promise<string> {
     ? {
         Accept: 'text/html,application/json;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-        Referer: 'https://genius.com/',
         'User-Agent':
           'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
       }
@@ -3626,6 +3630,7 @@ async function searchSyncedParallel(
   const candidates: Array<() => Promise<LyricsResult | null>> = [
     () => searchLrclib(artist, title, profile, signal, true),
     () => searchMusixmatchSynced(artist, title, signal),
+    () => searchGenius(artist, title, signal),
   ];
   if (ENABLE_NCM) {
     candidates.push(() => searchNetease(artist, title, profile, signal));
@@ -3639,7 +3644,7 @@ async function searchSyncedParallel(
       candidate()
         .then((result) => {
           if (settled) return;
-          if (result?.synced?.length) {
+          if (result?.synced?.length || result?.plain) {
             settled = true;
             resolve(result);
             return;
@@ -3676,6 +3681,8 @@ async function runChainFull(
     r = await searchNetease(trimmedArtist, trimmedTitle, profile, signal);
     if (r) return r;
   }
+  r = await searchGenius(trimmedArtist, trimmedTitle, signal);
+if (r) return r;
   return null;
 }
 
