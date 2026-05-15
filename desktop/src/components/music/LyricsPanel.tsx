@@ -489,13 +489,45 @@ return (
 
 const Controls = React.memo(({ track }: { track: Track }) => {
   const { t } = useTranslation();
+
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const togglePlay = usePlayerStore((s) => s.togglePlay);
+
   const next = usePlayerStore((s) => s.next);
+  const handlePrev = usePlayerStore((s) => s.prev);
+
   const shuffle = usePlayerStore((s) => s.shuffle);
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle);
+
   const repeat = usePlayerStore((s) => s.repeat);
   const toggleRepeat = usePlayerStore((s) => s.toggleRepeat);
+
+  const [nextLocked, setNextLocked] = useState(false);
+  const [prevLocked, setPrevLocked] = useState(false);
+
+  const onNext = () => {
+    if (nextLocked) return;
+
+    setNextLocked(true);
+
+    next();
+
+    setTimeout(() => {
+      setNextLocked(false);
+    }, 1000);
+  };
+
+  const onPrev = () => {
+    if (prevLocked) return;
+
+    setPrevLocked(true);
+
+    handlePrev();
+
+    setTimeout(() => {
+      setPrevLocked(false);
+    }, 1000);
+  };
 
   const ctrl =
     'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer hover:bg-white/[0.06] outline-none';
@@ -503,7 +535,9 @@ const Controls = React.memo(({ track }: { track: Track }) => {
   const handleOpenInSoundCloud = () => {
     void (async () => {
       const permalink = await resolveTrackPermalink(track);
+
       if (!permalink) return;
+
       await openExternal(permalink);
     })();
   };
@@ -512,23 +546,41 @@ const Controls = React.memo(({ track }: { track: Track }) => {
     <div className="flex items-center justify-center gap-2">
       <AddToPlaylistDialog trackUrn={track.urn}>
         <button type="button" className={ctrl}>
-          <ListPlus size={20} className="text-white/30 hover:text-white/60" />
+          <ListPlus
+            size={20}
+            className="text-white/30 hover:text-white/60"
+          />
         </button>
       </AddToPlaylistDialog>
+
       <FullscreenLikeButton track={track} />
+
       <button
         type="button"
         onClick={toggleShuffle}
-        className={`${ctrl} ${shuffle ? 'text-accent' : 'text-white/35 hover:text-white/60'}`}
+        className={`${ctrl} ${
+          shuffle
+            ? 'text-accent'
+            : 'text-white/35 hover:text-white/60'
+        }`}
       >
         {shuffleIcon16}
       </button>
+
       <button
         type="button"
-        onClick={handlePrev}
-        className={`${ctrl} text-white/60 hover:text-white`}
+        onClick={onPrev}
+        disabled={prevLocked}
+        className={`${ctrl} ${
+          prevLocked
+            ? 'text-white/30 cursor-default'
+            : 'text-white/60 hover:text-white'
+        }`}
       >
-        <SkipBack size={20} fill="currentColor" />
+        <SkipBack
+          size={20}
+          fill="currentColor"
+        />
       </button>
 
       <button
@@ -536,27 +588,56 @@ const Controls = React.memo(({ track }: { track: Track }) => {
         onClick={togglePlay}
         className="w-14 h-14 rounded-full bg-white flex items-center justify-center hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer shadow-lg outline-none mx-1"
       >
-        {isPlaying ? pauseBlack18 : playBlack18}
+        {isPlaying
+          ? pauseBlack18
+          : playBlack18}
       </button>
 
-      <button type="button" onClick={next} className={`${ctrl} text-white/60 hover:text-white`}>
-        <SkipForward size={20} fill="currentColor" />
+      <button
+        type="button"
+        onClick={onNext}
+        disabled={nextLocked}
+        className={`${ctrl} ${
+          nextLocked
+            ? 'text-white/30 cursor-default'
+            : 'text-white/60 hover:text-white'
+        }`}
+      >
+        <SkipForward
+          size={20}
+          fill="currentColor"
+        />
       </button>
+
       <button
         type="button"
         onClick={toggleRepeat}
-        className={`${ctrl} ${repeat !== 'off' ? 'text-accent' : 'text-white/35 hover:text-white/60'}`}
+        className={`${ctrl} ${
+          repeat !== 'off'
+            ? 'text-accent'
+            : 'text-white/35 hover:text-white/60'
+        }`}
       >
-        {repeat === 'one' ? repeat1Icon16 : repeatIcon16}
+        {repeat === 'one'
+          ? repeat1Icon16
+          : repeatIcon16}
       </button>
+
       <FullscreenDislikeButton track={track} />
+
       <button
         type="button"
         className={ctrl}
         onClick={handleOpenInSoundCloud}
-        title={t('player.openInSoundCloud', 'Open in SoundCloud')}
+        title={t(
+          'player.openInSoundCloud',
+          'Open in SoundCloud',
+        )}
       >
-        <ExternalLink size={18} className="text-white/30 hover:text-white/60" />
+        <ExternalLink
+          size={18}
+          className="text-white/30 hover:text-white/60"
+        />
       </button>
     </div>
   );

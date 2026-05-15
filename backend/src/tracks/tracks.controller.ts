@@ -34,6 +34,7 @@ import {
 import { TracksService } from './tracks.service.js';
 
 interface StreamResponseLike {
+  [x: string]: any;
   header: (name: string, value: string) => StreamResponseLike;
   code: (statusCode: number) => StreamResponseLike;
   send: (payload: unknown) => unknown;
@@ -188,12 +189,14 @@ export class TracksController {
     }
     if (headers['content-range']) {
       res.code(206);
+      res.raw.statusCode = 206;
       res.header('Content-Range', headers['content-range']);
     } else {
-      res.code(200);
+      res.raw.statusCode = 200;
     }
 
-    return res.send(stream);
+    stream.pipe(res.raw);
+    return;
   }
 
   @Get(':trackUrn/comments')

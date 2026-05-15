@@ -433,21 +433,34 @@ export class TracksService {
     return 'mp3';
   }
 
-  private async readStreamToBuffer(stream: Readable, maxBytes = 40 * 1024 * 1024): Promise<Buffer> {
-    const chunks: Buffer[] = [];
-    let total = 0;
+private async readStreamToBuffer(
+  stream: Readable,
+  maxBytes = 40 * 1024 * 1024,
+): Promise<Buffer> {
+  const buffers: Buffer[] = [];
+  let total = 0;
 
-    for await (const chunk of stream) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      total += buffer.length;
-      if (total > maxBytes) {
-        throw new BadGatewayException('Audio is too large for Qwen aligner upload');
-      }
-      chunks.push(buffer);
+  for await (const chunk of stream) {
+    const buffer =
+      Buffer.isBuffer(chunk)
+        ? chunk
+        : Buffer.from(chunk);
+
+    total += buffer.length;
+
+    if (total > maxBytes) {
+      throw new BadGatewayException(
+        'Audio is too large for Qwen aligner upload',
+      );
     }
 
-    return Buffer.concat(chunks);
+    buffers.push(buffer);
   }
+
+  return buffers.length === 1
+    ? buffers[0]
+    : Buffer.concat(buffers, total);
+}
 
   private extractHttpStatus(err: unknown): number | null {
     if (!err || typeof err !== 'object') return null;
