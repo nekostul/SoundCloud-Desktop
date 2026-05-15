@@ -20,6 +20,7 @@ type RecommendationCandidate = {
 };
 type TrackLike = ScTrack | { track?: ScTrack | null } | null | undefined;
 
+
 const DEFAULT_LIMIT = 24;
 const MAX_LIMIT = 48;
 const DEFAULT_HOME_SEED_LIMIT = 4;
@@ -150,6 +151,7 @@ export class RecommendationsService {
     const anchorUrn = this.normalizeTrackUrn(trackRef);
     const anchorId = this.extractTrackId(anchorUrn);
     const excludeIds = new Set<string>();
+    const recentHistoryIds = new Set<string>();
     if (anchorId) excludeIds.add(anchorId);
 
     const [related, homeCandidates] = await Promise.all([
@@ -196,6 +198,7 @@ export class RecommendationsService {
 
     const excludeIds = new Set<string>();
     const seeds: Array<{ urn: string; baseScore: number; source: string }> = [];
+    const recentHistoryIds = new Set<string>();
 
     if (historyResult.status === 'fulfilled') {
       historyResult.value.collection.forEach((entry, index) => {
@@ -205,7 +208,7 @@ export class RecommendationsService {
         excludeIds.add(id);
         seeds.push({
           urn,
-          baseScore: 1.45 - index * 0.16,
+          baseScore: 1.45 * Math.exp(-index * 0.22),
           source: 'history',
         });
       });
@@ -239,6 +242,9 @@ export class RecommendationsService {
 
     relatedLists.forEach(({ seed, related }) => {
       related.forEach((track, index) => {
+        if (recentHistoryIds.has(this.getTrackId(track) ?? '')) {
+  return;
+}
         const rankBonus = 1 - index / Math.max(related.length * 1.15, 1);
         this.mergeCandidate(candidates, track, {
           score: seed.baseScore * Math.max(rankBonus, 0.12),
@@ -263,7 +269,7 @@ export class RecommendationsService {
       const popular = this.trackCollectionFromUnknown(popularResult.value);
       popular.forEach((track, index) => {
         this.mergeCandidate(candidates, track, {
-          score: 0.34 - index / Math.max(popular.length * 4.4, 1),
+          score: 0.34 - index / Math.max(popular.length * 4.4, 1) + Math.random() * 0.08,
           source: 'popular',
           languages: opts.languages,
         });
@@ -371,7 +377,7 @@ export class RecommendationsService {
         const artistKey = this.getArtistKey(candidate.track);
         const genreKey = this.getGenreKey(candidate.track);
         const artistPenalty = artistKey ? (seenArtists.get(artistKey) ?? 0) * 0.32 : 0;
-        const genrePenalty = genreKey ? (seenGenres.get(genreKey) ?? 0) * 0.18 : 0;
+        const genrePenalty = genreKey ? (seenGenres.get(genreKey) ?? 0) * 0.28 : 0;
         const rankPenalty = index * 0.015;
         const adjustedScore =
           candidate.score - strength * (artistPenalty + genrePenalty + rankPenalty);
@@ -410,7 +416,7 @@ export class RecommendationsService {
     if (!id) return;
 
     const languageAffinity = this.getLanguageAffinity(track, opts.languages);
-    const popularityBoost = Math.min(track.likes_count ?? 0, 400_000) / 400_000 * 0.1;
+    const popularityBoost = Math.log10((track.likes_count ?? 0) + 1) / 6 * 0.035;
     const score = Math.max(opts.score, 0.02) * (0.58 + 0.42 * languageAffinity) + popularityBoost;
     const current = target.get(id);
 

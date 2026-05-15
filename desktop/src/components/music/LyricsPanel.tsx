@@ -36,7 +36,7 @@ import {
   X,
 } from '../../lib/icons';
 import { optimisticToggleLike, useLiked } from '../../lib/likes';
-import type { LyricLine, LyricsSource } from '../../lib/lyrics';
+import type { LyricLine, LyricsResult, LyricsSource } from '../../lib/lyrics';
 import {
   getLyricMotionHintsForTrack,
   LYRICS_SEARCH_QUERY_VERSION,
@@ -80,6 +80,7 @@ function useResolvedLyrics(
   reqArtist: string,
   reqTitle: string,
   trackDurationMs: number | undefined,
+  manualLyricsRef: React.MutableRefObject<Map<string, LyricsResult>>,
 ) {
   const trackUrn = track?.urn;
   const lastTrackUrnRef = useRef<string | null>(null);
@@ -128,9 +129,19 @@ enabled:
     retry: 1,
   });
 
-  const data =
+const manualLyrics =
+  trackUrn ? manualLyricsRef.current.get(trackUrn) ?? null : null;
+
+const autoLyrics =
+  resolvedQuery.data ?? lyricsQuery.data ?? null;
+
+if (trackUrn && autoLyrics && !manualLyrics) {
+  manualLyricsRef.current.set(trackUrn, autoLyrics);
+}
+
+const data =
   lastTrackUrnRef.current === trackUrn
-    ? resolvedQuery.data ?? lyricsQuery.data ?? null
+    ? manualLyrics ?? autoLyrics
     : null;
 
   const generatedFromPlain = Boolean(
@@ -1248,7 +1259,7 @@ const ReleaseSyncedLyricsWithProgress = React.memo(
     const [isUserScrolling, setIsUserScrolling] = useState(false);
     const [activeIndex, setActiveIndex] = useState(-1);
     const [timeUntilLyrics, setTimeUntilLyrics] = useState(999);
-    const [introExitProgress, setIntroExitProgress] = useState(0);
+    const [, setIntroExitProgress] = useState(0);
     const firstLineTime = lines[0]?.time ?? 0;
 
     const containerRef = useRef<HTMLDivElement>(null);
@@ -2568,29 +2579,42 @@ export const LyricsPanel = React.memo(
     const track = usePlayerStore((s) => s.currentTrack);
     const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
     const { t } = useTranslation();
-    const artworkColor = useArtworkColor(track?.artwork_url ?? null);
+const artworkColor = useArtworkColor(track?.artwork_url ?? null);
 
-    const [isEditing, setIsEditing] = useState(false);
-    const [manualQuery, setManualQuery] = useState<{ artist: string; title: string } | null>(null);
-    const [editArtist, setEditArtist] = useState('');
-    const [editTitle, setEditTitle] = useState('');
-    const [isResizingSplit, setIsResizingSplit] = useState(false);
-    const splitLayoutRef = useRef<HTMLDivElement>(null);
-    const splitDraggingRef = useRef(false);
+const [isEditing, setIsEditing] = useState(false);
+
+const manualQueryRef = useRef(
+  new Map<string, { artist: string; title: string }>(),
+);
+
+const [manualQuery, setManualQuery] = useState<{
+  artist: string;
+  title: string;
+} | null>(null);
+
+const [editArtist, setEditArtist] = useState('');
+const [editTitle, setEditTitle] = useState('');
+const [isResizingSplit, setIsResizingSplit] = useState(false);
+const splitLayoutRef = useRef<HTMLDivElement>(null);
+const splitDraggingRef = useRef(false);
 
     const reqArtist = manualQuery ? manualQuery.artist : (track?.user.username ?? '');
     const reqTitle = manualQuery ? manualQuery.title : (track?.title ?? '');
+    const manualLyricsRef = useRef(
+  new Map<string, LyricsResult>(),
+);
     const {
       data: lyrics,
       isLoading,
       generatedFromPlain,
-    } = useResolvedLyrics(
-      interactiveVisible,
-      track,
-      reqArtist,
-      reqTitle,
-      getTrackDurationMs(track),
-    );
+      } = useResolvedLyrics(
+        interactiveVisible,
+        track,
+        reqArtist,
+        reqTitle,
+        getTrackDurationMs(track),
+        manualLyricsRef,
+      );
 const warmupEnabled =
   interactiveVisible && generatedFromPlain;
     const {} = useAudioTextWarmup(
@@ -2602,10 +2626,15 @@ const warmupEnabled =
     );
 
     // biome-ignore lint/correctness/useExhaustiveDependencies: reset editor state only on track switch
-    useEffect(() => {
-      setManualQuery(null);
-      setIsEditing(false);
-    }, [track?.urn]);
+useEffect(() => {
+  if (!track?.urn) {
+    setManualQuery(null);
+    return;
+  }
+
+  setManualQuery(manualQueryRef.current.get(track.urn) ?? null);
+  setIsEditing(false);
+}, [track?.urn]);
 
     useEffect(() => {
       if (!interactiveVisible) return;
@@ -2757,10 +2786,20 @@ const warmupEnabled =
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setManualQuery({ artist: editArtist, title: editTitle });
-                      setIsEditing(false);
-                    }}
+                      onClick={() => {
+                        const query = {
+                          artist: editArtist,
+                          title: editTitle,
+                        };
+
+                        setManualQuery(query);
+
+                        if (track?.urn) {
+                          manualQueryRef.current.set(track.urn, query);
+                        }
+
+                        setIsEditing(false);
+                      }}
                     className="px-6 py-2 rounded-full text-[13px] font-bold bg-white/20 hover:bg-white/30 text-white transition-colors"
                   >
                     {t('track.search', 'Search')}
@@ -3050,18 +3089,22 @@ const FullscreenPanels = React.memo(() => {
 
   const reqArtist = manualQuery ? manualQuery.artist : (track?.user?.username ?? '');
   const reqTitle = manualQuery ? manualQuery.title : (track?.title ?? '');
+  const manualLyricsRef = useRef(
+  new Map<string, LyricsResult>(),
+);
   const {
     data: lyrics,
     isLoading,
     pseudoSynced,
     generatedFromPlain,
-  } = useResolvedLyrics(
-    mode !== 'none',
-    track,
-    reqArtist,
-    reqTitle,
-    getTrackDurationMs(track),
-  );
+} = useResolvedLyrics(
+  mode !== 'none',
+  track,
+  reqArtist,
+  reqTitle,
+  getTrackDurationMs(track),
+  manualLyricsRef,
+);
   const warmupEnabled = Boolean(
     mode !== 'none' && generatedFromPlain
   );
