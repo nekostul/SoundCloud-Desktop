@@ -396,7 +396,7 @@ function DislikeButton({ trackUrn }: { trackUrn: string }) {
       className={`w-9 h-9 flex items-center justify-center shrink-0 transition-all duration-200 cursor-pointer hover:bg-white/[0.04] ${
         isDisliked
           ? 'text-red-500 hover:text-red-400 opacity-100'
-          : 'text-white/20 hover:text-red-400/80 opacity-0 group-hover/trackinfo:opacity-100'
+          : 'text-white/20 hover:text-red-400/80 opacity-0 group-hover/trackinfo:opacity-100 w-8 h-8 rounded-full overflow-hidden flex items-center justify-center'
       }`}
     >
       <Ban size={14} />
@@ -549,7 +549,7 @@ function MoodCorrectionButton({ track }: { track: Track }) {
         className={`w-9 h-9 flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.04] ${
           open
             ? 'text-accent opacity-100'
-            : 'text-white/20 hover:text-accent opacity-0 group-hover/trackinfo:opacity-100'
+            : 'text-white/20 hover:text-accent opacity-0 group-hover/trackinfo:opacity-100 w-8 h-8 rounded-full overflow-hidden flex items-center justify-center'
         }`}
       >
         <Sparkles size={14} />
@@ -841,7 +841,7 @@ const TrackInfo = React.memo(() => {
   return (
     <div className="flex items-center gap-3.5 w-full min-w-0">
       <div
-        className="relative w-14 h-14 rounded-[10px] shrink-0 overflow-hidden cursor-pointer shadow-xl shadow-black/40 ring-1 ring-white/[0.06] hover:ring-white/[0.12] transition-all duration-200 group/art"
+        className="relative w-16 h-16 rounded-[14px] shrink-0 overflow-hidden cursor-pointer shadow-xl shadow-black/40 ring-1 ring-white/[0.06] hover:ring-white/[0.12] transition-all duration-200 group/art -ml-1"
         onClick={() => artworkPanelApi.openFromMiniPlayer()}
       >
         {artworkSmall ? (
