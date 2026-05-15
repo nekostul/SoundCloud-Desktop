@@ -667,16 +667,61 @@ const RepeatBtn = React.memo(() => {
   );
 });
 
-const PrevBtn = React.memo(() => (
-  <button type="button" onClick={handlePrev} className={btnClass(false, 'default')}>
-    {skipBack20}
-  </button>
-));
+const PrevBtn = React.memo(() => {
+  const [locked, setLocked] = useState(false);
+
+  const handleLockedPrev = () => {
+    if (locked) return;
+
+    setLocked(true);
+
+    handlePrev();
+
+    setTimeout(() => {
+      setLocked(false);
+    }, 1000);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleLockedPrev}
+      disabled={locked}
+      className={`${btnClass(false, 'default')} ${
+        locked ? 'opacity-40 cursor-default' : ''
+      }`}
+    >
+      {skipBack20}
+    </button>
+  );
+});
 
 const NextBtn = React.memo(() => {
   const next = usePlayerStore((s) => s.next);
+
+  const [locked, setLocked] = useState(false);
+
+  const handleNext = () => {
+    if (locked) return;
+
+    setLocked(true);
+
+    next();
+
+    setTimeout(() => {
+      setLocked(false);
+    }, 1000);
+  };
+
   return (
-    <button type="button" onClick={next} className={btnClass(false, 'default')}>
+    <button
+      type="button"
+      onClick={handleNext}
+      disabled={locked}
+      className={`${btnClass(false, 'default')} ${
+        locked ? 'opacity-40 cursor-default' : ''
+      }`}
+    >
       {skipForward20}
     </button>
   );
