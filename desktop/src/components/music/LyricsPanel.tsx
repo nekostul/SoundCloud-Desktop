@@ -10,7 +10,7 @@ import {
   getFallbackArtworkGradientPalette,
   useArtworkGradientPalette,
 } from '../../lib/artwork-palette';
-import { getCurrentTime, getSmoothCurrentTime, handlePrev, seek } from '../../lib/audio';
+import { getCurrentTime, getSmoothCurrentTime, seek } from '../../lib/audio';
 import type { AudioFeatures } from '../../lib/audio-analyser';
 import { audioAnalyser } from '../../lib/audio-analyser';
 import { art } from '../../lib/formatters';

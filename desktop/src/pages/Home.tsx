@@ -21,7 +21,6 @@ import {
   useRelatedPool,
 } from '../lib/hooks';
 import {
-  ChevronRight,
   Compass,
   Headphones,
   Heart,

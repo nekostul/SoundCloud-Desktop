@@ -24,7 +24,7 @@ export const TrackCard = React.memo(
     const artwork = art(track.artwork_url, 't300x300');
     const isShelf = variant === 'shelf';
 
-    const { ref, onMouseEnter, onMouseMove, onMouseLeave } = useTilt();
+    const { ref, onMouseEnter, onMouseLeave } = useTilt();
 
     return (
       <div

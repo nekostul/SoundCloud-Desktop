@@ -19,7 +19,7 @@ export const MixCard: React.FC<MixCardProps> = ({
   color,
   onClick,
 }) => {
-  const { ref, onMouseEnter, onMouseMove, onMouseLeave } = useTilt();
+  const { ref, onMouseEnter, onMouseLeave } = useTilt();
 
   return (
     <div
