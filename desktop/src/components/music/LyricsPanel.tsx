@@ -82,6 +82,11 @@ function useResolvedLyrics(
   trackDurationMs: number | undefined,
 ) {
   const trackUrn = track?.urn;
+  const lastTrackUrnRef = useRef<string | null>(null);
+
+useEffect(() => {
+  lastTrackUrnRef.current = trackUrn ?? null;
+}, [trackUrn]);
   const lyricsQuery = useQuery({
     queryKey: ['lyrics', LYRICS_SEARCH_QUERY_VERSION, trackUrn, reqArtist, reqTitle],
     queryFn: () =>
@@ -123,7 +128,10 @@ enabled:
     retry: 1,
   });
 
-  const data = resolvedQuery.data ?? lyricsQuery.data ?? null;
+  const data =
+  lastTrackUrnRef.current === trackUrn
+    ? resolvedQuery.data ?? lyricsQuery.data ?? null
+    : null;
 
   const generatedFromPlain = Boolean(
     lyricsQuery.data?.plain && !lyricsQuery.data?.synced && data?.synced,
