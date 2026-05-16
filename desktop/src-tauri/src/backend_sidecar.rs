@@ -127,23 +127,18 @@ impl BackendState {
         *child_lock = Some(child);
         if let Err(error) = self.wait_until_ready(&mut *child_lock) {
             if let Some(child) = child_lock.as_mut() {
-#[cfg(target_os = "windows")]
-{
-    let _ = Command::new("taskkill")
-        .args([
-            "/F",
-            "/T",
-            "/PID",
-            &child.id().to_string(),
-        ])
-        .spawn();
-}
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &child.id().to_string()])
+                        .spawn();
+                }
 
-#[cfg(not(target_os = "windows"))]
-{
-    let _ = child.kill();
-    let _ = child.wait();
-}
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
             }
             *child_lock = None;
             self.append_startup_log(&format!("Backend bootstrap failed: {error}"));
@@ -195,9 +190,7 @@ impl BackendState {
         let _ = stream.set_write_timeout(Some(HEALTHCHECK_TIMEOUT));
 
         if stream
-            .write_all(
-                b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-            )
+            .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
             .is_err()
         {
             return false;
@@ -223,7 +216,9 @@ impl BackendState {
             let repo_root = manifest_dir
                 .parent()
                 .and_then(|path| path.parent())
-                .ok_or_else(|| "Failed to resolve repository root from Cargo manifest dir".to_string())?;
+                .ok_or_else(|| {
+                    "Failed to resolve repository root from Cargo manifest dir".to_string()
+                })?;
             let backend_entry = repo_root.join("backend").join("dist").join("main.js");
             if !backend_entry.exists() {
                 return Err(format!(
@@ -295,7 +290,10 @@ impl BackendState {
                     ));
                     let node_binary = normalize_process_path(&node_binary);
                     let backend_entry = normalize_process_path(&backend_entry);
-                    return Ok((node_binary, vec![backend_entry.to_string_lossy().into_owned()]));
+                    return Ok((
+                        node_binary,
+                        vec![backend_entry.to_string_lossy().into_owned()],
+                    ));
                 }
             }
 
@@ -324,23 +322,18 @@ impl Drop for BackendState {
     fn drop(&mut self) {
         if let Ok(mut child_lock) = self.child.lock() {
             if let Some(child) = child_lock.as_mut() {
-#[cfg(target_os = "windows")]
-{
-    let _ = Command::new("taskkill")
-        .args([
-            "/F",
-            "/T",
-            "/PID",
-            &child.id().to_string(),
-        ])
-        .spawn();
-}
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &child.id().to_string()])
+                        .spawn();
+                }
 
-#[cfg(not(target_os = "windows"))]
-{
-    let _ = child.kill();
-    let _ = child.wait();
-}
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
             }
         }
     }

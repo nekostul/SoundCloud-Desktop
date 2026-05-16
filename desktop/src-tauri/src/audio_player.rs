@@ -20,6 +20,10 @@ use souvlaki::{
     PlatformConfig,
 };
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::fs::{File as TokioFile, OpenOptions as TokioOpenOptions};
+use tokio::io::{AsyncWriteExt, BufWriter};
+
+use crate::hls::{resolve_media_playlist, response_is_hls};
 
 /* ── Constants ─────────────────────────────────────────────── */
 
@@ -41,6 +45,7 @@ const NORMALIZATION_CACHE_VERSION: u8 = 2;
 const MAX_SEEK_FALLBACK_SOURCE_BYTES: usize = 12 * 1024 * 1024;
 const RANGE_SEEK_PREROLL_SECS: f64 = 0.35;
 const RANGE_SEEK_ALIGNMENT_BYTES: u64 = 4 * 1024;
+const STREAM_CACHE_WRITE_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 const CROSSFADE_HEADROOM: f32 = 0.88;
 const PLAYBACK_RATE_MIN: f32 = 0.5;
 const PLAYBACK_RATE_MAX: f32 = 2.0;
@@ -48,9 +53,86 @@ const PITCH_SEMITONES_MIN: f32 = -12.0;
 const PITCH_SEMITONES_MAX: f32 = 12.0;
 const PITCH_SOURCE_INPUT_FRAMES: usize = 1024;
 const PITCH_SOURCE_OUTPUT_FRAMES: usize = 2048;
+const CACHE_METADATA_EXT: &str = ".meta.json";
 
 type ChannelCount = NonZero<u16>;
 type SampleRate = NonZero<u32>;
+
+#[derive(serde::Serialize)]
+struct StreamCacheMetadata<'a> {
+    quality: &'a str,
+    source: &'a str,
+    complete: bool,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct StoredStreamCacheMetadata {
+    complete: bool,
+    downloaded_bytes: Option<u64>,
+    total_bytes: Option<u64>,
+}
+
+fn complete_stream_cache_exists(final_path: &str) -> bool {
+    let file_len = std::fs::metadata(final_path)
+        .ok()
+        .filter(|meta| meta.is_file() && meta.len() >= 8192)
+        .map(|meta| meta.len());
+    let Some(file_len) = file_len else {
+        return false;
+    };
+
+    let metadata_path = format!("{final_path}{CACHE_METADATA_EXT}");
+    let Ok(raw) = std::fs::read_to_string(metadata_path) else {
+        return false;
+    };
+    let Ok(metadata) = serde_json::from_str::<StoredStreamCacheMetadata>(&raw) else {
+        return false;
+    };
+    let downloaded_bytes = metadata.downloaded_bytes.unwrap_or(file_len);
+
+    metadata.complete
+        && downloaded_bytes >= file_len
+        && metadata
+            .total_bytes
+            .map(|total| downloaded_bytes >= total)
+            .unwrap_or(true)
+}
+
+async fn write_stream_cache_metadata(
+    final_path: &str,
+    quality: Option<&str>,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+) {
+    let metadata = StreamCacheMetadata {
+        quality: if quality == Some("hq") { "hq" } else { "sq" },
+        source: "api",
+        complete: true,
+        downloaded_bytes,
+        total_bytes,
+    };
+
+    let Ok(raw) = serde_json::to_vec(&metadata) else {
+        return;
+    };
+
+    let final_metadata_path = format!("{final_path}{CACHE_METADATA_EXT}");
+    let temp_metadata_path = format!("{final_metadata_path}.tmp");
+
+    if tokio::fs::write(&temp_metadata_path, raw).await.is_err() {
+        tokio::fs::remove_file(&temp_metadata_path).await.ok();
+        return;
+    }
+
+    if tokio::fs::rename(&temp_metadata_path, &final_metadata_path)
+        .await
+        .is_err()
+    {
+        tokio::fs::remove_file(&temp_metadata_path).await.ok();
+    }
+}
 
 /* ── EQ Parameters (shared between audio thread and commands) ─ */
 
@@ -864,8 +946,8 @@ where
     Ok((player, duration))
 }
 
-fn create_player_from_bytes(
-    bytes: &[u8],
+fn create_player_from_owned_bytes(
+    bytes: Vec<u8>,
     mixer: &Mixer,
     volume: f32,
     playback_speed: f32,
@@ -874,7 +956,7 @@ fn create_player_from_bytes(
     pitch_params: Arc<RwLock<PitchParams>>,
     vis_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
 ) -> Result<(Player, Option<f64>), String> {
-    if let Ok(source) = Decoder::new(Cursor::new(bytes.to_vec())) {
+    if let Ok(source) = Decoder::new(Cursor::new(bytes.clone())) {
         return wrap_source_into_player(
             source,
             mixer,
@@ -887,7 +969,7 @@ fn create_player_from_bytes(
         );
     }
 
-    let source = OpusSource::new(bytes.to_vec()).map_err(|e| format!("Failed to decode: {}", e))?;
+    let source = OpusSource::new(bytes).map_err(|e| format!("Failed to decode: {}", e))?;
     wrap_source_into_player(
         source,
         mixer,
@@ -936,6 +1018,10 @@ impl StreamingBuffer {
     fn snapshot(&self) -> Vec<u8> {
         self.state.lock().unwrap().bytes.clone()
     }
+
+    fn len(&self) -> usize {
+        self.state.lock().unwrap().bytes.len()
+    }
 }
 
 struct StreamingBufferReader {
@@ -945,36 +1031,51 @@ struct StreamingBufferReader {
 
 impl StreamingBufferReader {
     fn new(shared: Arc<StreamingBuffer>) -> Self {
-        Self {
-            shared,
-            position: 0,
-        }
+        Self::with_position(shared, 0)
+    }
+
+    fn with_position(shared: Arc<StreamingBuffer>, position: u64) -> Self {
+        Self { shared, position }
     }
 }
 
 impl Read for StreamingBufferReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut state = self.shared.state.lock().unwrap();
         loop {
-            let available = state.bytes.len() as u64;
-            if self.position < available {
-                let start = self.position as usize;
-                let end = (start + buf.len()).min(state.bytes.len());
-                let len = end.saturating_sub(start);
-                buf[..len].copy_from_slice(&state.bytes[start..end]);
-                self.position += len as u64;
-                return Ok(len);
+            {
+                let state = self.shared.state.lock().unwrap();
+
+                let available = state.bytes.len() as u64;
+
+                if self.position < available {
+                    let start = self.position as usize;
+                    let end = (start + buf.len()).min(state.bytes.len());
+
+                    let slice = &state.bytes[start..end];
+
+                    let len = slice.len();
+
+                    buf[..len].copy_from_slice(slice);
+
+                    self.position += len as u64;
+
+                    return Ok(len);
+                }
+
+                if let Some(error) = state.error.clone() {
+                    return Err(io::Error::new(io::ErrorKind::Other, error));
+                }
+
+                if state.done {
+                    return Ok(0);
+                }
             }
 
-            if let Some(error) = state.error.clone() {
-                return Err(io::Error::new(io::ErrorKind::Other, error));
-            }
+            let state = self.shared.state.lock().unwrap();
 
-            if state.done {
-                return Ok(0);
-            }
+            let guard = self.shared.ready.wait(state).unwrap();
 
-            state = self.shared.ready.wait(state).unwrap();
+            drop(guard);
         }
     }
 }
@@ -986,15 +1087,7 @@ impl Seek for StreamingBufferReader {
         let target = match pos {
             SeekFrom::Start(offset) => offset as i128,
             SeekFrom::Current(offset) => self.position as i128 + offset as i128,
-            SeekFrom::End(offset) => {
-                if !state.done {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "stream length is not known yet",
-                    ));
-                }
-                available + offset as i128
-            }
+            SeekFrom::End(offset) => available + offset as i128,
         };
 
         if target < 0 {
@@ -1032,7 +1125,14 @@ fn decoder_hint_from_stream(
     content_type: Option<&str>,
 ) -> (Option<&'static str>, Option<String>) {
     let normalized_mime = content_type
-        .map(|value| value.split(';').next().unwrap_or(value).trim().to_ascii_lowercase())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .to_ascii_lowercase()
+        })
         .filter(|value| !value.is_empty());
 
     let hint = if let Some(mime) = normalized_mime.as_deref() {
@@ -1071,7 +1171,7 @@ fn create_player_from_stream_reader(
     vis_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
 ) -> Result<(Player, Option<f64>), String> {
     let (hint, normalized_mime) = decoder_hint_from_stream(url, content_type);
-    let mut builder = Decoder::builder().with_data(reader).with_seekable(true);
+    let mut builder = Decoder::builder().with_data(reader);
     if let Some(hint) = hint {
         builder = builder.with_hint(hint);
     }
@@ -1147,6 +1247,9 @@ pub struct AudioState {
     audio_tx: std::sync::mpsc::Sender<AudioThreadCmd>,
     /// Saved source bytes for seek fallback (reload + seek forward)
     source_bytes: Arc<Mutex<Option<Vec<u8>>>>,
+    live_stream_buffer: Arc<Mutex<Option<Arc<StreamingBuffer>>>>,
+    stream_source_url: Mutex<Option<String>>,
+    stream_content_type: Mutex<Option<String>>,
     stream_total_bytes: Arc<AtomicU64>,
     stream_downloaded_bytes: Arc<AtomicU64>,
     stream_duration_ms: Arc<AtomicU64>,
@@ -1330,6 +1433,9 @@ pub fn init() -> AudioState {
         media_tx: Mutex::new(None),
         audio_tx: cmd_tx,
         source_bytes: Arc::new(Mutex::new(None)),
+        live_stream_buffer: Arc::new(Mutex::new(None)),
+        stream_source_url: Mutex::new(None),
+        stream_content_type: Mutex::new(None),
         stream_total_bytes: Arc::new(AtomicU64::new(0)),
         stream_downloaded_bytes: Arc::new(AtomicU64::new(0)),
         stream_duration_ms: Arc::new(AtomicU64::new(0)),
@@ -1612,6 +1718,15 @@ fn store_seek_fallback_bytes(state: &AudioState, bytes: Vec<u8>) {
 }
 
 fn clear_stream_seek_tracking(state: &AudioState) {
+    if let Ok(mut live_stream_buffer) = state.live_stream_buffer.try_lock() {
+        *live_stream_buffer = None;
+    }
+    if let Ok(mut stream_source_url) = state.stream_source_url.try_lock() {
+        *stream_source_url = None;
+    }
+    if let Ok(mut stream_content_type) = state.stream_content_type.try_lock() {
+        *stream_content_type = None;
+    }
     state.stream_total_bytes.store(0, Ordering::Relaxed);
     state.stream_downloaded_bytes.store(0, Ordering::Relaxed);
     state.stream_duration_ms.store(0, Ordering::Relaxed);
@@ -1639,6 +1754,37 @@ fn estimated_stream_buffered_timeline_secs(state: &AudioState) -> Option<f64> {
     Some((duration_ms as f64 / 1000.0) * ratio)
 }
 
+fn emit_stream_download_progress(
+    app: &AppHandle,
+    gen: u64,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    done: bool,
+    ranged_seek_load: bool,
+    cache_complete: bool,
+) {
+    let progress = if ranged_seek_load {
+        None
+    } else {
+        total_bytes
+            .filter(|size| *size > 0)
+            .map(|size| (downloaded_bytes as f64 / size as f64).clamp(0.0, 1.0))
+    };
+
+    let _ = app.emit(
+        "audio:download_progress",
+        serde_json::json!({
+            "gen": gen,
+            "progress": progress,
+            "downloadedBytes": downloaded_bytes,
+            "totalBytes": total_bytes,
+            "done": done,
+            "rangedSeekLoad": ranged_seek_load,
+            "cacheComplete": cache_complete,
+        }),
+    );
+}
+
 #[derive(Clone, Copy, Debug)]
 struct RangeSeekPlan {
     start_byte: u64,
@@ -1653,6 +1799,65 @@ fn parse_total_size_from_content_range(value: Option<&str>) -> Option<u64> {
         return None;
     }
     total_part.parse::<u64>().ok()
+}
+
+fn content_type_is_hls_playlist(value: Option<&str>) -> bool {
+    value
+        .map(|raw| raw.to_ascii_lowercase())
+        .map(|raw| raw.contains("mpegurl") || raw.contains("vnd.apple"))
+        .unwrap_or(false)
+}
+
+async fn stream_response_into_live_targets(
+    response: reqwest::Response,
+    shared_buffer: &Arc<StreamingBuffer>,
+    cache_writer: &mut Option<BufWriter<TokioFile>>,
+    cache_temp_path: Option<&str>,
+    stream_downloaded_bytes: &Arc<AtomicU64>,
+    app: &tauri::AppHandle,
+    gen: u64,
+    total_downloaded: &mut u64,
+    total_size: Option<u64>,
+    is_ranged_seek_load: bool,
+    cancel_download: &Arc<AtomicBool>,
+    load_gen: &Arc<AtomicU64>,
+    active_gen: u64,
+) -> Result<(), String> {
+    let mut body_stream = response.bytes_stream();
+
+    while let Some(chunk_result) = body_stream.next().await {
+        if cancel_download.load(Ordering::Relaxed) || load_gen.load(Ordering::Relaxed) != active_gen
+        {
+            return Err("stream download cancelled".to_string());
+        }
+
+        let chunk = chunk_result.map_err(|error| error.to_string())?;
+        *total_downloaded = total_downloaded.saturating_add(chunk.len() as u64);
+        stream_downloaded_bytes.store(*total_downloaded, Ordering::Relaxed);
+        shared_buffer.append(chunk.as_ref());
+
+        if let Some(writer) = cache_writer.as_mut() {
+            if let Err(error) = writer.write_all(&chunk).await {
+                eprintln!("[Audio] Streaming cache write failed: {error}");
+                *cache_writer = None;
+                if let Some(temp_path) = cache_temp_path {
+                    tokio::fs::remove_file(temp_path).await.ok();
+                }
+            }
+        }
+
+        emit_stream_download_progress(
+            app,
+            gen,
+            *total_downloaded,
+            total_size,
+            false,
+            is_ranged_seek_load,
+            false,
+        );
+    }
+
+    Ok(())
 }
 
 fn compute_range_seek_plan(
@@ -1686,6 +1891,146 @@ fn compute_range_seek_plan(
     })
 }
 
+fn create_player_from_live_stream_seek(
+    state: &AudioState,
+    target_secs: f64,
+    playback_speed: f32,
+    normalization_gain: f32,
+) -> Result<(Player, PositionAnchor), String> {
+    let live_stream_buffer = state
+        .live_stream_buffer
+        .try_lock()
+        .map_err(|_| "Seek busy: live stream buffer".to_string())?
+        .clone()
+        .ok_or_else(|| "Seek target is not buffered yet".to_string())?;
+
+    let stream_url = state
+        .stream_source_url
+        .try_lock()
+        .map_err(|_| "Seek busy: stream url".to_string())?
+        .clone()
+        .ok_or_else(|| "Seek target is not buffered yet".to_string())?;
+
+    let stream_content_type = state
+        .stream_content_type
+        .try_lock()
+        .map_err(|_| "Seek busy: stream content type".to_string())?
+        .clone();
+
+    let downloaded_bytes = state.stream_downloaded_bytes.load(Ordering::Relaxed);
+
+    if downloaded_bytes == 0 {
+        return Err("Seek target is not buffered yet".into());
+    }
+
+    let mixer = state
+        .mixer
+        .try_lock()
+        .map_err(|_| "Seek busy: mixer".to_string())?
+        .clone();
+
+    let vol = *state
+        .volume
+        .try_lock()
+        .map_err(|_| "Seek busy: volume".to_string())?;
+
+    let duration_ms = state.stream_duration_ms.load(Ordering::Relaxed);
+
+    let duration_secs = (duration_ms as f64 / 1000.0).max(1.0);
+
+    let seek_ratio = (target_secs / duration_secs).clamp(0.0, 1.0);
+
+    let seek_byte_offset = (downloaded_bytes as f64 * seek_ratio) as u64;
+
+    let clamped_seek_offset = seek_byte_offset.min(downloaded_bytes.saturating_sub(64 * 1024));
+
+    let reader = StreamingBufferReader::with_position(live_stream_buffer, clamped_seek_offset);
+
+    let (new_player, _) = create_player_from_stream_reader(
+        reader,
+        &stream_url,
+        stream_content_type.as_deref(),
+        &mixer,
+        vol,
+        playback_speed,
+        normalization_gain,
+        state.eq_params.clone(),
+        state.pitch_params.clone(),
+        state
+            .visualizer_tx
+            .try_lock()
+            .map_err(|_| "Seek busy: visualizer".to_string())?
+            .clone(),
+    )?;
+
+    let anchor = if target_secs > 0.015 {
+        PositionAnchor {
+            timeline_secs: target_secs.max(0.0),
+            output_secs: new_player.get_pos().as_secs_f64(),
+        }
+    } else {
+        PositionAnchor {
+            timeline_secs: 0.0,
+            output_secs: 0.0,
+        }
+    };
+
+    Ok((new_player, anchor))
+}
+
+fn replace_player_after_seek(
+    state: &AudioState,
+    new_player: Player,
+    anchor: PositionAnchor,
+) -> Result<(), String> {
+    let was_paused = state
+        .player
+        .try_lock()
+        .map_err(|_| "Seek busy: player".to_string())?
+        .as_ref()
+        .map(|p| p.is_paused())
+        .unwrap_or(false);
+
+    let old_player = state
+        .player
+        .try_lock()
+        .map_err(|_| "Seek busy: player".to_string())?
+        .take();
+    let old_cf_player = state
+        .crossfade_player
+        .try_lock()
+        .map_err(|_| "Seek busy: crossfade player".to_string())?
+        .take();
+
+    if let Some(old) = old_player {
+        old.stop();
+    }
+    if let Some(old_cf) = old_cf_player {
+        old_cf.stop();
+    }
+
+    *state
+        .player
+        .try_lock()
+        .map_err(|_| "Seek busy: player".to_string())? = Some(Arc::new(new_player));
+    set_position_anchor(state, anchor.timeline_secs, anchor.output_secs);
+    state.ended_notified.store(false, Ordering::Relaxed);
+    state.has_track.store(true, Ordering::Relaxed);
+    state.device_error.store(false, Ordering::Relaxed);
+
+    if was_paused {
+        if let Some(ref p) = *state
+            .player
+            .try_lock()
+            .map_err(|_| "Seek busy: player".to_string())?
+        {
+            p.pause();
+        }
+    }
+
+    Ok(())
+}
+
 /// Load and play audio from a file path
 #[tauri::command]
 pub fn audio_load_file(
@@ -1714,8 +2059,11 @@ pub fn audio_load_file(
     } else {
         1.0
     };
-    let (new_player, duration_secs) = create_player_from_bytes(
-        &bytes,
+    if let Ok(mut live_stream_buffer) = state.live_stream_buffer.try_lock() {
+        *live_stream_buffer = None;
+    }
+    let (new_player, duration_secs) = create_player_from_owned_bytes(
+        bytes.clone(),
         &mixer,
         vol,
         playback_speed,
@@ -1806,6 +2154,7 @@ pub struct AudioLoadResult {
 pub async fn audio_load_url(
     url: String,
     session_id: Option<String>,
+    stream_content_type_hint: Option<String>,
     cache_path: Option<String>,
     cache_key: Option<String>,
     crossfade_secs: Option<f64>,
@@ -1820,10 +2169,10 @@ pub async fn audio_load_url(
         0 => None,
         ms => Some(ms as f64 / 1000.0),
     };
-    let range_seek_target_secs = range_seek_target_secs
-        .filter(|secs| secs.is_finite() && *secs > 0.0);
-    let range_seek_duration_secs =
-        range_seek_target_secs.and_then(|_| expected_duration_secs.or(previous_stream_duration_secs));
+    let range_seek_target_secs =
+        range_seek_target_secs.filter(|secs| secs.is_finite() && *secs > 0.0);
+    let range_seek_duration_secs = range_seek_target_secs
+        .and_then(|_| expected_duration_secs.or(previous_stream_duration_secs));
     let is_ranged_seek_load = range_seek_target_secs.is_some();
 
     let normalization_cache_dir = app
@@ -1843,6 +2192,12 @@ pub async fn audio_load_url(
     let reader = StreamingBufferReader::new(shared_buffer.clone());
     let cancel_download = Arc::new(AtomicBool::new(false));
     clear_stream_seek_tracking(&state);
+    if let Ok(mut live_stream_buffer) = state.live_stream_buffer.try_lock() {
+        *live_stream_buffer = Some(shared_buffer.clone());
+    }
+    if let Ok(mut stream_source_url) = state.stream_source_url.try_lock() {
+        *stream_source_url = Some(url.clone());
+    }
 
     let load_gen = state.load_gen.clone();
     let source_bytes = state.source_bytes.clone();
@@ -1856,18 +2211,30 @@ pub async fn audio_load_url(
     let app_for_download = app.clone();
     let url_for_download = url.clone();
     let session_id_for_download = session_id.clone();
+    let stream_content_type_hint_for_download = stream_content_type_hint.clone();
     let range_seek_target_for_download = range_seek_target_secs;
     let range_seek_duration_for_download = range_seek_duration_secs;
     let previous_total_bytes_for_download = previous_stream_total_bytes;
     let is_ranged_seek_load_for_download = is_ranged_seek_load;
     let (bootstrap_tx, bootstrap_rx) = std::sync::mpsc::sync_channel::<
-        Result<(Option<String>, Option<String>, Option<u64>, Option<f64>, Option<f64>), String>,
+        Result<
+            (
+                Option<String>,
+                Option<String>,
+                Option<u64>,
+                Option<f64>,
+                Option<f64>,
+                u64,
+            ),
+            String,
+        >,
     >(1);
 
     std::thread::Builder::new()
         .name("audio-stream-download".into())
         .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
                 .enable_all()
                 .build()
             {
@@ -1889,6 +2256,31 @@ pub async fn audio_load_url(
                     None
                 };
                 let mut planned_range_seek = None;
+                let cache_temp_path_for_download = cache_path_for_download
+                    .as_ref()
+                    .filter(|_| !is_ranged_seek_load_for_download)
+                    .map(|path| format!("{path}.part"));
+                let mut resume_cached_bytes = Vec::new();
+                let mut resume_cached_len = 0u64;
+
+                if let Some(temp_path) = cache_temp_path_for_download.as_deref() {
+                    if let Ok(meta) = tokio::fs::metadata(temp_path).await {
+                        if meta.len() > 0 {
+                            match tokio::fs::read(temp_path).await {
+                                Ok(bytes) if !bytes.is_empty() => {
+                                    resume_cached_len = bytes.len() as u64;
+                                    resume_cached_bytes = bytes;
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    eprintln!(
+                                        "[Audio] Failed to read partial streaming cache {temp_path}: {error}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
 
                 if let (Some(target_secs), Some(duration_secs)) = (
                     range_seek_target_for_download,
@@ -1924,9 +2316,12 @@ pub async fn audio_load_url(
                     }
                 }
 
-                let requested_range_start = planned_range_seek
+                let mut requested_range_start = planned_range_seek
                     .map(|plan| plan.start_byte)
                     .unwrap_or(0);
+                if requested_range_start == 0 && resume_cached_len > 0 {
+                    requested_range_start = resume_cached_len;
+                }
 
                 let mut req = client.get(&url_for_download);
                 if let Some(sid) = session_id_for_download.as_deref() {
@@ -1955,101 +2350,400 @@ pub async fn audio_load_url(
                     .and_then(|v| v.to_str().ok())
                     .map(|v| v.to_ascii_lowercase())
                     .filter(|v| v == "hq" || v == "lq");
-                let stream_content_type = resp
+                let response_content_type = resp
                     .headers()
                     .get("content-type")
                     .and_then(|v| v.to_str().ok())
                     .map(|v| v.to_ascii_lowercase());
-                let content_length = resp
-                    .headers()
-                    .get("content-length")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok());
-                let partial_range_accepted = requested_range_start == 0
-                    || resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-                let applied_range_seek = if partial_range_accepted {
-                    planned_range_seek
-                } else {
-                    None
-                };
-                let absolute_downloaded_base = applied_range_seek
-                    .map(|plan| plan.start_byte)
-                    .unwrap_or(0);
-                let total_size = parse_total_size_from_content_range(
-                    resp.headers()
-                        .get("content-range")
-                        .and_then(|value| value.to_str().ok()),
-                )
-                .or(resolved_total_size)
-                .or_else(|| {
-                    content_length.and_then(|length| {
-                        if requested_range_start > 0
-                            && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT
-                        {
-                            Some(requested_range_start.saturating_add(length))
-                        } else {
-                            Some(length)
-                        }
+                let is_hls_stream = response_is_hls(&resp, &url_for_download)
+                    || content_type_is_hls_playlist(response_content_type.as_deref());
+                let stream_content_type = if is_hls_stream {
+                    stream_content_type_hint_for_download.clone().or_else(|| {
+                        response_content_type
+                            .clone()
+                            .filter(|value| !content_type_is_hls_playlist(Some(value.as_str())))
                     })
-                });
-                stream_total_bytes.store(total_size.unwrap_or(0), Ordering::Relaxed);
-                stream_downloaded_bytes.store(absolute_downloaded_base, Ordering::Relaxed);
+                } else {
+                    response_content_type.clone()
+                };
 
-                if bootstrap_tx
-                    .send(Ok((
-                        stream_quality.clone(),
-                        stream_content_type.clone(),
-                        total_size,
-                        applied_range_seek.map(|plan| plan.base_secs),
-                        applied_range_seek.map(|plan| plan.local_seek_secs),
-                    )))
-                    .is_err()
-                {
-                    return;
-                }
-
-                let mut body_stream = resp.bytes_stream();
                 let mut downloaded = 0u64;
+                let mut cache_writer: Option<BufWriter<TokioFile>>;
+                let total_size;
+                let applied_range_seek;
+                let absolute_downloaded_base;
 
-                while let Some(chunk_result) = body_stream.next().await {
-                    if cancel_for_download.load(Ordering::Relaxed)
-                        || load_gen.load(Ordering::Relaxed) != gen
+                if is_hls_stream {
+                    if let Some(temp_path) = cache_temp_path_for_download.as_deref() {
+                        tokio::fs::remove_file(temp_path).await.ok();
+                    }
+
+                    total_size = None;
+                    applied_range_seek = range_seek_target_for_download.map(|target_secs| RangeSeekPlan {
+                        start_byte: 0,
+                        base_secs: 0.0,
+                        local_seek_secs: target_secs,
+                    });
+                    absolute_downloaded_base = 0;
+                    stream_total_bytes.store(0, Ordering::Relaxed);
+                    stream_downloaded_bytes.store(0, Ordering::Relaxed);
+
+                    if bootstrap_tx
+                        .send(Ok((
+                            stream_quality.clone(),
+                            stream_content_type.clone(),
+                            total_size,
+                            applied_range_seek.map(|plan| plan.base_secs),
+                            applied_range_seek.map(|plan| plan.local_seek_secs),
+                            absolute_downloaded_base,
+                        )))
+                        .is_err()
                     {
-                        shared_buffer_for_download.fail("stream download cancelled".into());
                         return;
                     }
 
-                    match chunk_result {
-                        Ok(chunk) => {
-                            downloaded += chunk.len() as u64;
-                            let absolute_downloaded =
-                                absolute_downloaded_base.saturating_add(downloaded);
-                            stream_downloaded_bytes
-                                .store(absolute_downloaded, Ordering::Relaxed);
-                            shared_buffer_for_download.append(chunk.as_ref());
-
-                            if let Some(size) = total_size.filter(|size| *size > 0) {
-                                let progress =
-                                    (absolute_downloaded as f64 / size as f64).clamp(0.0, 1.0);
-                                let _ = app_for_download.emit(
-                                    "audio:download_progress",
-                                    serde_json::json!({"gen": gen, "progress": progress}),
+                    cache_writer = if let Some(temp_path) = cache_temp_path_for_download.as_deref() {
+                        match TokioFile::create(temp_path).await {
+                            Ok(file) => Some(BufWriter::with_capacity(
+                                STREAM_CACHE_WRITE_BUFFER_SIZE,
+                                file,
+                            )),
+                            Err(error) => {
+                                eprintln!(
+                                    "[Audio] Failed to create HLS cache temp file {temp_path}: {error}"
                                 );
+                                None
                             }
                         }
+                    } else {
+                        None
+                    };
+
+                    let playlist = match resolve_media_playlist(&client, resp, &url_for_download).await {
+                        Ok(playlist) => playlist,
                         Err(error) => {
-                            shared_buffer_for_download.fail(error.to_string());
+                            if let Some(mut writer) = cache_writer.take() {
+                                let _ = writer.flush().await;
+                            }
+                            shared_buffer_for_download.fail(error);
                             return;
+                        }
+                    };
+                    println!("[Audio] Direct HLS playback via {}", playlist.playlist_url);
+
+                    if let Some(init_url) = playlist.init_segment_url.as_deref() {
+                        let init_response = match client.get(init_url).send().await {
+                            Ok(response) => response,
+                            Err(error) => {
+                                if let Some(mut writer) = cache_writer.take() {
+                                    let _ = writer.flush().await;
+                                }
+                                shared_buffer_for_download.fail(format!(
+                                    "Failed to fetch HLS init segment: {error}"
+                                ));
+                                return;
+                            }
+                        };
+
+                        if !init_response.status().is_success() {
+                            if let Some(mut writer) = cache_writer.take() {
+                                let _ = writer.flush().await;
+                            }
+                            shared_buffer_for_download.fail(format!(
+                                "HLS init segment HTTP {}",
+                                init_response.status()
+                            ));
+                            return;
+                        }
+
+                        if let Err(error) = stream_response_into_live_targets(
+                            init_response,
+                            &shared_buffer_for_download,
+                            &mut cache_writer,
+                            cache_temp_path_for_download.as_deref(),
+                            &stream_downloaded_bytes,
+                            &app_for_download,
+                            gen,
+                            &mut downloaded,
+                            total_size,
+                            is_ranged_seek_load_for_download,
+                            &cancel_for_download,
+                            &load_gen,
+                            gen,
+                        )
+                        .await
+                        {
+                            if let Some(mut writer) = cache_writer.take() {
+                                let _ = writer.flush().await;
+                            }
+                            shared_buffer_for_download.fail(error);
+                            return;
+                        }
+                    }
+
+                    for segment_url in &playlist.segment_urls {
+                        let segment_response = match client.get(segment_url).send().await {
+                            Ok(response) => response,
+                            Err(error) => {
+                                if let Some(mut writer) = cache_writer.take() {
+                                    let _ = writer.flush().await;
+                                }
+                                shared_buffer_for_download.fail(format!(
+                                    "Failed to fetch HLS segment: {error}"
+                                ));
+                                return;
+                            }
+                        };
+
+                        if !segment_response.status().is_success() {
+                            if let Some(mut writer) = cache_writer.take() {
+                                let _ = writer.flush().await;
+                            }
+                            shared_buffer_for_download.fail(format!(
+                                "HLS segment HTTP {}",
+                                segment_response.status()
+                            ));
+                            return;
+                        }
+
+                        if let Err(error) = stream_response_into_live_targets(
+                            segment_response,
+                            &shared_buffer_for_download,
+                            &mut cache_writer,
+                            cache_temp_path_for_download.as_deref(),
+                            &stream_downloaded_bytes,
+                            &app_for_download,
+                            gen,
+                            &mut downloaded,
+                            total_size,
+                            is_ranged_seek_load_for_download,
+                            &cancel_for_download,
+                            &load_gen,
+                            gen,
+                        )
+                        .await
+                        {
+                            if let Some(mut writer) = cache_writer.take() {
+                                let _ = writer.flush().await;
+                            }
+                            shared_buffer_for_download.fail(error);
+                            return;
+                        }
+                    }
+                } else {
+                    let content_length = resp
+                        .headers()
+                        .get("content-length")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse::<u64>().ok());
+                    let partial_range_accepted = requested_range_start == 0
+                        || resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+                    let resumed_from_partial_cache = planned_range_seek.is_none()
+                        && resume_cached_len > 0
+                        && requested_range_start == resume_cached_len
+                        && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+                    if requested_range_start > 0 && !partial_range_accepted {
+                        resume_cached_bytes.clear();
+                        resume_cached_len = 0;
+                        if let Some(temp_path) = cache_temp_path_for_download.as_deref() {
+                            tokio::fs::remove_file(temp_path).await.ok();
+                        }
+                    }
+                    applied_range_seek = if partial_range_accepted {
+                        planned_range_seek
+                    } else {
+                        None
+                    };
+                    absolute_downloaded_base = if resumed_from_partial_cache {
+                        resume_cached_len
+                    } else {
+                        applied_range_seek.map(|plan| plan.start_byte).unwrap_or(0)
+                    };
+                    total_size = parse_total_size_from_content_range(
+                        resp.headers()
+                            .get("content-range")
+                            .and_then(|value| value.to_str().ok()),
+                    )
+                    .or(resolved_total_size)
+                    .or_else(|| {
+                        content_length.and_then(|length| {
+                            if requested_range_start > 0
+                                && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT
+                            {
+                                Some(requested_range_start.saturating_add(length))
+                            } else {
+                                Some(length)
+                            }
+                        })
+                    });
+                    stream_total_bytes.store(total_size.unwrap_or(0), Ordering::Relaxed);
+                    stream_downloaded_bytes.store(absolute_downloaded_base, Ordering::Relaxed);
+                    if resumed_from_partial_cache && !resume_cached_bytes.is_empty() {
+                        shared_buffer_for_download.append(resume_cached_bytes.as_ref());
+                    }
+
+                    if bootstrap_tx
+                        .send(Ok((
+                            stream_quality.clone(),
+                            stream_content_type.clone(),
+                            total_size,
+                            applied_range_seek.map(|plan| plan.base_secs),
+                            applied_range_seek.map(|plan| plan.local_seek_secs),
+                            absolute_downloaded_base,
+                        )))
+                        .is_err()
+                    {
+                        return;
+                    }
+
+                    cache_writer = if let Some(temp_path) = cache_temp_path_for_download.as_deref() {
+                        let open_result = if resumed_from_partial_cache {
+                            TokioOpenOptions::new().append(true).open(temp_path).await
+                        } else {
+                            tokio::fs::remove_file(temp_path).await.ok();
+                            TokioFile::create(temp_path).await
+                        };
+                        match open_result {
+                            Ok(file) => Some(BufWriter::with_capacity(
+                                STREAM_CACHE_WRITE_BUFFER_SIZE,
+                                file,
+                            )),
+                            Err(error) => {
+                                eprintln!(
+                                    "[Audio] Failed to create streaming cache temp file {temp_path}: {error}"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
+                    let mut body_stream = resp.bytes_stream();
+                    while let Some(chunk_result) = body_stream.next().await {
+                        if cancel_for_download.load(Ordering::Relaxed)
+                            || load_gen.load(Ordering::Relaxed) != gen
+                        {
+                            if let Some(mut writer) = cache_writer.take() {
+                                let _ = writer.flush().await;
+                            }
+                            shared_buffer_for_download.fail("stream download cancelled".into());
+                            return;
+                        }
+
+                        match chunk_result {
+                            Ok(chunk) => {
+                                downloaded += chunk.len() as u64;
+                                let absolute_downloaded =
+                                    absolute_downloaded_base.saturating_add(downloaded);
+                                stream_downloaded_bytes
+                                    .store(absolute_downloaded, Ordering::Relaxed);
+                                shared_buffer_for_download.append(chunk.as_ref());
+                                if let Some(writer) = cache_writer.as_mut() {
+                                    if let Err(error) = writer.write_all(&chunk).await {
+                                        eprintln!("[Audio] Streaming cache write failed: {error}");
+                                        cache_writer = None;
+                                        if let Some(temp_path) =
+                                            cache_temp_path_for_download.as_deref()
+                                        {
+                                            tokio::fs::remove_file(temp_path).await.ok();
+                                        }
+                                    }
+                                }
+
+                                emit_stream_download_progress(
+                                    &app_for_download,
+                                    gen,
+                                    absolute_downloaded,
+                                    total_size,
+                                    false,
+                                    is_ranged_seek_load_for_download,
+                                    false,
+                                );
+                            }
+                            Err(error) => {
+                                if let Some(mut writer) = cache_writer.take() {
+                                    let _ = writer.flush().await;
+                                }
+                                shared_buffer_for_download.fail(error.to_string());
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                let final_downloaded = absolute_downloaded_base.saturating_add(downloaded);
+                let cache_complete = !is_ranged_seek_load_for_download
+                    && (is_hls_stream
+                        || total_size
+                            .map(|size| final_downloaded >= size)
+                            .unwrap_or(false));
+
+                if let Some(mut writer) = cache_writer.take() {
+                    if let Err(error) = writer.flush().await {
+                        eprintln!("[Audio] Streaming cache flush failed: {error}");
+                        if let Some(temp_path) = cache_temp_path_for_download.as_deref() {
+                            tokio::fs::remove_file(temp_path).await.ok();
+                        }
+                    } else if let Some(temp_path) = cache_temp_path_for_download.as_deref() {
+                        drop(writer);
+                        if cache_complete {
+                            if let Some(final_path) = cache_path_for_download.as_deref() {
+                                match tokio::fs::rename(temp_path, final_path).await {
+                                    Ok(()) => {
+                                        write_stream_cache_metadata(
+                                            final_path,
+                                            stream_quality.as_deref(),
+                                            final_downloaded,
+                                            total_size,
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        if complete_stream_cache_exists(final_path) {
+                                            tokio::fs::remove_file(temp_path).await.ok();
+                                        } else {
+                                            tokio::fs::remove_file(final_path).await.ok();
+                                            tokio::fs::remove_file(format!(
+                                                "{final_path}{CACHE_METADATA_EXT}"
+                                            ))
+                                            .await
+                                            .ok();
+                                            match tokio::fs::rename(temp_path, final_path).await {
+                                                Ok(()) => {
+                                                    write_stream_cache_metadata(
+                                                        final_path,
+                                                        stream_quality.as_deref(),
+                                                        final_downloaded,
+                                                        total_size,
+                                                    )
+                                                    .await;
+                                                }
+                                                Err(second_error) => {
+                                                    eprintln!(
+                                                        "[Audio] Failed to finalize streaming cache {final_path}: {error}; {second_error}"
+                                                    );
+                                                    tokio::fs::remove_file(temp_path).await.ok();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
                 shared_buffer_for_download.finish();
-                let final_downloaded = absolute_downloaded_base.saturating_add(downloaded);
                 stream_downloaded_bytes.store(final_downloaded, Ordering::Relaxed);
-                let _ = app_for_download.emit(
-                    "audio:download_progress",
-                    serde_json::json!({"gen": gen, "progress": 1.0}),
+                emit_stream_download_progress(
+                    &app_for_download,
+                    gen,
+                    final_downloaded,
+                    total_size,
+                    true,
+                    is_ranged_seek_load_for_download,
+                    cache_complete,
                 );
 
                 if load_gen.load(Ordering::Relaxed) != gen {
@@ -2059,19 +2753,17 @@ pub async fn audio_load_url(
                 if is_ranged_seek_load_for_download {
                     *source_bytes.lock().unwrap() = None;
                 } else {
-                    let bytes = shared_buffer_for_download.snapshot();
-                    if bytes.len() <= MAX_SEEK_FALLBACK_SOURCE_BYTES {
-                        *source_bytes.lock().unwrap() = Some(bytes.clone());
+                    let maybe_bytes = if shared_buffer_for_download.len() <= MAX_SEEK_FALLBACK_SOURCE_BYTES {
+                        Some(shared_buffer_for_download.snapshot())
                     } else {
-                        *source_bytes.lock().unwrap() = None;
-                    }
-
-                    if let Some(path) = cache_path_for_download {
-                        tokio::fs::write(&path, &bytes).await.ok();
-                    }
+                        None
+                    };
+                    *source_bytes.lock().unwrap() = maybe_bytes.clone();
 
                     if normalization_enabled {
-                        let bytes_for_norm = bytes;
+                        let Some(bytes_for_norm) = maybe_bytes else {
+                            return;
+                        };
                         let cache_dir = normalization_cache_dir_for_download.clone();
                         let cache_key = cache_key_for_download.clone();
                         let _ = tokio::task::spawn_blocking(move || {
@@ -2094,18 +2786,22 @@ pub async fn audio_load_url(
         total_size,
         range_seek_base_secs,
         range_seek_local_target_secs,
+        bootstrap_downloaded_bytes,
     ) = bootstrap_rx
         .recv_timeout(Duration::from_secs(20))
         .map_err(|error| format!("Stream bootstrap timed out: {}", error))??;
 
     *state.source_bytes.lock().unwrap() = None;
 
-    if total_size.unwrap_or(0) > 0 {
-        let _ = app.emit(
-            "audio:download_progress",
-            serde_json::json!({"gen": gen, "progress": 0.0}),
-        );
-    }
+    emit_stream_download_progress(
+        &app,
+        gen,
+        bootstrap_downloaded_bytes,
+        total_size,
+        false,
+        is_ranged_seek_load,
+        false,
+    );
 
     // Stale check after download — another track may have started loading
     if state.load_gen.load(Ordering::Relaxed) != gen {
@@ -2120,6 +2816,9 @@ pub async fn audio_load_url(
     let mixer = state.mixer.lock().unwrap().clone();
     let vol = *state.volume.lock().unwrap();
     let playback_speed = *state.playback_speed.lock().unwrap();
+    if let Ok(mut cached_stream_content_type) = state.stream_content_type.try_lock() {
+        *cached_stream_content_type = stream_content_type.clone();
+    }
     let (new_player, duration_secs) = create_player_from_stream_reader(
         reader,
         &url,
@@ -2309,8 +3008,14 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
         .position_anchor
         .try_lock()
         .map_err(|_| "Seek busy: timeline anchor".to_string())?;
+    let playback_rate = effective_playback_rate(playback_speed);
     let target_secs = position.max(0.0);
-    let target = Duration::from_secs_f64(target_secs);
+    let local_timeline_start_secs =
+        (anchor.timeline_secs - anchor.output_secs * playback_rate).max(0.0);
+    let local_target_secs =
+        (anchor.output_secs + (target_secs - anchor.timeline_secs) / playback_rate).max(0.0);
+    let current_player_target = Duration::from_secs_f64(local_target_secs);
+    let absolute_target = Duration::from_secs_f64(target_secs);
     let has_fallback_source = state
         .source_bytes
         .try_lock()
@@ -2324,6 +3029,7 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
             .try_lock()
             .map_err(|_| "Seek busy: player".to_string())?;
         if let Some(ref p) = *player {
+            let target_within_current_source = target_secs + 0.35 >= local_timeline_start_secs;
             if !has_fallback_source {
                 if let Some(buffered_secs) = estimated_stream_buffered_timeline_secs(&state) {
                     if target_secs > buffered_secs + 1.8 {
@@ -2338,17 +3044,52 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
                 }
             }
 
-            if p.try_seek(target).is_ok() {
-                set_position_anchor(&state, target_secs, target_secs);
-                state.ended_notified.store(false, Ordering::Relaxed);
-                state.has_track.store(true, Ordering::Relaxed);
-                state.device_error.store(false, Ordering::Relaxed);
-                return Ok(());
+            if target_within_current_source && p.try_seek(current_player_target).is_ok() {
+                let landed_output = p.get_pos();
+                let landed_output_secs = landed_output.as_secs_f64();
+                if (landed_output_secs - local_target_secs).abs() <= 1.25 {
+                    set_position_anchor(&state, target_secs, landed_output_secs);
+                    state.ended_notified.store(false, Ordering::Relaxed);
+                    state.has_track.store(true, Ordering::Relaxed);
+                    state.device_error.store(false, Ordering::Relaxed);
+                    return Ok(());
+                }
             }
         }
     }
 
-    // Fallback: reload from saved source bytes and seek forward
+    let normalization_gain = if state.normalization_enabled.load(Ordering::Relaxed) {
+        *state
+            .normalization_gain
+            .try_lock()
+            .map_err(|_| "Seek busy: normalization".to_string())?
+    } else {
+        1.0
+    };
+
+    if !has_fallback_source {
+        if let Some(ref player) = *state.player.lock().unwrap() {
+            if player
+                .try_seek(Duration::from_secs_f64(target_secs))
+                .is_ok()
+            {
+                set_position_anchor(&state, target_secs, player.get_pos().as_secs_f64());
+
+                return Ok(());
+            }
+        }
+
+        if let Ok((new_player, anchor)) = create_player_from_live_stream_seek(
+            &state,
+            target_secs,
+            playback_speed,
+            normalization_gain,
+        ) {
+            return replace_player_after_seek(&state, new_player, anchor);
+        }
+    }
+
+    // Final fallback: rebuild from cached/local bytes when we have a full enough source snapshot.
     let bytes = state
         .source_bytes
         .try_lock()
@@ -2367,16 +3108,8 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
         .volume
         .try_lock()
         .map_err(|_| "Seek busy: volume".to_string())?;
-    let normalization_gain = if state.normalization_enabled.load(Ordering::Relaxed) {
-        *state
-            .normalization_gain
-            .try_lock()
-            .map_err(|_| "Seek busy: normalization".to_string())?
-    } else {
-        1.0
-    };
-    let (new_player, _) = create_player_from_bytes(
-        &bytes,
+    let (new_player, _) = create_player_from_owned_bytes(
+        bytes,
         &mixer,
         vol,
         playback_speed,
@@ -2390,56 +3123,18 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
             .clone(),
     )?;
 
-    if target_secs > 0.0 {
-        new_player.try_seek(target).ok();
-    }
-
-    let was_paused = state
-        .player
-        .try_lock()
-        .map_err(|_| "Seek busy: player".to_string())?
-        .as_ref()
-        .map(|p| p.is_paused())
-        .unwrap_or(false);
-
-    let old_player = state
-        .player
-        .try_lock()
-        .map_err(|_| "Seek busy: player".to_string())?
-        .take();
-    let old_cf_player = state
-        .crossfade_player
-        .try_lock()
-        .map_err(|_| "Seek busy: crossfade player".to_string())?
-        .take();
-
-    if let Some(old) = old_player {
-        old.stop();
-    }
-    if let Some(old_cf) = old_cf_player {
-        old_cf.stop();
-    }
-
-    *state
-        .player
-        .try_lock()
-        .map_err(|_| "Seek busy: player".to_string())? = Some(Arc::new(new_player));
-    set_position_anchor(&state, target_secs, target_secs);
-    state.ended_notified.store(false, Ordering::Relaxed);
-    state.has_track.store(true, Ordering::Relaxed);
-    state.device_error.store(false, Ordering::Relaxed);
-
-    if was_paused {
-        if let Some(ref p) = *state
-            .player
-            .try_lock()
-            .map_err(|_| "Seek busy: player".to_string())?
-        {
-            p.pause();
-        }
-    }
-
-    Ok(())
+    replace_player_after_seek(
+        &state,
+        new_player,
+        PositionAnchor {
+            timeline_secs: target_secs.max(0.0),
+            output_secs: if target_secs > 0.0 {
+                absolute_target.as_secs_f64()
+            } else {
+                0.0
+            },
+        },
+    )
 }
 
 #[tauri::command]

@@ -41,6 +41,7 @@ import {
   type ThemeGradientType,
 } from '../stores/settings';
 import { usePlayerStore } from '../stores/player';
+import { DirectOAuthSection } from '../components/settings/DirectOAuthSection';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -2283,6 +2284,7 @@ const AccountSection = React.memo(function AccountSection() {
   const { t } = useTranslation();
   const logout = useAuthStore((s) => s.logout);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const sessionId = useAuthStore((s) => s.sessionId);
   const [transferOpen, setTransferOpen] = useState(false);
 
   return (
@@ -2291,7 +2293,7 @@ const AccountSection = React.memo(function AccountSection() {
         {t('settings.account')}
       </h3>
       <div className="flex flex-wrap gap-2">
-        {isAuthenticated && (
+        {isAuthenticated && sessionId && (
           <button
             type="button"
             onClick={() => setTransferOpen(true)}
@@ -2521,7 +2523,7 @@ export function Settings() {
       <EqualizerSection />
       <AudioDeviceSection />
       <ImportSection />
-
+      <DirectOAuthSection />
       <AccountSection />
     </div>
   );

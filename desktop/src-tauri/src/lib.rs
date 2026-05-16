@@ -2,10 +2,12 @@ mod audio_player;
 mod backend_sidecar;
 mod constants;
 mod discord;
+mod hls;
 mod image_cache;
 mod proxy;
 mod proxy_server;
 mod server;
+mod soundcloud_api;
 mod spotify_import;
 mod static_server;
 mod track_cache;
@@ -19,7 +21,6 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use discord::DiscordState;
 use server::ServerState;
@@ -156,7 +157,12 @@ fn system_font_dirs() -> Vec<std::path::PathBuf> {
             dirs.push(std::path::PathBuf::from(r"C:\Windows\Fonts"));
         }
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            dirs.push(std::path::PathBuf::from(local).join("Microsoft").join("Windows").join("Fonts"));
+            dirs.push(
+                std::path::PathBuf::from(local)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Fonts"),
+            );
         }
     }
     #[cfg(target_os = "macos")]
@@ -366,6 +372,7 @@ pub fn run() {
                 emit_window_visibility(app, true);
             }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
@@ -404,34 +411,37 @@ pub fn run() {
             let backend_state = Arc::new(
                 backend_sidecar::BackendState::new(&app.handle()).map_err(std::io::Error::other)?,
             );
-            if let Err(error) = backend_state.ensure_started(&app.handle()) {
-                let app_handle = app.handle().clone();
-                let logs_dir = backend_state.logs_dir().to_path_buf();
-                let message = format!(
-                    "The embedded backend failed to start.\n\n{error}\n\nLogs: {}",
-                    logs_dir.display()
-                );
-                append_bootstrap_error_log(&message);
-                std::thread::spawn(move || {
-                    app_handle
-                        .dialog()
-                        .message(message)
-                        .title("SoundCloud Desktop startup failed")
-                        .kind(MessageDialogKind::Error)
-                        .blocking_show();
-                    app_handle.exit(1);
-                });
-                return Ok(());
-            }
+
+            // DISABLED: No longer starting backend sidecar for standalone audio playback
+            // Audio streaming now works directly via Tauri + SoundCloud API
+            //
+            // if let Err(error) = backend_state.ensure_started(&app.handle()) {
+            //     let app_handle = app.handle().clone();
+            //     let logs_dir = backend_state.logs_dir().to_path_buf();
+            //     let message = format!(
+            //         "The embedded backend failed to start.\n\n{error}\n\nLogs: {}",
+            //         logs_dir.display()
+            //     );
+            //     append_bootstrap_error_log(&message);
+            //     std::thread::spawn(move || {
+            //         app_handle
+            //             .dialog()
+            //             .message(message)
+            //             .title("SoundCloud Desktop startup failed")
+            //             .kind(MessageDialogKind::Error)
+            //             .blocking_show();
+            //         app_handle.exit(1);
+            //     });
+            //     return Ok(());
+            // }
             app.manage(backend_state);
+            app.manage(soundcloud_api::OAuthCallbackState::default());
+            soundcloud_api::init_deep_link(&app.handle()).map_err(std::io::Error::other)?;
 
             // Read framerate config
             let config_path = config_dir.join("framerate_config.json");
             #[allow(unused)]
-            let FramerateConfig {
-                target,
-                unlocked,
-            } = std::fs::read_to_string(&config_path)
+            let FramerateConfig { target, unlocked } = std::fs::read_to_string(&config_path)
                 .ok()
                 .and_then(|data| serde_json::from_str::<FramerateConfig>(&data).ok())
                 .map(|cfg| normalize_framerate_config(cfg.target, cfg.unlocked))
@@ -567,6 +577,10 @@ pub fn run() {
             audio_player::audio_list_devices,
             audio_player::audio_switch_device,
             audio_player::save_track_to_path,
+            soundcloud_api::soundcloud_oauth_start,
+            soundcloud_api::get_cdn_stream_url,
+            soundcloud_api::resolve_soundcloud_track_stream,
+            soundcloud_api::fetch_soundcloud_me,
             ym_import::ym_import_start,
             ym_import::ym_import_stop,
             spotify_import::spotify_auth_start,

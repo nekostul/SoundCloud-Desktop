@@ -2,7 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Outlet, useNavigate } from 'react-router-dom';
-import { getCurrentTime, getDuration, handlePrev, seek } from '../../lib/audio';
+import { canSeekCurrentTrack, getCurrentTime, getDuration, handlePrev, seek } from '../../lib/audio';
 import { isAppBackgrounded } from '../../lib/app-visibility';
 import { getWallpaperUrl } from '../../lib/cache';
 import { art } from '../../lib/formatters';
@@ -292,10 +292,12 @@ export const AppShell = React.memo(() => {
           break;
         case 'ArrowRight':
           e.preventDefault();
+          if (!canSeekCurrentTrack(getCurrentTime() + 5)) break;
           seek(Math.min(getCurrentTime() + 5, getDuration()));
           break;
         case 'ArrowLeft':
           e.preventDefault();
+          if (!canSeekCurrentTrack(Math.max(getCurrentTime() - 5, 0))) break;
           seek(Math.max(getCurrentTime() - 5, 0));
           break;
         case 'ArrowUp':

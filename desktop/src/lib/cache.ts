@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { appCacheDir, join } from '@tauri-apps/api/path';
 import { exists, mkdir, readDir, remove, stat, writeFile } from '@tauri-apps/plugin-fs';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-import { getSessionId, streamUrl } from './api';
+import { getSessionId, getTrackStreamSource } from './api';
 import { getStaticPort } from './constants';
 import { isTauriRuntime } from './runtime';
 
@@ -11,7 +11,6 @@ const ASSETS_DIR = 'assets';
 const WALLPAPERS_DIR = 'wallpapers';
 const LYRICS_DIR = 'lyrics';
 const MIN_AUDIO_SIZE = 8192;
-const CACHE_FETCH_FORMAT = 'http_mp3_128';
 
 let cacheBasePath: string | null = null;
 
@@ -28,11 +27,6 @@ function urnToFilename(urn: string): string {
   return `${urn.replace(/:/g, '_')}.audio`;
 }
 
-function filenameToUrn(filename: string): string | null {
-  if (!filename.endsWith('.audio')) return null;
-  return filename.slice(0, -'.audio'.length).replace(/_/g, ':');
-}
-
 async function filePath(urn: string): Promise<string> {
   const dir = await getAudioDir();
   return await join(dir, urnToFilename(urn));
@@ -46,8 +40,15 @@ export async function getCacheTargetPath(urn: string): Promise<string> {
 export async function removeCachedTrack(urn: string): Promise<void> {
   if (!isTauriRuntime()) return;
   try {
-    const path = await filePath(urn);
-    await remove(path).catch(() => {});
+    const resolvedPath = (await getNativeCacheEntry(urn))?.path ?? null;
+    const fallbackPath = await filePath(urn);
+    const paths = new Set(
+      [resolvedPath, fallbackPath, `${fallbackPath}.part`].filter(Boolean) as string[],
+    );
+    for (const path of paths) {
+      await remove(path).catch(() => {});
+      await remove(`${path}.meta.json`).catch(() => {});
+    }
   } catch {
     // ignore cache cleanup failures
   }
@@ -56,14 +57,8 @@ export async function removeCachedTrack(urn: string): Promise<void> {
 export async function isCached(urn: string): Promise<boolean> {
   if (!isTauriRuntime()) return false;
   try {
-    const path = await filePath(urn);
-    if (!(await exists(path))) return false;
-    const info = await stat(path);
-    if (info.size < MIN_AUDIO_SIZE) {
-      await remove(path).catch(() => {});
-      return false;
-    }
-    return true;
+    const entry = await getNativeCacheEntry(urn);
+    return !!entry?.complete;
   } catch {
     return false;
   }
@@ -89,6 +84,25 @@ function isValidAudio(buffer: ArrayBuffer): boolean {
 
 const activeDownloads = new Map<string, Promise<ArrayBuffer>>();
 
+type NativeTrackCacheEntry = {
+  path: string;
+  quality?: string | null;
+  source?: string | null;
+  complete?: boolean;
+  downloaded_bytes?: number | null;
+  total_bytes?: number | null;
+};
+
+async function getNativeCacheEntry(urn: string): Promise<NativeTrackCacheEntry | null> {
+  if (!isTauriRuntime()) return null;
+
+  try {
+    return await invoke<NativeTrackCacheEntry | null>('track_get_cache_info', { urn });
+  } catch {
+    return null;
+  }
+}
+
 export interface CacheBatchProgress {
   completed: number;
   total: number;
@@ -110,17 +124,31 @@ export async function fetchAndCacheTrack(urn: string, signal?: AbortSignal): Pro
 
   const promise = (async () => {
     try {
-      const sessionId = getSessionId();
-      const url = streamUrl(urn, CACHE_FETCH_FORMAT, false);
+      if (signal?.aborted) {
+        throw new DOMException('The operation was aborted.', 'AbortError');
+      }
+
+      // Resolve a direct standalone SoundCloud stream source.
+      const streamSource = await getTrackStreamSource(urn);
+      console.log(`💾 [Cache] Got CDN URL for ${urn}`);
+
+      if (isTauriRuntime()) {
+        // Use native Rust handler for caching the resolved direct stream.
+        await invoke<NativeTrackCacheEntry>('track_ensure_cached', {
+          urn,
+          urls: [streamSource.url],
+          sessionId: getSessionId(),
+        });
+        return new ArrayBuffer(0);
+      }
 
       const requestInit: RequestInit = {
-        headers: sessionId ? { 'x-session-id': sessionId } : {},
         signal,
       };
 
       const res = isTauriRuntime()
-        ? await tauriFetch(url, requestInit)
-        : await fetch(url, requestInit);
+        ? await tauriFetch(streamSource.url, requestInit)
+        : await fetch(streamSource.url, requestInit);
 
       if (!res.ok) throw new Error(`Stream ${res.status}`);
 
@@ -243,26 +271,7 @@ export async function clearCache(): Promise<void> {
 export async function listCachedUrns(): Promise<string[]> {
   if (!isTauriRuntime()) return [];
   try {
-    const dir = await getAudioDir();
-    const entries = await readDir(dir);
-    const urns: string[] = [];
-
-    for (const entry of entries) {
-      if (!entry.name || !entry.isFile) continue;
-      const path = `${dir}/${entry.name}`;
-      const info = await stat(path);
-      if ((info.size ?? 0) < MIN_AUDIO_SIZE) {
-        await remove(path).catch(() => {});
-        continue;
-      }
-
-      const urn = filenameToUrn(entry.name);
-      if (urn) {
-        urns.push(urn);
-      }
-    }
-
-    return urns;
+    return await invoke<string[]>('track_list_cached');
   } catch {
     return [];
   }
@@ -272,9 +281,8 @@ export async function listCachedUrns(): Promise<string[]> {
 export async function getCacheFilePath(urn: string): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   try {
-    if (!(await isCached(urn))) return null;
-    const path = await filePath(urn);
-    return path;
+    const nativeEntry = await getNativeCacheEntry(urn);
+    return nativeEntry?.complete && nativeEntry.path ? nativeEntry.path : null;
   } catch {
     return null;
   }

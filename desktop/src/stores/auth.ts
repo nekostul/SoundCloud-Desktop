@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import { api, setSessionId, type ApiRequestOptions } from '../lib/api';
 import { markAuthHydrated } from '../lib/auth-hydration';
 import { tauriStorage } from '../lib/tauri-storage';
+import { useDirectAuthStore } from './direct-auth';
 
 interface User {
   id: number;
@@ -65,6 +66,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
+        useDirectAuthStore.getState().clear();
         setSessionId(null);
         set({ sessionId: null, user: null, isAuthenticated: false, reloginRequestId: null });
       },

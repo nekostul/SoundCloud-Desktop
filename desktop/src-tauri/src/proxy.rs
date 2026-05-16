@@ -101,12 +101,7 @@ pub async fn proxy_request(encoded: &str) -> ProxyResult {
             tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
         }
 
-        let resp = match state
-            .http_client
-            .get(&target_url)
-            .send()
-            .await
-        {
+        let mut resp = match state.http_client.get(&target_url).send().await {
             Ok(r) => r,
             Err(_) => continue,
         };
@@ -119,9 +114,11 @@ pub async fn proxy_request(encoded: &str) -> ProxyResult {
             .unwrap_or("")
             .to_string();
 
-        match resp.bytes().await {
-            Ok(b) => data = b.to_vec(),
-            Err(_) => continue,
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                data.extend_from_slice(&chunk);
+            }
+            _ => continue,
         }
 
         // Success or client error — no point retrying

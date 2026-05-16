@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import Fuse from 'fuse.js';
 import { saveLyricsToCache, loadLyricsFromCache } from './cache';
-import { api, ApiError, streamUrl } from './api';
+import { api, ApiError, getCdnStreamUrl } from './api';
 import { isTauriRuntime } from './runtime';
 
 const LRCLIB_API = 'https://lrclib.net/api';
@@ -3837,7 +3837,7 @@ async function searchDesktopQwenAsr(
   }
 
   try {
-    const stream = streamUrl(trackUrn);
+    const stream = await getCdnStreamUrl(trackUrn);
     logLyricsDebug('trying desktop Qwen sync', {
       trackUrn,
       artist,

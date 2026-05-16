@@ -7,9 +7,13 @@ import { useShallow } from 'zustand/shallow';
 import { AppShell } from './components/layout/AppShell';
 import { ThemeProvider } from './components/ThemeProvider';
 import { UpdateChecker } from './components/UpdateChecker';
-import { ApiError, setSessionExpiredHandler, setUnauthorizedHandler } from './lib/api';
+import { setSessionExpiredHandler, setSessionId, setUnauthorizedHandler } from './lib/api';
 import { applyAppFont } from './lib/app-font';
 import { hasAuthHydrated } from './lib/auth-hydration';
+import {
+  mapDirectUserToAuthUser,
+  type DirectSoundCloudUserInfo,
+} from './lib/direct-soundcloud-api';
 import { Home } from './pages/Home';
 import { Library } from './pages/Library';
 import { Login } from './pages/Login';
@@ -20,9 +24,8 @@ import { TrackPage } from './pages/TrackPage';
 import { UserPage } from './pages/UserPage';
 import { useAppStatusStore } from './stores/app-status';
 import { useAuthStore } from './stores/auth';
+import { useDirectAuthStore } from './stores/direct-auth';
 import { useSettingsStore } from './stores/settings';
-
-const AUTH_BOOTSTRAP_TIMEOUT_MS = 12000;
 
 type AppErrorBoundaryState = {
   error: Error | null;
@@ -68,20 +71,23 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
 
 function AppInner() {
   const { t } = useTranslation();
-  const { isAuthenticated, sessionId, reloginRequestId, fetchUser, beginRelogin } = useAuthStore(
+  const { isAuthenticated, sessionId, reloginRequestId } = useAuthStore(
     useShallow((s) => ({
       isAuthenticated: s.isAuthenticated,
       sessionId: s.sessionId,
       reloginRequestId: s.reloginRequestId,
-      fetchUser: s.fetchUser,
-      beginRelogin: s.beginRelogin,
     })),
-  );
-  const backendAvailable = useAppStatusStore(
-    (s) => !s.soundcloudBlocked && s.navigatorOnline && s.backendReachable,
   );
   const [checking, setChecking] = useState(true);
   const [authHydrated, setAuthHydrated] = useState(() => useAuthStore.persist.hasHydrated());
+  const [directHydrated, setDirectHydrated] = useState(() => useDirectAuthStore.persist.hasHydrated());
+  const directAccessToken = useDirectAuthStore((s) => s.accessToken);
+  const directExpiresAt = useDirectAuthStore((s) => s.expiresAt);
+  const directUser = useDirectAuthStore((s) => s.user);
+  const directSetUser = useDirectAuthStore((s) => s.setUser);
+  const directAuthenticated =
+    !!directAccessToken && (!directExpiresAt || Date.now() < directExpiresAt);
+  const effectiveAuthenticated = isAuthenticated || directAuthenticated;
 
   // Re-apply persisted app icon choice on each app start. Tauri uses the
   // built-in icon from tauri.conf.json at boot — if the user previously
@@ -153,6 +159,19 @@ function AppInner() {
   }, []);
 
   useEffect(() => {
+    if (useDirectAuthStore.persist.hasHydrated()) {
+      setDirectHydrated(true);
+      return;
+    }
+
+    const unsubscribe = useDirectAuthStore.persist.onFinishHydration(() => {
+      setDirectHydrated(true);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
     setUnauthorizedHandler(() => {
       useAuthStore.getState().beginRelogin();
     });
@@ -165,48 +184,90 @@ function AppInner() {
       setUnauthorizedHandler(null);
       setSessionExpiredHandler(null);
     };
-  }, [beginRelogin]);
+  }, []);
 
   useEffect(() => {
-    if (!authHydrated) {
+    if (!authHydrated || !directHydrated) {
       setChecking(true);
       return;
     }
 
-    if (!backendAvailable) {
-      setChecking(false);
+    if (directAuthenticated) {
+      if (sessionId) {
+        setSessionId(null);
+        useAuthStore.setState({ sessionId: null });
+      }
+
+      setChecking(true);
+
+      if (directUser) {
+        useAuthStore.setState({
+          sessionId: null,
+          user: directUser,
+          isAuthenticated: true,
+          reloginRequestId: null,
+        });
+        setChecking(false);
+        return;
+      }
+
+      invokeTauri<DirectSoundCloudUserInfo>('fetch_soundcloud_me', {
+        accessToken: directAccessToken,
+      })
+        .then((userInfo) => {
+          const mapped = mapDirectUserToAuthUser(userInfo);
+          directSetUser(mapped);
+          useAuthStore.setState({
+            sessionId: null,
+            user: mapped,
+            isAuthenticated: true,
+            reloginRequestId: null,
+          });
+        })
+        .catch((error) => {
+          console.warn('[Auth] Failed to restore direct SoundCloud user:', error);
+          useDirectAuthStore.getState().clear();
+          useAuthStore.setState({
+            sessionId: null,
+            user: null,
+            isAuthenticated: false,
+            reloginRequestId: null,
+          });
+        })
+        .finally(() => setChecking(false));
       return;
     }
 
     if (sessionId) {
-      setChecking(true);
-      fetchUser({ timeoutMs: AUTH_BOOTSTRAP_TIMEOUT_MS })
-        .catch((error) => {
-          if (error instanceof ApiError && error.status === 401) {
-            console.warn('[Auth] Stored session was rejected, reopening login');
-            useAppStatusStore.getState().setBackendReachable(true);
-            useAuthStore.getState().beginRelogin();
-            return;
-          }
-
-          if (error instanceof Error && error.name === 'AbortError') {
-            console.warn('[Auth] /me bootstrap timed out, keeping local session');
-            useAppStatusStore.getState().setBackendReachable(true);
-            useAuthStore.setState({ isAuthenticated: true });
-            return;
-          }
-
-          console.warn('[Auth] Failed to restore /me, keeping local session:', error);
-          useAppStatusStore.getState().setBackendReachable(true);
-          useAuthStore.setState({ isAuthenticated: true });
-        })
-        .finally(() => setChecking(false));
-    } else {
+      console.warn('[Auth] Ignoring legacy backend session in standalone mode');
+      setSessionId(null);
+      useAuthStore.setState({
+        sessionId: null,
+        user: null,
+        isAuthenticated: false,
+        reloginRequestId: null,
+      });
       setChecking(false);
+      return;
     }
-  }, [authHydrated, backendAvailable, beginRelogin, fetchUser, sessionId]);
 
-  const isBooting = !authHydrated || checking;
+    useAuthStore.setState({
+      user: null,
+      isAuthenticated: false,
+      reloginRequestId: null,
+    });
+    setChecking(false);
+  }, [
+    authHydrated,
+    directAccessToken,
+    directAuthenticated,
+    directHydrated,
+    directSetUser,
+    directUser,
+    sessionId,
+  ]);
+
+  const isBooting = !authHydrated || !directHydrated || checking;
 
   return (
     <ThemeProvider>
@@ -228,15 +289,15 @@ function AppInner() {
           <div
             className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2.5 px-5 py-2.5 rounded-full border border-white/[0.08] bg-white/[0.06] backdrop-blur-lg shadow-[0_4px_16px_rgba(0,0,0,0.3)] animate-fade-in whitespace-nowrap"
           >
-            <span className="text-[12px] font-medium text-white/70">
-              {sessionId ? t('auth.restoringSession') : t('auth.startingApp')}
+              <span className="text-[12px] font-medium text-white/70">
+              {sessionId || directAuthenticated ? t('auth.restoringSession') : t('auth.startingApp')}
             </span>
             <div className="h-4 w-4 rounded-full border-2 border-white/10 border-t-accent animate-spin" />
           </div>
         )}
-        {backendAvailable && isAuthenticated && <UpdateChecker />}
+        {effectiveAuthenticated && <UpdateChecker />}
 
-        {!isAuthenticated ? (
+        {!effectiveAuthenticated ? (
           <Login autoStartRequestId={reloginRequestId} />
         ) : (
           <Routes>

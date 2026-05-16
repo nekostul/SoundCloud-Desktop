@@ -10,11 +10,15 @@ import { api, getTrackComments } from '../../lib/api';
 import { isAppBackgrounded } from '../../lib/app-visibility';
 import { useArtworkGradientPalette } from '../../lib/artwork-palette';
 import {
+  canSeekCurrentTrack,
+  getPlaybackBufferSnapshot,
   getCurrentTime,
   getDuration,
+  getSeekableTimeLimit,
   getSmoothCurrentTime,
   handlePrev,
   seek,
+  subscribePlaybackBuffer,
   subscribe,
 } from '../../lib/audio';
 import { updateDiscordLyric } from '../../lib/discord';
@@ -74,9 +78,11 @@ function hexToRgba(hex?: string | null, alpha = 1) {
 /* ── Progress Slider ─────────────────────────────────────────── */
 
 export const ProgressSlider = React.memo(() => {
+  const { t } = useTranslation();
   const duration = useSyncExternalStore(subscribe, getDuration);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const currentTrackUrn = usePlayerStore((s) => s.currentTrack?.urn);
+  const playbackBuffer = useSyncExternalStore(subscribePlaybackBuffer, getPlaybackBufferSnapshot);
   const lyricsOpen = useLyricsStore((s) => s.open);
   const artworkOpen = useArtworkStore((s) => s.open);
 
@@ -130,6 +136,39 @@ export const ProgressSlider = React.memo(() => {
   }, [isPlaying, targetFramerate, unlockFramerate]);
 
   const displayValue = dragging ? dragValue : syncedValue;
+  const seekableLimit = Math.min(duration || Number.POSITIVE_INFINITY, getSeekableTimeLimit());
+  const seekDisabled = !canSeekCurrentTrack() || duration <= 0;
+  const bufferedRatio =
+    playbackBuffer.progress != null
+      ? Math.max(0, Math.min(playbackBuffer.progress, 1))
+      : playbackBuffer.fullyCached
+        ? 1
+        : null;
+  const bufferedPercent = bufferedRatio != null ? bufferedRatio * 100 : null;
+  const roundedBufferedPercent =
+    bufferedPercent == null
+      ? null
+      : bufferedPercent >= 99.5
+        ? 100
+        : Math.max(1, Math.round(bufferedPercent));
+  const stateLabel =
+    playbackBuffer.fullyCached
+      ? null
+      : roundedBufferedPercent != null
+        ? playbackBuffer.phase === 'loading'
+          ? t('player.loadingStreamProgress', 'Loading {{progress}}%', {
+              progress: roundedBufferedPercent,
+            })
+          : t('player.cachingStreamProgress', 'Caching {{progress}}%', {
+              progress: roundedBufferedPercent,
+            })
+        : playbackBuffer.phase === 'loading'
+          ? t('player.loadingStream', 'Loading track')
+          : playbackBuffer.phase === 'buffering'
+            ? t('player.bufferingStream', 'Buffering')
+            : !playbackBuffer.seekUnlocked
+              ? t('player.seekLocked', 'Seek locked')
+              : t('player.cachingStream', 'Caching track');
 
   const flushPendingDragValue = useCallback(() => {
     dragRafRef.current = null;
@@ -139,7 +178,8 @@ export const ProgressSlider = React.memo(() => {
   }, []);
 
   const onValueChange = useCallback(([v]: number[]) => {
-    pendingDragValueRef.current = v;
+    if (seekDisabled) return;
+    pendingDragValueRef.current = Math.min(v, seekableLimit);
     if (dragRafRef.current == null) {
       dragRafRef.current = requestAnimationFrame(flushPendingDragValue);
     }
@@ -147,20 +187,22 @@ export const ProgressSlider = React.memo(() => {
       draggingRef.current = true;
       setDragging(true);
     }
-  }, [flushPendingDragValue]);
+  }, [flushPendingDragValue, seekDisabled, seekableLimit]);
 
   const onValueCommit = useCallback(([v]: number[]) => {
+    if (seekDisabled) return;
+    const nextValue = Math.min(v, seekableLimit);
     if (dragRafRef.current != null) {
       cancelAnimationFrame(dragRafRef.current);
       dragRafRef.current = null;
     }
     pendingDragValueRef.current = null;
-    setDragValue(v);
-    seek(v);
+    setDragValue(nextValue);
+    seek(nextValue);
     draggingRef.current = false;
     setDragging(false);
-    setSyncedValue(v);
-  }, []);
+    setSyncedValue(nextValue);
+  }, [seekDisabled, seekableLimit]);
 
   useEffect(() => {
     return () => {
@@ -169,6 +211,18 @@ export const ProgressSlider = React.memo(() => {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!seekDisabled) return;
+    if (dragRafRef.current != null) {
+      cancelAnimationFrame(dragRafRef.current);
+      dragRafRef.current = null;
+    }
+    pendingDragValueRef.current = null;
+    draggingRef.current = false;
+    setDragging(false);
+    setHoverPercent(null);
+  }, [seekDisabled]);
 
   // Markers (little dots) on the track
   const markers = React.useMemo(() => {
@@ -191,6 +245,7 @@ return (
   <div className="relative w-full group/slider z-20">
     <Slider.Root
       onPointerMove={(e) => {
+        if (seekDisabled) return;
         const rect = e.currentTarget.getBoundingClientRect();
         const percent = (e.clientX - rect.left) / rect.width;
         setHoverPercent(Math.max(0, Math.min(1, percent)));
@@ -198,22 +253,44 @@ return (
       onPointerLeave={() => {
         setHoverPercent(null);
       }}
-      className="relative flex items-start w-full h-[10px] cursor-pointer select-none touch-none group/slider"
+      disabled={seekDisabled}
+      aria-disabled={seekDisabled}
+      className={`relative flex items-start w-full h-[10px] select-none touch-none group/slider ${
+        seekDisabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'
+      }`}
       value={[displayValue]}
       max={duration || 1}
       step={0.1}
       onValueChange={onValueChange}
       onValueCommit={onValueCommit}
     >
-      <Slider.Track className="relative grow h-[3px] rounded-full overflow-hidden transition-all duration-150 group-hover/slider:h-[4px]">
+      <Slider.Track
+        className={`relative grow h-[3px] rounded-full overflow-hidden transition-all duration-150 ${
+          seekDisabled ? '' : 'group-hover/slider:h-[4px]'
+        }`}
+      >
         <div className="absolute inset-0 bg-white/[0.08]" />
+        {bufferedPercent != null ? (
+          <div
+            className="absolute inset-y-0 left-0 rounded-full bg-white/[0.14] transition-[width] duration-200 ease-out"
+            style={{ width: `${bufferedPercent}%` }}
+          />
+        ) : playbackBuffer.phase !== 'ready' ? (
+          <div className="absolute inset-y-0 left-0 w-[22%] rounded-full bg-white/[0.12] animate-pulse" />
+        ) : null}
 
         <Slider.Range className="absolute h-full rounded-full will-change-transform theme-accent-progress theme-accent-animated" />
 
         {markers}
       </Slider.Track>
 
-      {hoverPercent !== null && !isFullscreenOverlayOpen && (
+      {stateLabel && !isFullscreenOverlayOpen && (
+        <div className="absolute top-[14px] right-0 rounded-full border border-white/10 bg-black/55 px-2 py-0.5 text-[10px] font-semibold text-white/65 backdrop-blur-md">
+          {stateLabel}
+        </div>
+      )}
+
+      {hoverPercent !== null && !isFullscreenOverlayOpen && !seekDisabled && (
         <div
           className="absolute top-[65px] px-2 py-1 rounded-xl bg-black/80 border border-white/10 text-white text-[10px] font-medium pointer-events-none backdrop-blur-sm"
           style={{
@@ -1039,11 +1116,8 @@ export const NowPlayingBar = React.memo(
     const lyricsOpen = useLyricsStore((s) => s.open);
     const artworkOpen = useArtworkStore((s) => s.open);
     const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
-    const themeGradientFollowArtwork = useSettingsStore((s) => s.themeGradientFollowArtwork);
     const visualizerPlaybar = useSettingsStore((s) => s.visualizerPlaybar);
-    const artworkGradientPalette = useArtworkGradientPalette(
-      themeGradientFollowArtwork ? currentArtworkUrl : null,
-    );
+    const artworkGradientPalette = useArtworkGradientPalette(currentArtworkUrl);
     const palette = artworkGradientPalette ?? {
       gradientA: '#ffffff',
       gradientB: '#ffffff',
@@ -1061,7 +1135,7 @@ export const NowPlayingBar = React.memo(
         marginLeft: `${desktopBarOffset}px`,
       };
       
-      if (themeGradientFollowArtwork && artworkGradientPalette) {
+      if (artworkGradientPalette) {
         return {
           ...baseStyle,
           background: `
@@ -1075,7 +1149,7 @@ export const NowPlayingBar = React.memo(
       }
       
       return baseStyle;
-    }, [isMobile, desktopBarOffset, themeGradientFollowArtwork, artworkGradientPalette, palette]);
+    }, [isMobile, desktopBarOffset, artworkGradientPalette, palette]);
 
     return (
       <div
