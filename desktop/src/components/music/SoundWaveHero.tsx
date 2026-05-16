@@ -744,7 +744,7 @@ export const SoundWaveHero: React.FC = () => {
               className={`${heroSecondaryButtonClass} z-10`}
             >
               <Settings size={15} />
-              <span>Настроить</span>
+              <span>{t('soundwave.configure')}</span>
             </button>
           </div>
 
@@ -1328,7 +1328,7 @@ export const SoundWaveHero: React.FC = () => {
                 className="w-full flex items-center justify-center gap-2 py-4 rounded-2xl bg-[#2a1313] text-[#f87171] font-bold text-[15px] transition-all hover:bg-[#3d1a1a] border border-white/[0.02]"
               >
                 <div className="w-2.5 h-2.5 bg-[#f87171] rounded-sm" />
-                <span>Выключить</span>
+                <span>{t('soundwave.turnOff')}</span>
               </button>
             </div>
           </div>

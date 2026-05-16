@@ -248,6 +248,7 @@ const TrackRow = React.memo(
 /* Each user tab is its own component — only fetches its own data */
 
 const UserTracksTab = React.memo(function UserTracksTab({ urn }: { urn: string }) {
+  const { t } = useTranslation();
   const tracksQuery = useUserTracks(urn);
   const uniqueTracks = useMemo(
     () => Array.from(new Map(tracksQuery.tracks.map((t) => [t.urn, t])).values()),
@@ -266,7 +267,7 @@ const UserTracksTab = React.memo(function UserTracksTab({ urn }: { urn: string }
           <Loader2 size={24} className="animate-spin text-white/20" />
         </div>
       ) : uniqueTracks.length === 0 ? (
-        <div className="py-12 text-center text-white/30 text-sm">No tracks found.</div>
+        <div className="py-12 text-center text-white/30 text-sm">{t('user.noTracksFound')}</div>
       ) : (
         <div className="flex flex-col gap-1">
           {uniqueTracks.map((track, i) => (
@@ -286,6 +287,7 @@ const UserTracksTab = React.memo(function UserTracksTab({ urn }: { urn: string }
 const POPULAR_PAGE_SIZE = 20;
 
 const UserPopularTab = React.memo(function UserPopularTab({ urn }: { urn: string }) {
+  const { t } = useTranslation();
   const { data, isLoading } = useUserPopularTracks(urn);
   const allTracks = data ?? [];
   const [visibleCount, setVisibleCount] = useState(POPULAR_PAGE_SIZE);
@@ -323,7 +325,9 @@ const UserPopularTab = React.memo(function UserPopularTab({ urn }: { urn: string
           <Loader2 size={24} className="animate-spin text-white/20" />
         </div>
       ) : allTracks.length === 0 ? (
-        <div className="py-12 text-center text-white/30 text-sm">No popular tracks found.</div>
+        <div className="py-12 text-center text-white/30 text-sm">
+          {t('user.noPopularTracksFound')}
+        </div>
       ) : (
         <div className="flex flex-col gap-1">
           {visibleTracks.map((track, i) => (
@@ -341,6 +345,7 @@ const UserPopularTab = React.memo(function UserPopularTab({ urn }: { urn: string
 });
 
 const UserPlaylistsTab = React.memo(function UserPlaylistsTab({ urn }: { urn: string }) {
+  const { t } = useTranslation();
   const playlistsQuery = useUserPlaylists(urn);
   const uniquePlaylists = useMemo(
     () => Array.from(new Map(playlistsQuery.playlists.map((p) => [p.urn, p])).values()),
@@ -359,7 +364,9 @@ const UserPlaylistsTab = React.memo(function UserPlaylistsTab({ urn }: { urn: st
           <Loader2 size={24} className="animate-spin text-white/20" />
         </div>
       ) : uniquePlaylists.length === 0 ? (
-        <div className="py-12 text-center text-white/30 text-sm">No playlists found.</div>
+        <div className="py-12 text-center text-white/30 text-sm">
+          {t('user.noPlaylistsFound')}
+        </div>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-6">
           {uniquePlaylists.map((playlist, i) => (
@@ -377,6 +384,7 @@ const UserPlaylistsTab = React.memo(function UserPlaylistsTab({ urn }: { urn: st
 });
 
 const UserLikesTab = React.memo(function UserLikesTab({ urn }: { urn: string }) {
+  const { t } = useTranslation();
   const likesQuery = useUserLikedTracks(urn);
   const uniqueLikes = useMemo(
     () => Array.from(new Map(likesQuery.tracks.map((t) => [t.urn, t])).values()),
@@ -395,7 +403,7 @@ const UserLikesTab = React.memo(function UserLikesTab({ urn }: { urn: string }) 
           <Loader2 size={24} className="animate-spin text-white/20" />
         </div>
       ) : uniqueLikes.length === 0 ? (
-        <div className="py-12 text-center text-white/30 text-sm">No liked tracks.</div>
+        <div className="py-12 text-center text-white/30 text-sm">{t('user.noLikedTracks')}</div>
       ) : (
         <div className="flex flex-col gap-1">
           {uniqueLikes.map((track, i) => (
@@ -413,6 +421,7 @@ const UserLikesTab = React.memo(function UserLikesTab({ urn }: { urn: string }) 
 });
 
 const UserFollowingTab = React.memo(function UserFollowingTab({ urn }: { urn: string }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const followingsQuery = useUserFollowings(urn);
   const uniqueUsers = useMemo(
@@ -432,7 +441,9 @@ const UserFollowingTab = React.memo(function UserFollowingTab({ urn }: { urn: st
           <Loader2 size={24} className="animate-spin text-white/20" />
         </div>
       ) : uniqueUsers.length === 0 ? (
-        <div className="py-12 text-center text-white/30 text-sm">No followings found.</div>
+        <div className="py-12 text-center text-white/30 text-sm">
+          {t('user.noFollowingsFound')}
+        </div>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
           {uniqueUsers.map((user) => (
@@ -450,7 +461,7 @@ const UserFollowingTab = React.memo(function UserFollowingTab({ urn }: { urn: st
                 </p>
                 {user.followers_count != null && (
                   <p className="text-[11px] text-white/30 mt-1 tabular-nums">
-                    {fc(user.followers_count)} followers
+                    {fc(user.followers_count)} {t('user.followers').toLowerCase()}
                   </p>
                 )}
               </div>

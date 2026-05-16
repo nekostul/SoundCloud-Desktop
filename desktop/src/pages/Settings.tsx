@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { LANGUAGE_OPTIONS, normalizeLanguage } from '../i18n/language';
 import { useSubscription } from '../lib/subscription';
 import { Skeleton } from '../components/ui/Skeleton.tsx';
 import { useArtworkGradientPalette } from '../lib/artwork-palette';
@@ -83,13 +84,6 @@ const PRESET_COLORS = [
   '#8b5cf6',
 ];
 
-const LANGUAGES = [
-  { code: 'en', label: 'English' },
-  { code: 'ru', label: 'Русский' },
-  { code: 'tr', label: 'Turkce' },
-  { code: 'uk', label: 'Українська' },
-] as const;
-
 const DISCORD_RPC_MODES: Array<{ id: DiscordRpcMode; labelKey: string }> = [
   { id: 'text', labelKey: 'settings.discordRpcModeText' },
   { id: 'track', labelKey: 'settings.discordRpcModeTrack' },
@@ -107,6 +101,7 @@ const DISCORD_RPC_BUTTON_MODES: Array<{ id: DiscordRpcButtonMode; labelKey: stri
 
 const LanguageSection = React.memo(function LanguageSection() {
   const { t, i18n } = useTranslation();
+  const currentLanguage = normalizeLanguage(i18n.language);
 
   return (
     <section className="bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl">
@@ -114,12 +109,12 @@ const LanguageSection = React.memo(function LanguageSection() {
         {t('settings.language')}
       </h3>
       <div className="flex gap-2">
-        {LANGUAGES.map((lang) => (
+        {LANGUAGE_OPTIONS.map((lang) => (
           <button
             key={lang.code}
             onClick={() => i18n.changeLanguage(lang.code)}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold transition-all duration-200 cursor-pointer border ${
-              i18n.language === lang.code
+              currentLanguage === lang.code
                 ? 'bg-white/[0.1] text-white/90 border-white/[0.15]'
                 : 'bg-white/[0.02] text-white/40 border-white/[0.05] hover:bg-white/[0.06] hover:text-white/60'
             }`}
@@ -1167,7 +1162,7 @@ const WallpaperPicker = React.memo(function WallpaperPicker() {
           }`}
         >
           <Link size={12} className="text-white/30" />
-          <span className="text-[9px] text-white/25 font-medium">URL</span>
+          <span className="text-[9px] text-white/25 font-medium">{t('settings.urlLabel')}</span>
         </button>
       </div>
 

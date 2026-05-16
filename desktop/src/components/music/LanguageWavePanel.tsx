@@ -32,7 +32,7 @@ const LanguageBar = memo<LanguageBarProps>(({ code, percentage, isSelected, onCl
         {lang.flags}
       </span>
       <span className="text-xs w-16 text-left text-white/70 group-hover:text-white">
-        {lang.flags === '🇷🇺' ? 'Русский' : lang.flags === '🇬🇧' ? 'English' : lang.nativeName}
+        {lang.nativeName}
       </span>
       <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
         <div
@@ -79,7 +79,7 @@ export const LanguageWavePanel = memo(() => {
     selectedLanguages.length === 0
       ? t('settings.languageWaveAll')
       : selectedLang
-        ? `${selectedLang.flags} ${selectedLang.flags === '🇷🇺' ? 'Русский' : selectedLang.name}`
+        ? `${selectedLang.flags} ${selectedLang.nativeName}`
         : t('settings.languageWaveSelected', { count: selectedLanguages.length });
 
   useEffect(() => {
@@ -159,7 +159,7 @@ export const LanguageWavePanel = memo(() => {
         <div className="absolute inset-0 flex items-center justify-between px-4">
           <div className="flex items-center gap-3">
             <Globe size={16} className="text-white/50" />
-            <span className="text-xs text-white/40">Language Wave</span>
+            <span className="text-xs text-white/40">{t('settings.languageWaveTitle')}</span>
             {topLanguages.length > 0 && (
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/10 text-white/60">
                 <span style={flagEmojiStyle}>
@@ -234,9 +234,7 @@ export const LanguageWavePanel = memo(() => {
                           }`}
                         >
                           <span style={flagEmojiStyle}>{lang.flags}</span>
-                          <span className="flex-1 text-left">
-                            {lang.flags === '🇷🇺' ? 'Русский' : lang.nativeName}
-                          </span>
+                          <span className="flex-1 text-left">{lang.nativeName}</span>
                           <span className="text-white/40">{percentage}%</span>
                         </button>
                       );

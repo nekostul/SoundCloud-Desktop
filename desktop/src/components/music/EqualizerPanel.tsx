@@ -1,6 +1,7 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import React, { useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { isRussianLanguage } from '../../i18n/language';
 import {
   EQ_BAND_COUNT,
   EQ_LABELS,
@@ -172,7 +173,7 @@ export const EqualizerPanel = React.memo(function EqualizerPanel({
   const setEqPreset = useSettingsStore((s) => s.setEqPreset);
   const setEqBand = useSettingsStore((s) => s.setEqBand);
 
-  const isRu = i18n.language === 'ru';
+  const isRu = isRussianLanguage(i18n.language);
 
   const handleBandChange = useCallback(
     (index: number, gain: number) => {

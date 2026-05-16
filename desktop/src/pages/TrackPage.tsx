@@ -702,7 +702,7 @@ export const TrackPage = React.memo(() => {
                 <Loader2 size={16} className="text-white/15 animate-spin" />
               </div>
             ) : relatedTracks.length === 0 ? (
-              <p className="text-[12px] text-white/20 px-1">No related tracks</p>
+              <p className="text-[12px] text-white/20 px-1">{t('track.noRelatedTracks')}</p>
             ) : (
               <div className="space-y-1">
                 {relatedTracks.map((rt) => (

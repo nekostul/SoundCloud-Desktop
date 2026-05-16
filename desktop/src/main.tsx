@@ -4,6 +4,7 @@ import React from 'react';
 import ReactDOM, { type Root } from 'react-dom/client';
 import App from './App';
 import i18n from './i18n';
+import { normalizeLanguage } from './i18n/language';
 import { ApiError } from './lib/api';
 import './lib/app-visibility';
 import { installGlobalFrameLimiter, setGlobalFrameLimiterConfig } from './lib/framerate';
@@ -25,8 +26,12 @@ function syncGlobalFramerateLimiter(
 syncGlobalFramerateLimiter();
 
 useSettingsStore.persist.onFinishHydration((state) => {
-  if (state.language && state.language !== i18n.language) {
-    i18n.changeLanguage(state.language);
+  const language = normalizeLanguage(state.language);
+  if (language !== state.language) {
+    useSettingsStore.getState().setLanguage(language);
+  }
+  if (language !== i18n.language) {
+    i18n.changeLanguage(language);
   }
   syncGlobalFramerateLimiter(state);
   if (!isTauriRuntime()) return;

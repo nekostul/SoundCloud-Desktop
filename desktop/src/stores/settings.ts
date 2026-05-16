@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import { normalizeLanguage, type AppLanguage } from '../i18n/language';
 import { normalizeTargetFramerate } from '../lib/framerate';
 import { tauriStorage } from '../lib/tauri-storage';
 
@@ -196,7 +197,7 @@ export interface SettingsState {
   backgroundImage: string;
   backgroundOpacity: number;
   glassBlur: number;
-  language: string;
+  language: AppLanguage;
   eqEnabled: boolean;
   eqGains: number[];
   eqPreset: string;
@@ -416,7 +417,7 @@ const DEFAULTS = {
   backgroundImage: '',
   backgroundOpacity: 0.15,
   glassBlur: 40,
-  language: navigator.language?.split('-')[0] || 'en',
+  language: normalizeLanguage(navigator.language),
   eqEnabled: false,
   eqGains: DEFAULT_EQ_GAINS,
   eqPreset: 'flat',
@@ -528,7 +529,7 @@ export const useSettingsStore = create<SettingsState>()(
       setBackgroundImage: (backgroundImage) => set({ backgroundImage }),
       setBackgroundOpacity: (backgroundOpacity) => set({ backgroundOpacity }),
       setGlassBlur: (glassBlur) => set({ glassBlur }),
-      setLanguage: (language) => set({ language }),
+      setLanguage: (language) => set({ language: normalizeLanguage(language) }),
       setEqEnabled: (eqEnabled) => {
         set({ eqEnabled });
         invoke('audio_set_eq', { enabled: eqEnabled, gains: get().eqGains }).catch(console.error);
@@ -738,6 +739,7 @@ export const useSettingsStore = create<SettingsState>()(
             ? state.preferredLanguages
             : state.preferredLanguage,
         );
+        const language = normalizeLanguage((state.language as string) || DEFAULTS.language);
         const {
           preferredLanguage: _legacyPreferredLanguage,
           preferredLanguages: _preferredLanguages,
@@ -746,6 +748,7 @@ export const useSettingsStore = create<SettingsState>()(
         return {
           ...DEFAULTS,
           ...restState,
+          language,
           qdrantUrl,
           qdrantKey,
           pinnedPlaylists,
@@ -775,6 +778,7 @@ export const useSettingsStore = create<SettingsState>()(
             ? state.preferredLanguages
             : state.preferredLanguage,
         );
+        const language = normalizeLanguage((state.language as string) || currentState.language);
         const {
           preferredLanguage: _legacyPreferredLanguage,
           preferredLanguages: _preferredLanguages,
@@ -783,6 +787,7 @@ export const useSettingsStore = create<SettingsState>()(
         return {
           ...currentState,
           ...restState,
+          language,
           qdrantUrl,
           qdrantKey,
           pinnedPlaylists,

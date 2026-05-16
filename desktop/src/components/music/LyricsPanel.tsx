@@ -73,6 +73,61 @@ const SOURCE_LABELS: Record<LyricsSource, string> = {
   vosk: 'Genius',
 };
 
+function uniqueArtworkSources(values: Array<string | null | undefined>): string[] {
+  return values.filter(
+    (value, index, items): value is string => Boolean(value) && items.indexOf(value) === index,
+  );
+}
+
+function getTrackArtworkSources(track: Track | null | undefined, size: string): string[] {
+  if (!track) return [];
+
+  return uniqueArtworkSources([art(track.artwork_url, size), art(track.user.avatar_url, size)]);
+}
+
+function getTrackBackgroundArtworkSources(track: Track | null | undefined): string[] {
+  return uniqueArtworkSources([
+    ...getTrackArtworkSources(track, 't500x500'),
+    ...getTrackArtworkSources(track, 't200x200'),
+  ]);
+}
+
+function getTrackFullscreenArtworkSources(track: Track | null | undefined): string[] {
+  return uniqueArtworkSources([
+    ...getTrackArtworkSources(track, 't500x500'),
+    ...getTrackArtworkSources(track, 'original'),
+    ...getTrackArtworkSources(track, 't200x200'),
+  ]);
+}
+
+function useFallbackImageSource(sources: string[], resetKey: string) {
+  const sourcesKey = sources.join('|');
+  const [index, setIndex] = useState(0);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setIndex(0);
+    setFailed(false);
+  }, [resetKey, sourcesKey]);
+
+  const hasNextSource = index + 1 < sources.length;
+  const currentSrc = failed ? null : sources[index] ?? null;
+
+  const handleError = useCallback(() => {
+    if (hasNextSource) {
+      setIndex((current) => Math.min(current + 1, sources.length - 1));
+      return;
+    }
+
+    setFailed(true);
+  }, [hasNextSource, sources.length]);
+
+  return {
+    currentSrc,
+    handleError,
+  };
+}
+
 
 function useResolvedLyrics(
   visible: boolean,
@@ -264,22 +319,32 @@ const LyricsSourceBadge = React.memo(
 /* ── Shared: dynamic background ───────────────────────────── */
 
 const FullscreenBackground = React.memo(
-  ({ artworkSrc, color }: { artworkSrc: string | null; color: [number, number, number] }) => {
+  ({
+    artworkSources,
+    trackKey,
+    color,
+  }: {
+    artworkSources: string[];
+    trackKey: string;
+    color: [number, number, number];
+  }) => {
+    const { currentSrc, handleError } = useFallbackImageSource(artworkSources, trackKey);
     const [r, g, b] = color;
     return (
       <div
         className="absolute inset-0 pointer-events-none"
         style={{ contain: 'strict', transform: 'translateZ(0)' }}
       >
-        {artworkSrc ? (
+        {currentSrc ? (
           <>
             <img
-              src={artworkSrc}
+              src={currentSrc}
               alt=""
               className="w-full h-full object-cover scale-[1.2] blur-[72px] opacity-24 saturate-[1.18]"
               loading="eager"
               decoding="async"
               fetchPriority="low"
+              onError={handleError}
             />
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(8,8,10,0.06)_0%,rgba(8,8,10,0.5)_62%,rgba(8,8,10,0.82)_100%)]" />
           </>
@@ -647,15 +712,25 @@ const Controls = React.memo(({ track }: { track: Track }) => {
 
 const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: string }) => {
   const { t } = useTranslation();
-  const artwork500 = art(track.artwork_url, 't500x500');
-  const artworkOriginal = artwork500 ? artwork500.replace('t500x500', 'original') : null;
-  const artwork200 = art(track.artwork_url, 't200x200');
-  const fullscreenArtSources = useMemo(
-    () =>
-      [artwork500, artworkOriginal, artwork200].filter(
-        (value, index, items): value is string => Boolean(value) && items.indexOf(value) === index,
-      ),
-    [artwork200, artwork500, artworkOriginal],
+  const previewArtSources = uniqueArtworkSources([
+    ...getTrackArtworkSources(track, 't200x200'),
+    ...getTrackArtworkSources(track, 't500x500'),
+  ]);
+  const displayArtSources = uniqueArtworkSources([
+    ...getTrackArtworkSources(track, 't500x500'),
+    ...getTrackArtworkSources(track, 't200x200'),
+  ]);
+  const fullscreenArtSources = getTrackFullscreenArtworkSources(track);
+  const previewArtBase = previewArtSources[0] ?? null;
+  const displayArtBase = displayArtSources[0] ?? null;
+  const displayArtSourcesKey = displayArtSources.join('|');
+  const { currentSrc: previewArtSrc, handleError: handlePreviewArtError } = useFallbackImageSource(
+    previewArtSources,
+    `${track.urn}:preview`,
+  );
+  const { currentSrc: displayArtSrc, handleError: handleDisplayArtError } = useFallbackImageSource(
+    displayArtSources,
+    `${track.urn}:display`,
   );
   const [loaded, setLoaded] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
@@ -685,7 +760,9 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
       setShowFullArt(false);
       setFullscreenArtIndex(0);
 
-      const shouldBlurTransition = Boolean(artwork200 && artwork500 && artwork200 !== artwork500);
+      const shouldBlurTransition = Boolean(
+        previewArtBase && displayArtBase && previewArtBase !== displayArtBase,
+      );
       setIsSwitching(shouldBlurTransition);
 
       if (shouldBlurTransition) {
@@ -698,7 +775,7 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
         }, 2200);
       }
     }
-  }, [track.urn, artwork200, artwork500]);
+  }, [track.urn, displayArtBase, previewArtBase]);
 
   useEffect(() => {
     return () => {
@@ -715,9 +792,7 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
   }, [showFullArt, track.urn]);
 
   useEffect(() => {
-    const urls = [artwork500, artworkOriginal].filter(
-      (value, index, items): value is string => Boolean(value) && items.indexOf(value) === index,
-    );
+    const urls = displayArtSources.slice(0, 2);
     const preloadedImages: HTMLImageElement[] = [];
 
     for (const [index, url] of urls.entries()) {
@@ -734,9 +809,10 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
         img.src = '';
       }
     };
-  }, [artwork500, artworkOriginal, track.urn]);
+  }, [displayArtSourcesKey, track.urn]);
 
   const fullscreenArtSrc = fullscreenArtSources[fullscreenArtIndex] ?? null;
+  const hasArtwork = Boolean(previewArtSrc || displayArtSrc);
   // Artwork can grow large with viewport height (driven by maxArt prop).
   // Title/slider/controls/volume-panel keep a tighter readable width — wide
   // sliders and centered text on a 640px column look unbalanced.
@@ -801,22 +877,23 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
         className={`${artMaxWidthClass} aspect-square rounded-2xl overflow-hidden shadow-2xl shadow-black/60 ring-1 ring-white/[0.08] relative group/art`}
         style={columnWidthTransitionStyle}
       >
-        {artwork500 ? (
+        {hasArtwork ? (
           <>
             {/* Low-res placeholder (Blur applied only during track switch) */}
             <img
-              src={artwork200 || artwork500}
+              src={previewArtSrc || displayArtSrc || ''}
               alt=""
               loading="eager"
               decoding="async"
               fetchPriority="high"
+              onError={handlePreviewArtError}
               className={`absolute inset-0 w-full h-full object-cover scale-110 transition-all duration-700 ease-[var(--ease-apple)] ${
                 isSwitching ? 'blur-2xl scale-125' : ''
               } ${loaded ? 'opacity-0' : 'opacity-100'}`}
             />
             {/* High-res image */}
             <img
-              src={artwork500}
+              src={displayArtSrc || previewArtSrc || ''}
               alt=""
               loading="eager"
               decoding="async"
@@ -826,6 +903,8 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
                 clearSwitching();
               }}
               onError={() => {
+                setLoaded(false);
+                handleDisplayArtError();
                 clearSwitching();
               }}
               className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ease-[var(--ease-apple)] ${loaded ? 'opacity-100' : 'opacity-0'}`}
@@ -2491,9 +2570,6 @@ const StaticSyncedLyrics = React.memo(({ lines }: { lines: LyricLine[] }) => {
 
 /* ── Lyrics Panel (fullscreen, 50/50) ─────────────────────── */
 
-const LYRICS_NOT_FOUND_HINT_TEXT =
-  'T\u0435\u043a\u0441\u0442 \u043f\u0440\u043e\u0435\u0431\u0430\u043b\u0441\u044f. \u0418\u0434\u0438 \u043a\u043e\u043f\u0430\u0439\u0441\u044f \u043d\u0430 Genius';
-
 function getLyricsSearchPrefill(
   track: Track | null | undefined,
   manualQuery: { artist: string; title: string } | null,
@@ -2576,23 +2652,19 @@ const LyricsSearchModal = React.memo(
                 {resultState === 'loading' ? (
                   <div className="flex items-center gap-2 text-[13px] text-white/62">
                     <Loader2 size={14} className="animate-spin" />
-                    <span>Ищем текст...</span>
+                    <span>{t('track.lyricsSearchLoading')}</span>
                   </div>
                 ) : resultState === 'found' ? (
                   <div className="flex items-center gap-2 text-[13px] text-white/72">
                     <span className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.06] px-2 py-0.5 text-[10px] font-semibold text-white/50">
-                      {resultSource ? SOURCE_LABELS[resultSource] : 'Lyrics'}
+                      {resultSource ? SOURCE_LABELS[resultSource] : t('track.lyrics')}
                     </span>
-                    <span>Текст найден</span>
+                    <span>{t('track.lyricsSearchFound')}</span>
                   </div>
                 ) : resultState === 'not_found' ? (
-                  <div className="text-[13px] text-white/46">
-                    Ничего не найдено. Попробуй уточнить запрос.
-                  </div>
+                  <div className="text-[13px] text-white/46">{t('track.lyricsSearchNotFound')}</div>
                 ) : (
-                  <div className="text-[13px] text-white/38">
-                    Введи исполнителя и название, потом запусти поиск.
-                  </div>
+                  <div className="text-[13px] text-white/38">{t('track.lyricsSearchIdle')}</div>
                 )}
               </div>
 
@@ -2749,7 +2821,7 @@ useEffect(() => {
 
     if (!visible || !track) return null;
 
-    const artwork500 = art(track.artwork_url, 't500x500');
+    const backgroundArtSources = getTrackBackgroundArtworkSources(track);
     const rootClassName = forceOpen
       ? `fixed inset-0 z-[60] flex flex-col overflow-hidden bg-[#08080a] ${openAnimation === 'fromMiniPlayer' ? 'animate-fullscreen-from-player' : ''} ${closeAnimation === 'toMiniPlayer' ? 'animate-fullscreen-to-player' : ''} ${panelClassName}`.trim()
       : 'fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in-up bg-[#08080a]';
@@ -2758,8 +2830,9 @@ useEffect(() => {
       <>
       <div className={rootClassName} style={panelStyle}>
         <FullscreenBackground
-          key={artwork500 ?? track.urn}
-          artworkSrc={artwork500}
+          key={`${track.urn}-bg`}
+          artworkSources={backgroundArtSources}
+          trackKey={track.urn}
           color={artworkColor}
         />
 
@@ -2814,7 +2887,7 @@ useEffect(() => {
           }}
         >
           <div className="min-w-0 min-h-0">
-            <TrackColumn track={track} />
+            <TrackColumn key={track.urn} track={track} />
           </div>
 
           {/* Divider */}
@@ -2848,13 +2921,13 @@ useEffect(() => {
                 <input
                   value={editArtist}
                   onChange={(e) => setEditArtist(e.target.value)}
-                  placeholder="Artist"
+                  placeholder={t('track.artist')}
                   className="w-full max-w-[280px] bg-white/10 px-4 py-2.5 rounded-xl text-white text-[14px] outline-none border border-transparent focus:border-white/20 placeholder:text-white/30"
                 />
                 <input
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
-                  placeholder="Title"
+                  placeholder={t('track.title')}
                   className="w-full max-w-[280px] bg-white/10 px-4 py-2.5 rounded-xl text-white text-[14px] outline-none border border-transparent focus:border-white/20 placeholder:text-white/30"
                 />
                 <div className="flex gap-3 mt-4">
@@ -2990,7 +3063,7 @@ export const ArtworkPanel = React.memo(
 
     if (!visible || !track) return null;
 
-    const artwork500 = art(track.artwork_url, 't500x500');
+    const backgroundArtSources = getTrackBackgroundArtworkSources(track);
     const rootClassName = forceOpen
       ? `fixed inset-0 z-[60] flex flex-col overflow-hidden bg-[#08080a] ${openAnimation === 'fromMiniPlayer' ? 'animate-fullscreen-from-player' : ''} ${closeAnimation === 'toMiniPlayer' ? 'animate-fullscreen-to-player' : ''} ${panelClassName}`.trim()
       : 'fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in-up bg-[#08080a]';
@@ -2998,8 +3071,9 @@ export const ArtworkPanel = React.memo(
     return (
       <div className={rootClassName} style={panelStyle}>
         <FullscreenBackground
-          key={artwork500 ?? track.urn}
-          artworkSrc={artwork500}
+          key={`${track.urn}-bg`}
+          artworkSources={backgroundArtSources}
+          trackKey={track.urn}
           color={artworkColor}
         />
 
@@ -3042,7 +3116,7 @@ export const ArtworkPanel = React.memo(
           className="relative z-10 flex-1 flex items-center justify-center min-h-0"
           style={{ isolation: 'isolate' }}
         >
-          <TrackColumn track={track} maxArt="max-w-[420px]" />
+          <TrackColumn key={track.urn} track={track} maxArt="max-w-[420px]" />
         </div>
 
         {live && visualizerFullscreen && <FullscreenVisualizer />}
@@ -3431,7 +3505,7 @@ const FullscreenPanels = React.memo(() => {
 
   if (mode === 'none' || !track) return null;
 
-  const artwork500 = art(track.artwork_url, 't500x500');
+  const backgroundArtSources = getTrackBackgroundArtworkSources(track);
   const animClass =
     openAnimation === 'fromMiniPlayer'
       ? 'animate-fullscreen-from-player'
@@ -3446,8 +3520,9 @@ const FullscreenPanels = React.memo(() => {
         style={{ pointerEvents: closingToMiniPlayer ? 'none' : 'auto' }}
       >
       <FullscreenBackground
-        key={artwork500 ?? track.urn}
-        artworkSrc={artwork500}
+        key={`${track.urn}-bg`}
+        artworkSources={backgroundArtSources}
+        trackKey={track.urn}
         color={artworkColor}
       />
 
@@ -3508,7 +3583,7 @@ const FullscreenPanels = React.memo(() => {
               }`}
             >
               <div className="rounded-full border border-white/[0.12] bg-black/42 px-3 py-1.5 text-[11px] font-medium text-white/72 shadow-[0_10px_35px_rgba(0,0,0,0.34)] backdrop-blur-md whitespace-nowrap">
-                {LYRICS_NOT_FOUND_HINT_TEXT}
+                {t('track.lyricsNotFoundHint', 'Try searching on Genius.com')}
               </div>
             </div>
           </div>
@@ -3556,6 +3631,7 @@ const FullscreenPanels = React.memo(() => {
               {/* gaps + fullscreen header. If still not enough, the column */}
               {/* is scrollable (overflow-y-auto on the parent). */}
                 <TrackColumn
+                  key={track.urn}
                   track={track}
                   maxArt={
                   lyricsPaneVisible

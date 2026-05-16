@@ -2,18 +2,18 @@ import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import en from './locales/en.json';
 import ru from './locales/ru.json';
-import tr from './locales/tr.json';
-import uk from './locales/uk.json';
+import ruRofl from './locales/ru-rofl.json';
+import { DEFAULT_LANGUAGE, LANGUAGE_OPTIONS, normalizeLanguage } from './language';
 
 i18n.use(initReactI18next).init({
   resources: {
     en: { translation: en },
     ru: { translation: ru },
-    tr: { translation: tr },
-    uk: { translation: uk },
+    'ru-x-rofl': { translation: ruRofl },
   },
-  lng: navigator.language?.split('-')[0] || 'en',
-  fallbackLng: 'en',
+  lng: normalizeLanguage(navigator.language),
+  supportedLngs: LANGUAGE_OPTIONS.map((language) => language.code),
+  fallbackLng: DEFAULT_LANGUAGE,
   interpolation: { escapeValue: false },
 });
 
@@ -21,8 +21,9 @@ i18n.use(initReactI18next).init({
 i18n.on('languageChanged', (lng) => {
   import('../stores/settings').then(({ useSettingsStore }) => {
     const store = useSettingsStore.getState();
-    if (store.language !== lng) {
-      store.setLanguage(lng);
+    const nextLanguage = normalizeLanguage(lng);
+    if (store.language !== nextLanguage) {
+      store.setLanguage(nextLanguage);
     }
   });
 });

@@ -3,7 +3,7 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { api } from '../../lib/api';
-import { art, fc } from '../../lib/formatters';
+import { art } from '../../lib/formatters';
 import {
   type Playlist,
   useAddToPlaylist,
@@ -27,6 +27,7 @@ const PlaylistOption = React.memo(function PlaylistOption({
   onSelect: (p: Playlist) => void;
   loading: boolean;
 }) {
+  const { t } = useTranslation();
   const cover = art(playlist.artwork_url ?? playlist.tracks?.[0]?.artwork_url, 'small');
 
   return (
@@ -47,7 +48,9 @@ const PlaylistOption = React.memo(function PlaylistOption({
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-[13px] font-medium text-white/85 truncate">{playlist.title}</p>
-        <p className="text-[11px] text-white/30">{fc(playlist.track_count)} tracks</p>
+        <p className="text-[11px] text-white/30">
+          {t('playlist.tracks', { count: playlist.track_count })}
+        </p>
       </div>
       {playlist.sharing === 'private' && <Lock size={12} className="text-white/20 shrink-0" />}
     </button>
@@ -158,7 +161,7 @@ export const AddToPlaylistDialog = React.memo(function AddToPlaylistDialog({
     const newUrns = normalizedTrackUrns.filter((u) => !existingSet.has(u));
 
     if (newUrns.length === 0) {
-      toast.info('Already in playlist');
+      toast.info(t('playlist.alreadyContains'));
       setOpen(false);
       return;
     }

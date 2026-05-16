@@ -42,7 +42,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
 
   const handleDirectOAuth = useCallback(async () => {
     if (!hasCredentials) {
-      toast.error('Введите Client ID и Client Secret');
+      toast.error(t('auth.oauthRequired'));
       return;
     }
 
@@ -93,7 +93,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
 
       clearReloginRequest();
       queryClient.invalidateQueries();
-      toast.success('SoundCloud OAuth подключён');
+      toast.success(t('settings.directOAuthSuccess'));
       window.location.hash = '/';
     } catch (error) {
       if (latestAttemptRef.current !== attemptId) {
@@ -101,7 +101,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
       }
 
       console.error('[DirectOAuth] Failed:', error);
-      toast.error(`OAuth не удался: ${String(error)}`);
+      toast.error(`${t('settings.directOAuthFailed')}: ${String(error)}`);
     } finally {
       if (latestAttemptRef.current === attemptId) {
         clearLoadingTimeout();
@@ -162,7 +162,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
               {t('auth.oauthTitle')}
             </p>
             <p className="text-[12px] leading-relaxed text-white/45">
-              Прямой OAuth через официальный SoundCloud API.
+              {t('auth.oauthDescription')}
             </p>
           </div>
 
@@ -197,7 +197,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
                   rel="noreferrer"
                   className="text-red-200 underline decoration-red-200/60 underline-offset-2 hover:text-white transition-colors"
                 >
-                  получить здесь
+                  {t('auth.oauthGetCredentials')}
                 </a>
               </p>
             )}

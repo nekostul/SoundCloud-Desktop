@@ -701,7 +701,7 @@ export const PlaylistPage = React.memo(() => {
               <span className="w-5" />
               <span className="w-8 text-center">#</span>
               <span className="w-10" />
-              <span className="flex-1">Title</span>
+              <span className="flex-1">{t('track.title')}</span>
               <span className="hidden sm:block w-[100px]" />
               <span className="w-10 text-right">
                 <Clock size={10} className="inline" />
@@ -743,7 +743,7 @@ export const PlaylistPage = React.memo(() => {
             <div className="flex items-center gap-3.5 px-4 py-2 text-[10px] text-white/20 uppercase tracking-wider font-medium">
               <span className="w-8 text-center">#</span>
               <span className="w-10" />
-              <span className="flex-1">Title</span>
+              <span className="flex-1">{t('track.title')}</span>
               <span className="hidden sm:block w-[100px]" />
               <span className="w-10 text-right">
                 <Clock size={10} className="inline" />

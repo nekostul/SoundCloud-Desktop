@@ -142,7 +142,7 @@ export const TrackCard = React.memo(
           )}
           {track.playback_count != null && (
             <p className="text-[10px] text-white/20 mt-1 tabular-nums">
-              {fc(track.playback_count)} plays
+              {fc(track.playback_count)} {t('track.plays')}
             </p>
           )}
         </div>

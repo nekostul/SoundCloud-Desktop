@@ -2,6 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { NavLink } from 'react-router-dom';
 import { useShallow } from 'zustand/shallow';
+import { getNextLanguage, LANGUAGE_OPTIONS, normalizeLanguage } from '../../i18n/language';
 import { art } from '../../lib/formatters';
 import {
   Clock,
@@ -18,12 +19,6 @@ import {
 import { useAuthStore } from '../../stores/auth';
 import { useSettingsStore } from '../../stores/settings';
 import { Avatar } from '../ui/Avatar';
-
-const languages = [
-  { code: 'en', label: 'English' },
-  { code: 'ru', label: 'Русский' },
-  { code: 'tr', label: 'Turkce' },
-] as const;
 
 const navItems = [
   { to: '/', icon: Home, label: 'nav.home' },
@@ -45,11 +40,13 @@ export const Sidebar = React.memo(() => {
   );
 
   const toggleLanguage = () => {
-    const next = i18n.language === 'ru' ? 'en' : 'ru';
+    const next = getNextLanguage(i18n.language);
     i18n.changeLanguage(next);
   };
 
-  const currentLang = languages.find((l) => l.code === i18n.language) ?? languages[0];
+  const currentLanguage = normalizeLanguage(i18n.language);
+  const currentLang =
+    LANGUAGE_OPTIONS.find((language) => language.code === currentLanguage) ?? LANGUAGE_OPTIONS[0];
 
   return (
     <aside

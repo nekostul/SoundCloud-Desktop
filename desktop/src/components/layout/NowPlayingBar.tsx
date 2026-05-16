@@ -1012,6 +1012,7 @@ const EqBtn = React.memo(() => {
 /* ── Track Info (left section) ───────────────────────────────── */
 
 const TrackInfo = React.memo(() => {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const artwork200 = art(currentTrack?.artwork_url, 't200x200');
@@ -1057,7 +1058,7 @@ const TrackInfo = React.memo(() => {
   if (!currentTrack) {
     return (
       <div className="flex items-center gap-3.5 w-full min-w-0">
-        <p className="text-[13px] text-white/15">Not playing</p>
+        <p className="text-[13px] text-white/15">{t('player.notPlaying')}</p>
       </div>
     );
   }
@@ -1132,7 +1133,7 @@ const TrackInfo = React.memo(() => {
           </p>
           {currentTrack.access === 'preview' && (
             <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide bg-amber-500/20 text-amber-400/90 px-1.5 py-px rounded">
-              Preview
+              {t('track.preview')}
             </span>
           )}
         </div>

@@ -187,6 +187,7 @@ function isSoundCloudUrl(input: string): boolean {
 /* ── Resolve Card ────────────────────────────────────────── */
 
 function ResolveCard({ url, onDone }: { url: string; onDone: () => void }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [state, setState] = useState<'loading' | 'error' | 'success'>('loading');
   const [errorMsg, setErrorMsg] = useState('');
@@ -208,14 +209,14 @@ function ResolveCard({ url, onDone }: { url: string; onDone: () => void }) {
         } else if (kind === 'user') {
           navigate(`/user/${encodeURIComponent(urn)}`);
         } else {
-          setErrorMsg(`Unknown resource: ${kind}`);
+          setErrorMsg(t('search.resolveUnknownResource', { kind }));
           setState('error');
         }
         onDone();
       })
       .catch((e) => {
         if (cancelled) return;
-        setErrorMsg(e?.body ? 'Link not found' : 'Failed to resolve');
+        setErrorMsg(e?.body ? t('search.resolveNotFound') : t('search.resolveFailed'));
         setState('error');
       });
 
@@ -234,10 +235,10 @@ function ResolveCard({ url, onDone }: { url: string; onDone: () => void }) {
           <div className="flex-1 min-w-0">
             <p className="text-[13px] font-semibold text-white/80">
               {state === 'loading'
-                ? 'Resolving link...'
+                ? t('search.resolveLoading')
                 : state === 'error'
-                  ? 'Could not resolve'
-                  : 'Redirecting...'}
+                  ? t('search.resolveError')
+                  : t('search.resolveRedirecting')}
             </p>
             <p className="text-[11px] text-white/30 truncate mt-0.5">{url.trim()}</p>
           </div>
@@ -533,7 +534,7 @@ export const Search = React.memo(() => {
         {isUrl && !resolveUrl && (
           <div className="absolute -bottom-7 left-0 text-[11px] text-accent/60 flex items-center gap-1.5">
             <ExternalLink size={10} />
-            Press Enter to open link
+            {t('search.openLinkHint')}
           </div>
         )}
       </div>

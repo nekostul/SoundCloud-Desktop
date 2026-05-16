@@ -284,7 +284,7 @@ export const QueuePanel = React.memo(
             {queue.length === 0 && (
               <div className="flex flex-col items-center justify-center h-full text-white/15">
                 {playIcon32}
-                <p className="text-sm mt-3">Queue is empty</p>
+                <p className="text-sm mt-3">{t('player.queueEmpty')}</p>
               </div>
             )}
           </div>
