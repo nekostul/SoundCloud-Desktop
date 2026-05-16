@@ -83,7 +83,7 @@ export const LiveWaveform = React.memo(
       const rect = e.currentTarget.getBoundingClientRect();
       const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
       const d = getDuration();
-      if (d > 0) seek(pct * d);
+      if (d > 0) seek(pct * d, true, true);
     };
 
     return (

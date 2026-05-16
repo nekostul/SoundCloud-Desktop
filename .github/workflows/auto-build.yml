@@ -264,10 +264,14 @@ jobs:
             desktop/src-tauri/target/**/release/bundle/deb/*.deb
             desktop/src-tauri/target/**/release/bundle/rpm/*.rpm
             desktop/src-tauri/target/**/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/**/release/bundle/appimage/*.AppImage.sig
             desktop/src-tauri/target/**/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/**/release/bundle/nsis/*.exe.sig
             desktop/src-tauri/target/**/release/bundle/msi/*.msi
+            desktop/src-tauri/target/**/release/bundle/msi/*.msi.sig
             desktop/src-tauri/target/**/release/bundle/dmg/*.dmg
             desktop/src-tauri/target/**/release/bundle/macos/*.tar.gz
+            desktop/src-tauri/target/**/release/bundle/macos/*.tar.gz.sig
             desktop/src-tauri/target/**/release/bundle/**/*.sig
             desktop/src-tauri/target/**/release/**/latest*.json
           retention-days: 2
@@ -341,7 +345,9 @@ jobs:
           find /tmp/artifacts -type f | while read -r f; do
             name=$(basename "$f")
             case "$f" in
+              *aarch64-apple-darwin*.app.tar.gz.sig) name="${name%.app.tar.gz.sig}_arm64.app.tar.gz.sig" ;;
               *aarch64-apple-darwin*.app.tar.gz) name="${name%.app.tar.gz}_arm64.app.tar.gz" ;;
+              *x86_64-apple-darwin*.app.tar.gz.sig)  name="${name%.app.tar.gz.sig}_x64.app.tar.gz.sig" ;;
               *x86_64-apple-darwin*.app.tar.gz)  name="${name%.app.tar.gz}_x64.app.tar.gz" ;;
             esac
             cp "$f" "/tmp/release/$name"
@@ -355,40 +361,81 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          import re
           from pathlib import Path
 
           version = os.environ['VERSION']
           release_dir = Path('/tmp/release')
           base_url = "https://github.com/nekostul/SoundCloud-Desktop/releases/latest/download"
 
-          candidates = {
-              'windows-x86_64': [
-                  f'soundcloud-desktop_{version}_x64-setup.exe',
-                  f'soundcloud-desktop_{version}_x64_en-US.msi',
-              ],
-              'linux-x86_64': [f'soundcloud-desktop_{version}_amd64.AppImage'],
-              'linux-aarch64': [f'soundcloud-desktop_{version}_aarch64.AppImage'],
-              'darwin-x86_64': ['soundcloud-desktop_x64.app.tar.gz'],
-              'darwin-aarch64': ['soundcloud-desktop_arm64.app.tar.gz'],
-          }
+          def detect_target(name: str) -> str | None:
+              lower = name.lower()
+              if lower.endswith('.appimage'):
+                  os_name = 'linux'
+              elif lower.endswith('.app.tar.gz'):
+                  os_name = 'darwin'
+              elif lower.endswith('.exe') or lower.endswith('.msi'):
+                  os_name = 'windows'
+              else:
+                  return None
+
+              if re.search(r'(arm64|aarch64)', lower):
+                  arch = 'aarch64'
+              elif re.search(r'(x64|x86_64|amd64)', lower):
+                  arch = 'x86_64'
+              elif 'i686' in lower:
+                  arch = 'i686'
+              elif 'armv7' in lower:
+                  arch = 'armv7'
+              else:
+                  return None
+
+              return f'{os_name}-{arch}'
+
+          def priority(name: str) -> int:
+              lower = name.lower()
+              if lower.endswith('.exe'):
+                  return 0
+              if lower.endswith('.msi'):
+                  return 1
+              if lower.endswith('.appimage'):
+                  return 0
+              if lower.endswith('.app.tar.gz'):
+                  return 0
+              return 10
+
+          candidates = []
+          for artifact in release_dir.iterdir():
+              if not artifact.is_file():
+                  continue
+              if artifact.name.endswith('.sig') or artifact.name.endswith('.json'):
+                  continue
+
+              target = detect_target(artifact.name)
+              if not target:
+                  continue
+
+              signature = release_dir / f'{artifact.name}.sig'
+              if not signature.exists():
+                  continue
+
+              candidates.append((target, priority(artifact.name), artifact.name, signature))
 
           platforms = {}
-          for target, names in candidates.items():
-              for name in names:
-                  artifact = release_dir / name
-                  signature = release_dir / f'{name}.sig'
-                  if artifact.exists() and signature.exists():
-                      platforms[target] = {
-                          'url': f'{base_url}/{name}',
-                          'signature': signature.read_text(encoding='utf-8').strip(),
-                      }
-                      break
+          for target, _, name, signature in sorted(candidates, key=lambda item: (item[0], item[1], item[2])):
+              if target in platforms:
+                  continue
+              platforms[target] = {
+                  'url': f'{base_url}/{name}',
+                  'signature': signature.read_text(encoding='utf-8').strip(),
+              }
 
           if not platforms:
               raise RuntimeError('No updater-compatible artifacts found for latest.json')
 
           manifest = {
               'version': version,
+              'notes': f'SoundCloud Desktop {version}',
               'platforms': platforms,
           }
 

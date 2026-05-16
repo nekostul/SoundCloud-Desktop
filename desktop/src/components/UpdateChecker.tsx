@@ -17,6 +17,12 @@ interface GithubRelease {
   body: string;
   html_url: string;
   published_at: string;
+  assets?: GithubReleaseAsset[];
+}
+
+interface GithubReleaseAsset {
+  name: string;
+  browser_download_url: string;
 }
 
 function stripLeadingV(version: string) {
@@ -27,6 +33,95 @@ async function fetchRelease(repo: string): Promise<GithubRelease | null> {
   const url = `https://api.github.com/repos/${GITHUB_OWNER}/${repo}/releases/latest`;
   const r = await fetch(url);
   return r.ok ? r.json() : null;
+}
+
+async function openExternalUrl(url: string) {
+  if (isTauri()) {
+    try {
+      await openUrl(url);
+      return;
+    } catch {
+      // Fall through to the browser fallback.
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+}
+
+function detectCurrentPlatform() {
+  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent.toLowerCase();
+  const userAgentDataPlatform =
+    typeof navigator === 'undefined'
+      ? ''
+      : ((navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData
+          ?.platform ?? '');
+  const platform =
+    typeof navigator === 'undefined'
+      ? ''
+      : (
+          userAgentDataPlatform ||
+          navigator.platform ||
+          navigator.userAgent
+        ).toLowerCase();
+
+  const isWindows = platform.includes('win') || ua.includes('windows');
+  const isMac = platform.includes('mac') || ua.includes('mac os');
+  const isLinux = platform.includes('linux') || ua.includes('linux');
+  const isArm64 =
+    platform.includes('arm') || ua.includes('arm64') || ua.includes('aarch64');
+
+  return {
+    os: isWindows ? 'windows' : isMac ? 'macos' : isLinux ? 'linux' : 'unknown',
+    arch: isArm64 ? 'arm64' : 'x64',
+  } as const;
+}
+
+function getPreferredReleaseAsset(release: GithubRelease): GithubReleaseAsset | null {
+  const assets = release.assets ?? [];
+  if (assets.length === 0) return null;
+
+  const { os, arch } = detectCurrentPlatform();
+  const archMatchers =
+    arch === 'arm64'
+      ? [/arm64/i, /aarch64/i]
+      : [/x64/i, /x86_64/i, /amd64/i];
+
+  const candidates = assets.filter((asset) => {
+    const name = asset.name.toLowerCase();
+    if (name.endsWith('.sig') || name.endsWith('.json')) return false;
+
+    if (os === 'windows') return name.endsWith('.exe') || name.endsWith('.msi');
+    if (os === 'macos') return name.endsWith('.dmg') || name.endsWith('.app.tar.gz');
+    if (os === 'linux') {
+      return (
+        name.endsWith('.appimage') ||
+        name.endsWith('.deb') ||
+        name.endsWith('.rpm') ||
+        name.endsWith('.flatpak')
+      );
+    }
+
+    return true;
+  });
+
+  if (candidates.length === 0) return assets[0] ?? null;
+
+  const exactArch = candidates.find((asset) =>
+    archMatchers.some((matcher) => matcher.test(asset.name)),
+  );
+  if (exactArch) return exactArch;
+
+  const neutral = candidates.find(
+    (asset) => !/(arm64|aarch64|x64|x86_64|amd64)/i.test(asset.name),
+  );
+  return neutral ?? candidates[0] ?? null;
+}
+
+async function openReleaseDownload(release: GithubRelease) {
+  const asset = getPreferredReleaseAsset(release);
+  await openExternalUrl(asset?.browser_download_url ?? release.html_url);
 }
 
 export function UpdateChecker() {
@@ -61,18 +156,21 @@ export function UpdateChecker() {
   const handleUpdate = async () => {
     if (!release || updating) return;
 
-    if (!isTauri()) {
-      await openUrl(release.html_url);
-      return;
-    }
-
     setUpdateError(null);
     setUpdating(true);
     setDownloadProgress(null);
 
     try {
+      if (!isTauri()) {
+        await openReleaseDownload(release);
+        setDismissed(true);
+        return;
+      }
+
       const update = await check();
       if (!update) {
+        await openReleaseDownload(release);
+        setUpdating(false);
         setDismissed(true);
         return;
       }
@@ -97,10 +195,18 @@ export function UpdateChecker() {
       await relaunch();
     } catch (e) {
       console.error('Auto update failed', e);
-      const msg = t('update.failed');
-      setUpdateError(msg);
-      toast.error(msg);
-      setUpdating(false);
+      try {
+        await openReleaseDownload(release);
+        setUpdating(false);
+        setDismissed(true);
+        return;
+      } catch (fallbackError) {
+        console.error('Manual update fallback failed', fallbackError);
+        const msg = t('update.failed');
+        setUpdateError(msg);
+        toast.error(msg);
+        setUpdating(false);
+      }
     }
   };
 
