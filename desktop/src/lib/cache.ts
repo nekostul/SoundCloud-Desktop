@@ -103,6 +103,10 @@ async function getNativeCacheEntry(urn: string): Promise<NativeTrackCacheEntry |
   }
 }
 
+export async function getCacheEntryInfo(urn: string): Promise<NativeTrackCacheEntry | null> {
+  return getNativeCacheEntry(urn);
+}
+
 export interface CacheBatchProgress {
   completed: number;
   total: number;

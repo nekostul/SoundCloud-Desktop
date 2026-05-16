@@ -18,8 +18,13 @@ const AUTH_BASE = 'https://secure.soundcloud.com';
 const CONNECT_BASE = 'https://soundcloud.com';
 const STREAM_PROXY_MAX_RETRIES = 3;
 const STREAM_PROXY_RETRY_DELAYS_MS = [300, 800, 2000];
-const PROGRESSIVE_PROXY_CHUNK_SIZE = 16 * 1024;
-const PROGRESSIVE_PROXY_HTTPS_AGENT = new HttpsAgent({ keepAlive: false });
+const PROGRESSIVE_PROXY_CHUNK_SIZE = 1024 * 1024;
+const PROGRESSIVE_PROXY_HTTPS_AGENT = new HttpsAgent({
+  keepAlive: true,
+  keepAliveMsecs: 10000,
+  maxSockets: 32,
+  maxFreeSockets: 8,
+});
 
 function isRetryableStreamStatus(status: number | null | undefined): boolean {
   return typeof status === 'number' && (status === 429 || (status >= 500 && status <= 599));

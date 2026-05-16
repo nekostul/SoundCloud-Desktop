@@ -1253,6 +1253,7 @@ pub struct AudioState {
     stream_total_bytes: Arc<AtomicU64>,
     stream_downloaded_bytes: Arc<AtomicU64>,
     stream_duration_ms: Arc<AtomicU64>,
+    tick_event_token: Arc<AtomicU64>,
     seek_in_progress: AtomicBool,
     pub visualizer_tx: Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>,
     pub frame_target: AtomicU32,
@@ -1439,6 +1440,7 @@ pub fn init() -> AudioState {
         stream_total_bytes: Arc::new(AtomicU64::new(0)),
         stream_downloaded_bytes: Arc::new(AtomicU64::new(0)),
         stream_duration_ms: Arc::new(AtomicU64::new(0)),
+        tick_event_token: Arc::new(AtomicU64::new(0)),
         seek_in_progress: AtomicBool::new(false),
         visualizer_tx: Mutex::new(None),
         frame_target: AtomicU32::new(DEFAULT_TARGET_FPS),
@@ -1482,7 +1484,16 @@ pub fn start_tick_emitter(app: &AppHandle) {
                     let anchor = *state.position_anchor.lock().unwrap();
                     let pos = timeline_position_from_output(p.get_pos(), anchor, playback_speed)
                         .as_secs_f64();
-                    handle.emit("audio:tick", pos).ok();
+                    let tick_token = state.tick_event_token.load(Ordering::Relaxed);
+                    handle
+                        .emit(
+                            "audio:tick",
+                            serde_json::json!({
+                                "gen": tick_token,
+                                "position": pos,
+                            }),
+                        )
+                        .ok();
                 }
             }
         })
@@ -1756,7 +1767,7 @@ fn estimated_stream_buffered_timeline_secs(state: &AudioState) -> Option<f64> {
 
 fn emit_stream_download_progress(
     app: &AppHandle,
-    gen: u64,
+    event_token: u64,
     downloaded_bytes: u64,
     total_bytes: Option<u64>,
     done: bool,
@@ -1774,7 +1785,7 @@ fn emit_stream_download_progress(
     let _ = app.emit(
         "audio:download_progress",
         serde_json::json!({
-            "gen": gen,
+            "gen": event_token,
             "progress": progress,
             "downloadedBytes": downloaded_bytes,
             "totalBytes": total_bytes,
@@ -2034,12 +2045,15 @@ fn replace_player_after_seek(
 /// Load and play audio from a file path
 #[tauri::command]
 pub fn audio_load_file(
+    event_token: Option<u64>,
     path: String,
     cache_key: Option<String>,
     crossfade_secs: Option<f64>,
     app: tauri::AppHandle,
     state: tauri::State<'_, AudioState>,
 ) -> Result<AudioLoadResult, String> {
+    let resolved_event_token =
+        event_token.unwrap_or_else(|| state.load_gen.load(Ordering::Relaxed));
     let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
 
     let mixer = state.mixer.lock().unwrap().clone();
@@ -2127,6 +2141,9 @@ pub fn audio_load_file(
     }
 
     *state.player.lock().unwrap() = Some(new_player);
+    state
+        .tick_event_token
+        .store(resolved_event_token, Ordering::Relaxed);
     set_position_anchor(&state, 0.0, 0.0);
     clear_stream_seek_tracking(&state);
     set_stream_seek_tracking(&state, duration_secs);
@@ -2152,6 +2169,7 @@ pub struct AudioLoadResult {
 /// Load and play audio from a URL (starts playback while bytes continue streaming).
 #[tauri::command]
 pub async fn audio_load_url(
+    progress_token: Option<u64>,
     url: String,
     session_id: Option<String>,
     stream_content_type_hint: Option<String>,
@@ -2164,15 +2182,11 @@ pub async fn audio_load_url(
     state: tauri::State<'_, AudioState>,
 ) -> Result<AudioLoadResult, String> {
     let gen = state.load_gen.load(Ordering::Relaxed);
-    let previous_stream_total_bytes = state.stream_total_bytes.load(Ordering::Relaxed);
-    let previous_stream_duration_secs = match state.stream_duration_ms.load(Ordering::Relaxed) {
-        0 => None,
-        ms => Some(ms as f64 / 1000.0),
-    };
+    let event_token = progress_token.unwrap_or(gen);
     let range_seek_target_secs =
         range_seek_target_secs.filter(|secs| secs.is_finite() && *secs > 0.0);
     let range_seek_duration_secs = range_seek_target_secs
-        .and_then(|_| expected_duration_secs.or(previous_stream_duration_secs));
+        .and_then(|_| expected_duration_secs);
     let is_ranged_seek_load = range_seek_target_secs.is_some();
 
     let normalization_cache_dir = app
@@ -2214,7 +2228,6 @@ pub async fn audio_load_url(
     let stream_content_type_hint_for_download = stream_content_type_hint.clone();
     let range_seek_target_for_download = range_seek_target_secs;
     let range_seek_duration_for_download = range_seek_duration_secs;
-    let previous_total_bytes_for_download = previous_stream_total_bytes;
     let is_ranged_seek_load_for_download = is_ranged_seek_load;
     let (bootstrap_tx, bootstrap_rx) = std::sync::mpsc::sync_channel::<
         Result<
@@ -2250,11 +2263,7 @@ pub async fn audio_load_url(
 
             runtime.block_on(async move {
                 let client = reqwest::Client::new();
-                let mut resolved_total_size = if previous_total_bytes_for_download > 0 {
-                    Some(previous_total_bytes_for_download)
-                } else {
-                    None
-                };
+                let mut resolved_total_size = None;
                 let mut planned_range_seek = None;
                 let cache_temp_path_for_download = cache_path_for_download
                     .as_ref()
@@ -2463,7 +2472,7 @@ pub async fn audio_load_url(
                             cache_temp_path_for_download.as_deref(),
                             &stream_downloaded_bytes,
                             &app_for_download,
-                            gen,
+                            event_token,
                             &mut downloaded,
                             total_size,
                             is_ranged_seek_load_for_download,
@@ -2513,7 +2522,7 @@ pub async fn audio_load_url(
                             cache_temp_path_for_download.as_deref(),
                             &stream_downloaded_bytes,
                             &app_for_download,
-                            gen,
+                            event_token,
                             &mut downloaded,
                             total_size,
                             is_ranged_seek_load_for_download,
@@ -2653,7 +2662,7 @@ pub async fn audio_load_url(
 
                                 emit_stream_download_progress(
                                     &app_for_download,
-                                    gen,
+                                    event_token,
                                     absolute_downloaded,
                                     total_size,
                                     false,
@@ -2738,7 +2747,7 @@ pub async fn audio_load_url(
                 stream_downloaded_bytes.store(final_downloaded, Ordering::Relaxed);
                 emit_stream_download_progress(
                     &app_for_download,
-                    gen,
+                    event_token,
                     final_downloaded,
                     total_size,
                     true,
@@ -2795,7 +2804,7 @@ pub async fn audio_load_url(
 
     emit_stream_download_progress(
         &app,
-        gen,
+        event_token,
         bootstrap_downloaded_bytes,
         total_size,
         false,
@@ -2922,6 +2931,7 @@ pub async fn audio_load_url(
     }
 
     *state.player.lock().unwrap() = Some(new_player);
+    state.tick_event_token.store(event_token, Ordering::Relaxed);
     set_position_anchor(&state, anchor_timeline_secs, anchor_output_secs);
     state.has_track.store(true, Ordering::Relaxed);
     state.ended_notified.store(false, Ordering::Relaxed);
@@ -3015,7 +3025,6 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
     let local_target_secs =
         (anchor.output_secs + (target_secs - anchor.timeline_secs) / playback_rate).max(0.0);
     let current_player_target = Duration::from_secs_f64(local_target_secs);
-    let absolute_target = Duration::from_secs_f64(target_secs);
     let has_fallback_source = state
         .source_bytes
         .try_lock()
@@ -3123,18 +3132,24 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
             .clone(),
     )?;
 
-    replace_player_after_seek(
-        &state,
-        new_player,
+    let anchor = if target_secs > 0.015 {
+        let target = Duration::from_secs_f64(target_secs);
+        if new_player.try_seek(target).is_ok() {
+            PositionAnchor {
+                timeline_secs: target_secs.max(0.0),
+                output_secs: new_player.get_pos().as_secs_f64(),
+            }
+        } else {
+            return Err("Failed to seek rebuilt local source".into());
+        }
+    } else {
         PositionAnchor {
-            timeline_secs: target_secs.max(0.0),
-            output_secs: if target_secs > 0.0 {
-                absolute_target.as_secs_f64()
-            } else {
-                0.0
-            },
-        },
-    )
+            timeline_secs: 0.0,
+            output_secs: 0.0,
+        }
+    };
+
+    replace_player_after_seek(&state, new_player, anchor)
 }
 
 #[tauri::command]

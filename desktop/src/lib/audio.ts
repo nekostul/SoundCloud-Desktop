@@ -7,6 +7,7 @@ import { api, getSessionId, resolveTrackFromStreaming, getTrackStreamSource } fr
 import { audioAnalyser } from './audio-analyser';
 import {
   fetchAndCacheTrack,
+  getCacheEntryInfo,
   getCacheFilePath,
   getCacheTargetPath,
   isCached,
@@ -51,8 +52,15 @@ let startupBufferedSecs = 0;
 let waitForReadyBuffer = true;
 let readyBufferPromise: Promise<void> | null = null;
 let readyBufferResolver: (() => void) | null = null;
+let startupPlaybackTickReceived = false;
+let startupRecoveryTrackUrn: string | null = null;
+let startupRecoveryAttempts = 0;
+let startupRecoveryWindowStartedAt = 0;
+let startupRecoveryInFlight = false;
 const listeners = new Set<() => void>();
 const bufferListeners = new Set<() => void>();
+let bufferNotifyRafId: number | null = null;
+let bufferNotifyTimeout: ReturnType<typeof setTimeout> | null = null;
 const SEEK_DEBOUNCE_MS = 120;
 const SEEK_BUSY_RETRY_MS = 80;
 const SEEK_NO_SOURCE_RETRY_MS = 220;
@@ -64,8 +72,14 @@ const SEEK_MAX_RECOVERY_RETRIES = 2;
 const SEEK_IGNORE_DELTA_SEC = 0.12;
 const DIRECT_SEEK_RELOAD_FORWARD_TOLERANCE_SEC = 0.35;
 const DIRECT_SEEK_RELOAD_BACKWARD_TOLERANCE_SEC = 0.9;
+const STARTUP_RECOVERY_MAX_RETRIES = 2;
+const STARTUP_RECOVERY_ACTIVITY_TIMEOUT_MS = 4_500;
+const STARTUP_RECOVERY_NO_TICK_TIMEOUT_MS = 9_000;
+const STARTUP_RECOVERY_WINDOW_MS = 20_000;
+const LARGE_CACHE_SEEK_UNSAFE_BYTES = 12 * 1024 * 1024;
 
 type PlaybackBufferPhase = 'idle' | 'loading' | 'buffering' | 'ready';
+type AudioTickPayload = number | { gen?: number; position?: number | null };
 
 type PlaybackBufferSnapshot = {
   phase: PlaybackBufferPhase;
@@ -114,7 +128,20 @@ export function subscribe(listener: () => void): () => void {
 }
 
 function notifyBufferState() {
-  for (const listener of bufferListeners) listener();
+  if (bufferNotifyRafId != null || bufferNotifyTimeout != null) return;
+
+  const flush = () => {
+    bufferNotifyRafId = null;
+    bufferNotifyTimeout = null;
+    for (const listener of bufferListeners) listener();
+  };
+
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    bufferNotifyRafId = window.requestAnimationFrame(() => flush());
+    return;
+  }
+
+  bufferNotifyTimeout = setTimeout(flush, 16);
 }
 
 export function subscribePlaybackBuffer(listener: () => void): () => void {
@@ -124,6 +151,10 @@ export function subscribePlaybackBuffer(listener: () => void): () => void {
 
 export function getPlaybackBufferSnapshot(): PlaybackBufferSnapshot {
   return playbackBufferSnapshot;
+}
+
+export function isPlaybackInteractionLocked(): boolean {
+  return false;
 }
 
 export function getSeekableTimeLimit(): number {
@@ -155,6 +186,7 @@ function getBufferedSeekWindowEnd(): number {
 
 export function canSeekCurrentTrack(targetSecs?: number): boolean {
   if (!currentUrn) return true;
+  if (isPlaybackInteractionLocked()) return false;
   if (isTauriRuntime() && playbackBufferSnapshot.seekUnlocked) {
     if (targetSecs == null) return true;
     const durationLimit = cachedDuration > 0 ? cachedDuration : Number.POSITIVE_INFINITY;
@@ -317,7 +349,7 @@ function syncPlaybackBufferPhase(force = false) {
     ? 'idle'
     : waitForReadyBuffer
       ? 'loading'
-      : playbackBufferSnapshot.seekUnlocked
+      : startupPlaybackTickReceived || playbackBufferSnapshot.fullyCached
         ? 'ready'
         : 'buffering';
   updatePlaybackBufferSnapshot({ phase: nextPhase }, force);
@@ -330,6 +362,7 @@ function resetPlaybackBufferState() {
   lastDownloadProgressAt = 0;
   activeRangedSeekLoad = false;
   estimatedStreamTotalBytes = null;
+  startupPlaybackTickReceived = false;
   updatePlaybackBufferSnapshot(
     {
       phase: 'idle',
@@ -350,6 +383,7 @@ function beginPlaybackBufferTracking(durationSecs: number, rangedSeekLoad = fals
   bufferLoadStartedAt = Date.now();
   lastDownloadProgressAt = 0;
   activeRangedSeekLoad = rangedSeekLoad;
+  startupPlaybackTickReceived = false;
   if (rangedSeekLoad) {
     estimatedStreamTotalBytes = null;
   }
@@ -368,6 +402,7 @@ function beginPlaybackBufferTracking(durationSecs: number, rangedSeekLoad = fals
 }
 
 function finalizePlaybackBufferAsCached() {
+  startupRecoveryAttempts = 0;
   updatePlaybackBufferSnapshot(
     {
       phase: 'ready',
@@ -382,6 +417,7 @@ function finalizePlaybackBufferAsCached() {
 
 function shouldResolveStartupBuffer(progress: number | null, fullyCached: boolean) {
   if (fullyCached) return true;
+  if (!startupPlaybackTickReceived) return false;
   if (
     currentBufferStrategy.startupProgress != null &&
     bufferProgressKnown &&
@@ -409,13 +445,16 @@ function shouldUnlockSeek(progress: number | null, fullyCached: boolean) {
 }
 
 function resolveReadyBuffer(reason: string) {
-  if (!waitForReadyBuffer || !readyBufferResolver) return;
+  if (!waitForReadyBuffer) return;
 
+  startupRecoveryAttempts = 0;
   waitForReadyBuffer = false;
   const resolve = readyBufferResolver;
   readyBufferResolver = null;
   readyBufferPromise = null;
-  resolve();
+  if (resolve) {
+    resolve();
+  }
   syncPlaybackBufferPhase(true);
   console.log(`[Audio] Startup buffer ready (${reason})`);
 }
@@ -427,22 +466,25 @@ function updatePlaybackBufferProgress(
   done: boolean,
   cacheComplete = false,
 ) {
-  const normalizedProgress =
+  const rawProgress =
     progress != null && Number.isFinite(progress) ? Math.max(0, Math.min(progress, 1)) : null;
+  const normalizedProgress =
+    rawProgress == null ? null : done ? rawProgress : Math.min(rawProgress, 0.995);
   lastDownloadProgressAt = Date.now();
   const normalizedTotalBytes = totalBytes && totalBytes > 0 ? totalBytes : null;
   const effectiveProgress = activeRangedSeekLoad
     ? normalizedProgress
     : normalizedProgress ?? estimateBufferProgress(downloadedBytes, normalizedTotalBytes, done);
   bufferProgressKnown = effectiveProgress != null && Number.isFinite(effectiveProgress);
-  const fullyCached = !activeRangedSeekLoad && (cacheComplete || normalizedProgress === 1);
+  const fullyCached =
+    !activeRangedSeekLoad && (cacheComplete || (done && normalizedProgress === 1));
   const nextBufferedSecs =
     effectiveProgress != null && cachedDuration > 0 ? effectiveProgress * cachedDuration : 0;
   startupBufferedSecs = Math.max(startupBufferedSecs, nextBufferedSecs);
   const seekUnlocked = shouldUnlockSeek(effectiveProgress, fullyCached);
 
   updatePlaybackBufferSnapshot({
-    progress: effectiveProgress,
+    progress: normalizedProgress,
     bufferedSecs: startupBufferedSecs,
     downloadedBytes,
     totalBytes: normalizedTotalBytes,
@@ -452,8 +494,10 @@ function updatePlaybackBufferProgress(
 
   usePlayerStore.setState({
     downloadProgress:
-      effectiveProgress != null && Number.isFinite(effectiveProgress)
-        ? Math.max(0, Math.min(effectiveProgress, 1))
+      normalizedProgress != null && Number.isFinite(normalizedProgress)
+        ? Math.max(0, Math.min(normalizedProgress, 1))
+        : cacheComplete
+          ? 1
         : null,
   });
 
@@ -477,8 +521,72 @@ function maybeResolveUnknownTotalStartup(tickPos: number) {
   resolveReadyBuffer('playback-progress');
 }
 
+function updateTickDrivenBufferState(tickPos: number) {
+  if (!Number.isFinite(tickPos) || tickPos <= 0) return;
+
+  startupBufferedSecs = Math.max(startupBufferedSecs, tickPos);
+  const seekUnlocked = shouldUnlockSeek(playbackBufferSnapshot.progress, playbackBufferSnapshot.fullyCached);
+
+  updatePlaybackBufferSnapshot({
+    bufferedSecs: startupBufferedSecs,
+    seekUnlocked,
+  });
+
+  if (waitForReadyBuffer) {
+    if (shouldResolveStartupBuffer(playbackBufferSnapshot.progress, playbackBufferSnapshot.fullyCached)) {
+      resolveReadyBuffer('playback-tick');
+      return;
+    }
+    maybeResolveUnknownTotalStartup(tickPos);
+    return;
+  }
+
+  if (seekUnlocked && playbackBufferSnapshot.phase !== 'ready') {
+    syncPlaybackBufferPhase(true);
+  }
+}
+
 function suppressStallDetection(ms: number) {
   stallSuppressedUntil = Math.max(stallSuppressedUntil, Date.now() + ms);
+}
+
+function primeStartupRecoveryWindow(trackUrn: string) {
+  const now = Date.now();
+  if (
+    startupRecoveryTrackUrn !== trackUrn ||
+    now - startupRecoveryWindowStartedAt > STARTUP_RECOVERY_WINDOW_MS
+  ) {
+    startupRecoveryTrackUrn = trackUrn;
+    startupRecoveryAttempts = 0;
+    startupRecoveryWindowStartedAt = now;
+  }
+}
+
+async function recoverFromStartupHang(reason: string) {
+  if (startupRecoveryInFlight) return;
+
+  const state = usePlayerStore.getState();
+  const track = state.currentTrack;
+  if (!track || track.urn !== currentUrn || !state.isPlaying) return;
+  if (playbackBufferSnapshot.phase === 'ready' || playbackBufferSnapshot.fullyCached) return;
+
+  primeStartupRecoveryWindow(track.urn);
+  if (startupRecoveryAttempts >= STARTUP_RECOVERY_MAX_RETRIES) {
+    return;
+  }
+
+  startupRecoveryInFlight = true;
+  startupRecoveryAttempts += 1;
+  suppressStallDetection(5000);
+  console.warn(
+    `[Audio] Startup hang detected (${reason}), retrying load ${startupRecoveryAttempts}/${STARTUP_RECOVERY_MAX_RETRIES} for ${track.urn}`,
+  );
+
+  try {
+    await loadTrack(track);
+  } finally {
+    startupRecoveryInFlight = false;
+  }
 }
 
 function inferCodecFromContentType(contentType: string | null | undefined): string | undefined {
@@ -586,6 +694,59 @@ function keepSeekGuardAlive(target: number, ms: number) {
   seekPendingUntil = Math.max(seekPendingUntil, Date.now() + ms);
   lastTickAt = Date.now();
   suppressStallDetection(Math.max(ms + 800, 1800));
+}
+
+async function shouldBypassFullCachePlayback(track: Track): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+
+  try {
+    const entry = await getCacheEntryInfo(track.urn);
+    if (!entry?.complete) {
+      return false;
+    }
+
+    const cachedBytes = entry.downloaded_bytes ?? 0;
+    return cachedBytes > LARGE_CACHE_SEEK_UNSAFE_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+async function syncPlaybackBufferFromCompleteCache(
+  trackUrn: string,
+  expectedGen?: number,
+): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  if (currentUrn !== trackUrn || usePlayerStore.getState().currentTrack?.urn !== trackUrn) {
+    return false;
+  }
+  if (expectedGen != null && expectedGen !== loadGen) {
+    return false;
+  }
+
+  try {
+    const entry = await getCacheEntryInfo(trackUrn);
+    if (!entry?.complete) {
+      return false;
+    }
+    if (currentUrn !== trackUrn || usePlayerStore.getState().currentTrack?.urn !== trackUrn) {
+      return false;
+    }
+    if (expectedGen != null && expectedGen !== loadGen) {
+      return false;
+    }
+
+    waitForReadyBuffer = false;
+    waitingForStartupProgress = false;
+    startupProgressDeadline = 0;
+    readyBufferPromise = null;
+    readyBufferResolver = null;
+    usePlayerStore.setState({ downloadProgress: 1 });
+    finalizePlaybackBufferAsCached();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function shouldUseDirectSeekReload(target: number): boolean {
@@ -835,6 +996,7 @@ async function flushQueuedSeek() {
 export function seek(seconds: number, allowRecovery = true, force = false) {
   const track = usePlayerStore.getState().currentTrack;
   if (!track) return;
+  if (!force && isPlaybackInteractionLocked()) return;
   const requestId = ++latestSeekRequestId;
 
   const duration = getDuration();
@@ -934,8 +1096,18 @@ export async function reloadCurrentTrack() {
       console.warn('[Audio] Failed to query native position before reload', error);
     }
   }
-  await loadTrack(track);
-  if (pos > 0) seek(pos, false, true);
+  const duration = track.duration > 0 ? track.duration / 1000 : 0;
+  const target =
+    duration > 0 ? Math.max(0, Math.min(pos, Math.max(0, duration - 0.15))) : Math.max(0, pos);
+  endedGuardUntil = Date.now() + 2200;
+  const requestId = ++latestSeekRequestId;
+  const recoveredAtTarget =
+    target > 0.05 ? await reloadTrackAtSeekTarget(track, target, requestId) : false;
+
+  if (!recoveredAtTarget) {
+    await loadTrack(track);
+    if (target > 0) seek(target, false, true);
+  }
   if (!wasPlaying) invoke('audio_pause').catch(console.error);
 }
 
@@ -1100,6 +1272,7 @@ async function loadTrackAtImmediateSeekTarget(
     updateEstimatedStreamTotalBytes(fallbackDuration, streamSource.format);
     await invoke('audio_begin_stream_reload');
     const result = await invoke<AudioLoadInvokeResult>('audio_load_url', {
+      progressToken: gen,
       url: streamSource.url,
       sessionId: getSessionId(),
       streamContentTypeHint: streamSource.mimeType,
@@ -1155,6 +1328,10 @@ async function loadTrackFromFullCacheAtSeekTarget(
     return false;
   }
 
+  if (await shouldBypassFullCachePlayback(track)) {
+    return false;
+  }
+
   const cachedPath = await getCacheFilePath(track.urn);
   if (!cachedPath) {
     return false;
@@ -1186,6 +1363,7 @@ async function loadTrackFromFullCacheAtSeekTarget(
 
   try {
     const result = await invoke<AudioLoadInvokeResult>('audio_load_file', {
+      eventToken: gen,
       path: cachedPath,
       cacheKey: track.urn,
       crossfadeSecs: null,
@@ -1247,6 +1425,7 @@ async function reloadTrackAtSeekTarget(track: Track, target: number, requestId: 
 
 async function loadTrack(track: Track, skipStop = false) {
   suppressStallDetection(4500);
+  primeStartupRecoveryWindow(track.urn);
   const gen = ++loadGen;
   if (!skipStop) stopTrack();
   currentUrn = track.urn;
@@ -1288,12 +1467,14 @@ async function loadTrack(track: Track, skipStop = false) {
   setupTauriBindings();
   syncNativeAudioRuntime();
 
-  const cachedPath = await getCacheFilePath(urn);
+  const bypassFullCachePlayback = await shouldBypassFullCachePlayback(track);
+  const cachedPath = bypassFullCachePlayback ? null : await getCacheFilePath(urn);
   if (gen !== loadGen) return;
 
   const settings = useSettingsStore.getState();
   const crossfadeSecs = settings.crossfadeEnabled ? settings.crossfadeDuration : null;
   const cacheTargetPath = await getCacheTargetPath(urn);
+  if (gen !== loadGen) return;
   const loadFromNetworkWithFallback = async () => {
     usePlayerStore.setState({ downloadProgress: 0 });
 
@@ -1302,6 +1483,7 @@ async function loadTrack(track: Track, skipStop = false) {
     console.log(`[Audio] Loading direct stream: ${urn} (${streamSource.protocol}/${streamSource.format})`);
     try {
       const result = await invoke<AudioLoadInvokeResult>('audio_load_url', {
+        progressToken: gen,
         url: streamSource.url,
         sessionId: getSessionId(),
         streamContentTypeHint: streamSource.mimeType,
@@ -1352,6 +1534,7 @@ async function loadTrack(track: Track, skipStop = false) {
           stream_content_type?: string | null;
           stream_codec?: string | null;
         }>('audio_load_file', {
+          eventToken: gen,
           path: cachedPath,
           cacheKey: urn,
           crossfadeSecs,
@@ -1391,6 +1574,8 @@ async function loadTrack(track: Track, skipStop = false) {
       readyBufferPromise = null;
       readyBufferResolver = null;
       finalizePlaybackBufferAsCached();
+    } else if (await syncPlaybackBufferFromCompleteCache(urn, gen)) {
+      // complete cache already exists for this track even though we kept network playback path
     } else {
       syncPlaybackBufferPhase(true);
     }
@@ -1441,7 +1626,14 @@ async function loadTrack(track: Track, skipStop = false) {
     // Wait for buffer to be ready
     await readyBufferPromise;
     clearTimeout(timeoutId);
+    if (gen !== loadGen || currentUrn !== urn || usePlayerStore.getState().currentTrack?.urn !== urn) {
+      return;
+    }
     console.log(`[Audio] Prebuffer ready: ${startupBufferedSecs.toFixed(1)}s buffered`);
+  }
+
+  if (gen !== loadGen || currentUrn !== urn || usePlayerStore.getState().currentTrack?.urn !== urn) {
+    return;
   }
   // Record to listening history (fire-and-forget)
   if (track.urn && track.title) {
@@ -1551,7 +1743,6 @@ async function recoverFromStall(elapsedMs: number) {
     }
 
     if (waitingForStartupProgress && now < startupProgressDeadline) {
-      lastTickAt = now;
       return;
     }
 
@@ -1584,13 +1775,62 @@ function setupTauriBindings() {
   if (tauriBindingsReady || !isTauriRuntime()) return;
   tauriBindingsReady = true;
 
-  listen<number>('audio:tick', (event) => {
-    const tickPos = event.payload;
+  listen<AudioTickPayload>('audio:tick', (event) => {
+    const payload = event.payload;
+    const tickPos =
+      typeof payload === 'number'
+        ? payload
+        : payload?.position != null && Number.isFinite(payload.position)
+          ? payload.position
+          : null;
+    const tickGen = typeof payload === 'number' ? null : payload?.gen ?? null;
+    if (tickGen != null && tickGen !== loadGen) {
+      return;
+    }
+    if (tickPos == null || !Number.isFinite(tickPos)) {
+      return;
+    }
+    const now = Date.now();
+    const durationLimit = cachedDuration > 0 ? cachedDuration : fallbackDuration;
+
+    if (
+      Number.isFinite(durationLimit) &&
+      durationLimit > 0 &&
+      tickPos > durationLimit + 1.5
+    ) {
+      console.warn('[Audio] Ignoring out-of-range playback tick', {
+        tickPos,
+        durationLimit,
+      });
+      return;
+    }
+
+    if (
+      waitingForStartupProgress &&
+      !startupPlaybackTickReceived &&
+      seekTargetTime < 0 &&
+      cachedTime <= 0.1
+    ) {
+      const suspiciousStartupJumpLimit = Math.min(
+        durationLimit > 0 ? Math.max(10, Math.min(durationLimit * 0.2, 45)) : 45,
+        Math.max(currentBufferStrategy.seekUnlockBufferSecs * 1.5, 12),
+      );
+      if (tickPos > suspiciousStartupJumpLimit) {
+        console.warn('[Audio] Ignoring stale startup playback tick', {
+          tickPos,
+          suspiciousStartupJumpLimit,
+        });
+        return;
+      }
+    }
+
+    startupPlaybackTickReceived = true;
+    startupRecoveryAttempts = 0;
 
     // Reject stale ticks from the old position while a queued/native seek is still settling.
     const hasQueuedSeek =
       queuedSeekTarget >= 0 && queuedSeekTrackUrn === usePlayerStore.getState().currentTrack?.urn;
-    if ((seekPendingUntil > Date.now() || hasQueuedSeek) && seekTargetTime >= 0) {
+    if ((seekPendingUntil > now || hasQueuedSeek) && seekTargetTime >= 0) {
       const drift = Math.abs(tickPos - seekTargetTime);
       if (drift > 2.0) {
         // Stale tick from pre-seek position — ignore it
@@ -1601,16 +1841,28 @@ function setupTauriBindings() {
       seekTargetTime = -1;
     }
 
+    if (
+      !waitForReadyBuffer &&
+      !waitingForStartupProgress &&
+      !nativeSeekInFlight &&
+      !hasQueuedSeek &&
+      seekPendingUntil <= now &&
+      tickPos + 0.18 < cachedTime
+    ) {
+      console.warn('[Audio] Ignoring regressive playback tick', {
+        tickPos,
+        cachedTime,
+      });
+      return;
+    }
+
     cachedTime = tickPos;
-    lastTickAt = Date.now();
+    lastTickAt = now;
     if (tickPos > 0.05) {
       waitingForStartupProgress = false;
-      maybeResolveUnknownTotalStartup(tickPos);
+      updateTickDrivenBufferState(tickPos);
     }
     if (cachedDuration <= 0) cachedDuration = fallbackDuration;
-    if (!playbackBufferSnapshot.fullyCached && tickPos > playbackBufferSnapshot.bufferedSecs) {
-      updatePlaybackBufferSnapshot({ bufferedSecs: tickPos });
-    }
     notify();
 
     const settings = useSettingsStore.getState();
@@ -1701,6 +1953,47 @@ function setupTauriBindings() {
       void recoverFromStall(elapsed);
     }
   }, 1000);
+
+  setInterval(() => {
+    if (!isTauriRuntime() || !currentUrn) return;
+    const state = usePlayerStore.getState();
+    if (!state.isPlaying || state.currentTrack?.urn !== currentUrn) return;
+    if (playbackBufferSnapshot.phase === 'ready' || playbackBufferSnapshot.fullyCached) return;
+    if (queuedSeekTarget >= 0 || nativeSeekInFlight || startupRecoveryInFlight) return;
+
+    const now = Date.now();
+    if (now < stallSuppressedUntil || now < resumeGuardUntil) return;
+
+    const startupActive =
+      waitForReadyBuffer ||
+      waitingForStartupProgress ||
+      !playbackBufferSnapshot.seekUnlocked ||
+      !startupPlaybackTickReceived;
+    if (!startupActive || bufferLoadStartedAt <= 0) return;
+
+    const lastActivityAt = Math.max(bufferLoadStartedAt, lastDownloadProgressAt, lastTickAt);
+    const activityIdleMs = now - lastActivityAt;
+    const loadAgeMs = now - bufferLoadStartedAt;
+    const noTickYet = !startupPlaybackTickReceived && cachedTime <= 0.05;
+
+    if (activityIdleMs >= STARTUP_RECOVERY_ACTIVITY_TIMEOUT_MS) {
+      void recoverFromStartupHang(`no activity for ${activityIdleMs}ms`);
+      return;
+    }
+
+    const totalLoadBudgetMs = currentBufferStrategy.startupTimeoutMs + 3500;
+    if (noTickYet && loadAgeMs >= Math.max(totalLoadBudgetMs, STARTUP_RECOVERY_NO_TICK_TIMEOUT_MS)) {
+      void recoverFromStartupHang(`no playback tick after ${loadAgeMs}ms`);
+    }
+  }, 1000);
+
+  setInterval(() => {
+    if (!isTauriRuntime() || !currentUrn) return;
+    if (playbackBufferSnapshot.fullyCached) return;
+    const trackUrn = usePlayerStore.getState().currentTrack?.urn;
+    if (!trackUrn || trackUrn !== currentUrn) return;
+    void syncPlaybackBufferFromCompleteCache(trackUrn);
+  }, 1200);
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {

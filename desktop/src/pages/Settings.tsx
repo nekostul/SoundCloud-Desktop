@@ -9,8 +9,10 @@ import { reloadCurrentTrack } from '../lib/audio';
 import { getApiBase } from '../lib/constants';
 import { FPS_PRESETS } from '../lib/framerate';
 import {
+  clearCache,
   clearAssetsCache,
   downloadWallpaper,
+  getCacheSize,
   getAssetsCacheSize,
   getWallpaperUrl,
   listWallpapers,
@@ -19,8 +21,7 @@ import {
   getLyricsCacheSize,
   clearLyricsCache,
 } from '../lib/cache';
-import { Globe, Link, Loader2, Smartphone, Trash2, X } from '../lib/icons';
-import { useAuthStore } from '../stores/auth';
+import { Globe, Link, Loader2, Trash2, X } from '../lib/icons';
 
 import {
   APP_FONT_SIZE_DEFAULT,
@@ -885,18 +886,34 @@ function CacheRow({
 
 const CacheSection = React.memo(function CacheSection() {
   const { t } = useTranslation();
+  const [audioSize, setAudioSize] = useState<number | null>(null);
   const [assetsSize, setAssetsSize] = useState<number | null>(null);
   const [lyricsSize, setLyricsSize] = useState<number | null>(null);
   const [imagesSize, setImagesSize] = useState<number | null>(null);
+  const [clearingAudio, setClearingAudio] = useState(false);
   const [clearingAssets, setClearingAssets] = useState(false);
   const [clearingLyrics, setClearingLyrics] = useState(false);
   const [clearingImages, setClearingImages] = useState(false);
 
   useEffect(() => {
+    getCacheSize().then(setAudioSize);
     getAssetsCacheSize().then(setAssetsSize);
     getLyricsCacheSize().then(setLyricsSize);
     invoke<number>('image_cache_size').then(setImagesSize).catch(() => setImagesSize(0));
   }, []);
+
+  const handleClearAudio = useCallback(async () => {
+    setClearingAudio(true);
+    try {
+      await clearCache();
+      setAudioSize(0);
+      toast.success(t('settings.cacheCleared'));
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setClearingAudio(false);
+    }
+  }, [t]);
 
   const handleClearAssets = useCallback(async () => {
     setClearingAssets(true);
@@ -937,7 +954,7 @@ const CacheSection = React.memo(function CacheSection() {
     }
   }, [t]);
 
-  const totalSize = (assetsSize ?? 0) + (lyricsSize ?? 0) + (imagesSize ?? 0);
+  const totalSize = (audioSize ?? 0) + (assetsSize ?? 0) + (lyricsSize ?? 0) + (imagesSize ?? 0);
 
   return (
     <section className="bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl space-y-2">
@@ -947,7 +964,7 @@ const CacheSection = React.memo(function CacheSection() {
         </h3>
 
         <div className="min-w-[80px] flex justify-end">
-          {assetsSize !== null && lyricsSize !== null && imagesSize !== null ? (
+          {audioSize !== null && assetsSize !== null && lyricsSize !== null && imagesSize !== null ? (
             <span className="text-[12px] text-white/30 tabular-nums">
               {t('settings.total')}: {formatBytes(totalSize)}
             </span>
@@ -956,6 +973,14 @@ const CacheSection = React.memo(function CacheSection() {
           )}
         </div>
       </div>
+      <CacheRow
+        label={t('settings.audioCacheSize')}
+        size={audioSize}
+        clearing={clearingAudio}
+        onClear={handleClearAudio}
+        t={t}
+      />
+      <div className="border-t border-white/[0.04]" />
       <CacheRow
         label={t('settings.assetsCacheSize')}
         size={assetsSize}
@@ -2274,51 +2299,7 @@ const YMImportDialogLazy = React.lazy(() => import('../components/music/YMImport
 const SpotifyImportDialogLazy = React.lazy(() => import('../components/music/SpotifyImportDialog'));
 const YTMusicImportDialogLazy = React.lazy(() => import('../components/music/YTMusicImportDialog'));
 
-const QrLinkSheetLazy = React.lazy(() =>
-  import('../components/auth/QrLinkSheet').then((m) => ({ default: m.QrLinkSheet })),
-);
-
 /* ── Account Section ────────────────────────────────────── */
-
-const AccountSection = React.memo(function AccountSection() {
-  const { t } = useTranslation();
-  const logout = useAuthStore((s) => s.logout);
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const sessionId = useAuthStore((s) => s.sessionId);
-  const [transferOpen, setTransferOpen] = useState(false);
-
-  return (
-    <section className="bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl">
-      <h3 className="text-[15px] font-bold text-white/80 tracking-tight mb-5">
-        {t('settings.account')}
-      </h3>
-      <div className="flex flex-wrap gap-2">
-        {isAuthenticated && sessionId && (
-          <button
-            type="button"
-            onClick={() => setTransferOpen(true)}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-[13px] font-semibold bg-white/[0.04] text-white/70 hover:bg-white/[0.08] hover:text-white/90 border border-white/[0.06] transition-all duration-300 cursor-pointer"
-          >
-            <Smartphone size={14} />
-            {t('qrLink.transferSession')}
-          </button>
-        )}
-        <button
-          onClick={logout}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-[13px] font-semibold bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/10 hover:border-red-500/20 transition-all duration-300 cursor-pointer"
-        >
-          {t('auth.signOut')}
-        </button>
-      </div>
-      {transferOpen && (
-        <React.Suspense fallback={null}>
-          <QrLinkSheetLazy open={transferOpen} onOpenChange={setTransferOpen} mode="push" />
-        </React.Suspense>
-      )}
-    </section>
-  );
-});
-
 
 /* ── Equalizer Section ───────────────────────────────────── */
 
@@ -2524,7 +2505,6 @@ export function Settings() {
       <AudioDeviceSection />
       <ImportSection />
       <DirectOAuthSection />
-      <AccountSection />
     </div>
   );
 }

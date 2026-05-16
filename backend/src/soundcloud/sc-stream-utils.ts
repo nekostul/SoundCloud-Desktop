@@ -17,26 +17,32 @@ interface PickTranscodingOptions {
 }
 
 const FORMAT_TO_PRESETS: Record<string, string[]> = {
+  http_mp3_128: ['mp3_1_0'],
+  hls_mp3_128: ['mp3_1_0'],
   hls_aac_160: ['aac_160k'],
   hls_aac_96: ['aac_96k'],
-  hls_mp3_128: ['mp3_1_0'],
-  http_mp3_128: ['mp3_1_0'],
   hls_opus_64: ['opus_0_0'],
 };
 
 const PRESET_FALLBACK_ORDER = [
+  'mp3_1_0',
   'aac_160k',
   'aac_96k',
-  'mp3_1_0',
   'opus_0_0',
   'abr_sq',
 ];
 
 const MIME_TO_CONTENT_TYPE: Record<string, string> = {
   'audio/mpeg': 'audio/mpeg',
-  'audio/mp4; codecs="mp4a.40.2"': 'audio/mp4',
-  'audio/ogg; codecs="opus"': 'audio/ogg',
-  'audio/mpegurl': 'audio/mpeg',
+
+  'audio/mp4; codecs="mp4a.40.2"':
+    'audio/mp4',
+
+  'audio/ogg; codecs="opus"':
+    'audio/ogg',
+
+  'audio/mpegurl':
+    'audio/mpeg',
 };
 
 export function rankTranscodings(
@@ -81,6 +87,9 @@ export function rankTranscodings(
     if (preferredProtocol === 'progressive' && protocol === 'progressive') {
       value -= 250;
     }
+    if (protocol === 'progressive') {
+      value -= 1000;
+    }
 
     if (preferredProtocol === 'hls' && protocol !== 'progressive') {
       value -= 250;
@@ -96,6 +105,9 @@ export function rankTranscodings(
       value -= 5;
     }
 
+    if (protocol === 'progressive') {
+  value -= 1000;
+}
     return value;
   };
 
@@ -161,7 +173,7 @@ async function proxyGetWithRetry<T = unknown>(
   extra: Record<string, string> = {},
   config: Record<string, unknown> = {},
 ): Promise<{
-  data: T;
+  data: any;
   headers: Record<string, string>;
 }> {
   let lastError: unknown;
@@ -170,20 +182,19 @@ async function proxyGetWithRetry<T = unknown>(
     const { url, headers } = proxyTarget(targetUrl, extra);
 
     try {
-      const response = await firstValueFrom(
-        httpService.get(url, {
-          ...config,
-          headers,
-        }),
-      ) as {
-        data: T;
-        headers?: Record<string, string>;
-      };
+const response = await fetch(url, {
+  headers: {
+    ...headers,
+    'Accept-Encoding': 'identity',
+  },
+});
 
-      return {
-        data: response.data,
-        headers: response.headers ?? {},
-      };
+return {
+  data: response.body,
+  headers: Object.fromEntries(
+    response.headers.entries(),
+  ),
+};
     } catch (error: any) {
       lastError = error;
 
@@ -264,15 +275,15 @@ function resolveSegmentUrl(
   return new URL(url, base).href;
 }
 
-const HLS_PREFETCH_SEGMENTS = 12;
+const HLS_PREFETCH_SEGMENTS = 1;
 
 async function streamSegmentToOutput(
   httpService: HlsHttpService,
   segmentUrl: string,
-  output: PassThrough, 
+  output: PassThrough,
   headers: Record<string, string>,
 ): Promise<void> {
-  const { data } = await proxyGetWithRetry<Readable>(
+  const { data } = await proxyGetWithRetry<ArrayBuffer>(
     httpService,
     segmentUrl,
     headers,
@@ -281,11 +292,11 @@ async function streamSegmentToOutput(
     },
   );
 
-  await pipeline(
-    data,
-    output,
-    { end: false },
-  );
+  if (!output.writable) {
+    return;
+  }
+
+  output.write(Buffer.from(data));
 }
 
 async function pipeSegments(

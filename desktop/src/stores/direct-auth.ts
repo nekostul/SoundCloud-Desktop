@@ -5,6 +5,8 @@
 
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import { markDirectAuthHydrated } from '../lib/auth-hydration';
+import { tauriStorage } from '../lib/tauri-storage';
 import {
   clearDirectTokens,
   storeDirectTokens,
@@ -22,6 +24,10 @@ interface DirectAuthState {
   isTokenValid: () => boolean;
   logout: () => void;
   clear: () => void;
+}
+
+function hasActiveDirectSession(accessToken: string | null, expiresAt: number | null) {
+  return !!accessToken && (!expiresAt || Date.now() < expiresAt);
 }
 
 export const useDirectAuthStore = create<DirectAuthState>()(
@@ -45,7 +51,11 @@ export const useDirectAuthStore = create<DirectAuthState>()(
       },
 
       setUser: (user: DirectAuthState['user']) => {
-        set({ user, isAuthenticated: !!user });
+        const { accessToken, expiresAt } = get();
+        set({
+          user,
+          isAuthenticated: hasActiveDirectSession(accessToken, expiresAt),
+        });
       },
 
       isTokenValid: () => {
@@ -82,15 +92,20 @@ export const useDirectAuthStore = create<DirectAuthState>()(
     }),
     {
       name: 'sc-direct-auth',
-      storage: createJSONStorage(() =>
-        typeof window !== 'undefined'
-          ? window.localStorage
-          : {
-              getItem: () => null,
-              setItem: () => {},
-              removeItem: () => {},
-            },
-      ),
+      storage: createJSONStorage(() => tauriStorage),
+      merge: (persistedState, currentState) => {
+        const state = (
+          persistedState && typeof persistedState === 'object' ? persistedState : {}
+        ) as Partial<DirectAuthState>;
+        const accessToken = state.accessToken ?? currentState.accessToken;
+        const expiresAt = state.expiresAt ?? currentState.expiresAt;
+
+        return {
+          ...currentState,
+          ...state,
+          isAuthenticated: hasActiveDirectSession(accessToken, expiresAt),
+        };
+      },
       partialize: (state) => ({
         accessToken: state.accessToken,
         refreshToken: state.refreshToken,
@@ -100,11 +115,13 @@ export const useDirectAuthStore = create<DirectAuthState>()(
       onRehydrateStorage: () => (state) => {
         if (!state?.accessToken) {
           clearDirectTokens();
+          markDirectAuthHydrated();
           return;
         }
 
         if (state.expiresAt && Date.now() >= state.expiresAt) {
           state.clear();
+          markDirectAuthHydrated();
           return;
         }
 
@@ -114,6 +131,8 @@ export const useDirectAuthStore = create<DirectAuthState>()(
             : undefined;
 
         storeDirectTokens(state.accessToken, state.refreshToken, expiresIn);
+        state.setUser(state.user ?? null);
+        markDirectAuthHydrated();
       },
     },
   ),

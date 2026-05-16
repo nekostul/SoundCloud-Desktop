@@ -1,5 +1,4 @@
 import { invoke } from '@tauri-apps/api/core';
-import { KeyRound } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -181,9 +180,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
             >
               {t('auth.signIn')}
             </button>
-            <div className="flex items-center justify-center gap-1.5 w-full py-2.5 rounded-2xl bg-orange-500/10 border border-orange-500/20 text-[12px] text-orange-300">
-              <KeyRound size={13} />
-              Direct OAuth (No Backend)
+            <div>
             </div>
           </div>
         )}

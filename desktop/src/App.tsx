@@ -31,6 +31,11 @@ type AppErrorBoundaryState = {
   error: Error | null;
 };
 
+function isDirectAuthFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b401\b|\b403\b|unauthoriz|invalid token|expired token/i.test(message);
+}
+
 class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
   state: AppErrorBoundaryState = { error: null };
 
@@ -226,11 +231,21 @@ function AppInner() {
         })
         .catch((error) => {
           console.warn('[Auth] Failed to restore direct SoundCloud user:', error);
-          useDirectAuthStore.getState().clear();
+          if (isDirectAuthFailure(error)) {
+            useDirectAuthStore.getState().clear();
+            useAuthStore.setState({
+              sessionId: null,
+              user: null,
+              isAuthenticated: false,
+              reloginRequestId: null,
+            });
+            return;
+          }
+
           useAuthStore.setState({
             sessionId: null,
             user: null,
-            isAuthenticated: false,
+            isAuthenticated: true,
             reloginRequestId: null,
           });
         })

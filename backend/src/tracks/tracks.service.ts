@@ -38,6 +38,20 @@ export class TracksService {
     this.qwenAsrKey = this.configService.get<string>('lyrics.qwenAsrKey')?.trim() ?? '';
   }
 
+  /**
+   * Normalize numeric track ID to full SoundCloud URN format.
+   * If already a full URN, returns as-is.
+   * Examples:
+   *   '123456' -> 'soundcloud:tracks:123456'
+   *   'soundcloud:tracks:123456' -> 'soundcloud:tracks:123456'
+   */
+  private normalizeTrackUrn(trackIdOrUrn: string): string {
+    if (trackIdOrUrn.startsWith('soundcloud:tracks:')) {
+      return trackIdOrUrn;
+    }
+    return `soundcloud:tracks:${trackIdOrUrn}`;
+  }
+
   search(token: string, params?: Record<string, unknown>): Promise<ScPaginatedResponse<ScTrack>> {
     return this.sc.apiGet('/tracks', token, params);
   }
@@ -150,7 +164,8 @@ export class TracksService {
     hq = false,
   ): Promise<{ stream: Readable; headers: Record<string, string> } | null> {
     try {
-      const track = await this.sc.apiGet<ScTrack>(`/tracks/${trackUrn}`, token, params);
+      const normalizedUrn = this.normalizeTrackUrn(trackUrn);
+      const track = await this.sc.apiGet<ScTrack>(`/tracks/${normalizedUrn}`, token, params);
       if (track.access === 'blocked') {
         return null;
       }
@@ -162,7 +177,7 @@ export class TracksService {
 
       return await this.tryOfficialStreamsFallback(
         token,
-        trackUrn,
+        normalizedUrn,
         track,
         format,
         params,
@@ -322,21 +337,9 @@ export class TracksService {
     allowPreview: boolean,
   ): Array<{ key: keyof ScStreams; url: string }> {
     const requestedKey = `${format}_url` as keyof ScStreams;
-    const fallbackOrder: (keyof ScStreams)[] = hq
-      ? [
-          'hls_aac_160_url',
-          'hls_aac_96_url',
-          'http_mp3_128_url',
-          'hls_mp3_128_url',
-          'hls_opus_64_url',
-        ]
-      : [
-          'http_mp3_128_url',
-          'hls_mp3_128_url',
-          'hls_aac_160_url',
-          'hls_aac_96_url',
-          'hls_opus_64_url',
-        ];
+      const fallbackOrder: (keyof ScStreams)[] = [
+        'http_mp3_128_url',
+      ];
 
     if (allowPreview) {
       fallbackOrder.push('preview_mp3_128_url');
@@ -372,15 +375,10 @@ export class TracksService {
     const protocol = transcoding.format?.protocol ?? '';
     const mimeType = transcoding.format?.mime_type ?? this.hlsMimeType(transcoding.preset ?? '');
 
-    if (protocol === 'progressive') {
-      return this.proxyStream(token, streamUrl, range);
-    }
-
-    return streamFromHls(
-      this.httpService,
+    return this.proxyStream(
+      token,
       streamUrl,
-      mimeType,
-      this.sc.buildAuthorizationHeaders(token),
+      range,
     );
   }
 
@@ -509,5 +507,104 @@ private async readStreamToBuffer(
     params?: Record<string, unknown>,
   ): Promise<ScPaginatedResponse<ScTrack>> {
     return this.sc.apiGet(`/tracks/${trackUrn}/related`, token, params);
+  }
+
+  /**
+   * Get direct CDN stream URL for progressive MP3
+   * Returns only the URL without proxying audio through backend
+   */
+  async getCdnStreamUrl(
+    token: string,
+    trackId: string,
+    params: Record<string, unknown> = {},
+  ): Promise<{ url: string; contentType: string; quality: 'hq' | 'lq' }> {
+    try {
+      const trackUrn = this.normalizeTrackUrn(trackId);
+      const track = await this.sc.apiGet<ScTrack>(`/tracks/${trackUrn}`, token, params);
+      
+      if (track.access === 'blocked') {
+        throw new NotFoundException('Track is blocked');
+      }
+
+      // Try to get URL from track's media transcodings
+      if (track.media?.transcodings?.length) {
+        const url = await this.getTranscodingUrl(token, track, 'http_mp3_128', track.access === 'preview');
+        if (url) {
+          return {
+            url: url.streamUrl,
+            contentType: url.contentType,
+            quality: url.quality,
+          };
+        }
+      }
+
+      // Fallback to official streams
+      const url = await this.getOfficialStreamUrl(token, trackUrn, track, params);
+      if (url) {
+        return url;
+      }
+
+      throw new NotFoundException('No stream URLs available');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Get CDN stream URL failed for ${trackId}: ${message}`);
+      throw err;
+    }
+  }
+
+  private async getTranscodingUrl(
+    token: string,
+    track: ScTrack,
+    format: string,
+    allowPreview: boolean,
+  ): Promise<{ streamUrl: string; contentType: string; quality: 'hq' | 'lq' } | null> {
+    const transcodings = rankTranscodings(track.media?.transcodings ?? [], format, {
+      allowPreview,
+    });
+
+    for (const transcoding of transcodings) {
+      const quality = this.qualityFromTranscoding(transcoding);
+      if (quality === 'hq' && Date.now() < this.hqOauthDisabledUntil) {
+        continue;
+      }
+
+      try {
+        const streamUrl = await this.resolveTranscodingUrl(token, transcoding.url);
+        const contentType = transcoding.format?.mime_type ?? 'audio/mpeg';
+        return { streamUrl, contentType, quality };
+      } catch (err: unknown) {
+        this.handleHqFailure(transcoding.preset ?? transcoding.url, quality, err);
+      }
+    }
+
+    return null;
+  }
+
+  private async getOfficialStreamUrl(
+    token: string,
+    trackUrn: string,
+    track: ScTrack,
+    params: Record<string, unknown>,
+  ): Promise<{ url: string; contentType: string; quality: 'hq' | 'lq' } | null> {
+    try {
+      const streams = await this.getTrackStreams(token, trackUrn, track, params);
+      
+      // Prefer progressive MP3
+      const url = streams.http_mp3_128_url;
+      if (url) {
+        const resolvedUrl = await this.resolveTranscodingUrl(token, url);
+        return {
+          url: resolvedUrl,
+          contentType: 'audio/mpeg',
+          quality: 'lq',
+        };
+      }
+
+      return null;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Official stream URL lookup failed for ${trackUrn}: ${message}`);
+      return null;
+    }
   }
 }

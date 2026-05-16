@@ -1,4 +1,4 @@
-import type React from 'react';
+import React from 'react';
 import { Play } from '../../lib/icons';
 import { useTilt } from '../../lib/hooks/useTilt';
 
@@ -20,6 +20,13 @@ export const MixCard: React.FC<MixCardProps> = ({
   onClick,
 }) => {
   const { ref, onMouseEnter, onMouseLeave } = useTilt();
+  const [artLoaded, setArtLoaded] = React.useState(false);
+  const [artFailed, setArtFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    setArtLoaded(false);
+    setArtFailed(false);
+  }, [artworkUrl]);
 
   return (
     <div
@@ -30,13 +37,36 @@ export const MixCard: React.FC<MixCardProps> = ({
       onMouseLeave={onMouseLeave}
     >
       <div
-        className="relative aspect-square rounded-2xl overflow-hidden bg-cover bg-center border border-white/[0.05] shadow-lg transition-all duration-200 ease-[var(--ease-apple)] group-hover:-translate-y-1 group-hover:scale-[1.01] group-hover:shadow-2xl"
+        className="relative aspect-square rounded-2xl overflow-hidden border border-white/[0.05] shadow-lg transition-all duration-200 ease-[var(--ease-apple)] group-hover:-translate-y-1 group-hover:scale-[1.01] group-hover:shadow-2xl"
         style={{
-          backgroundImage: artworkUrl
-            ? `url(${artworkUrl})`
-            : `linear-gradient(135deg, ${color}, #1a1a2e)`,
+          background: `linear-gradient(135deg, ${color}, #1a1a2e)`,
         }}
       >
+        {artworkUrl && !artFailed ? (
+          <>
+            <img
+              src={artworkUrl}
+              alt=""
+              loading="eager"
+              decoding="async"
+              fetchPriority="high"
+              onLoad={() => {
+                setArtLoaded(true);
+                setArtFailed(false);
+              }}
+              onError={() => {
+                setArtFailed(true);
+              }}
+              className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${
+                artLoaded ? 'opacity-100' : 'opacity-0'
+              }`}
+            />
+            {!artLoaded ? (
+              <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))] animate-pulse" />
+            ) : null}
+          </>
+        ) : null}
+
         <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
 
         <div className="absolute bottom-0 left-0 right-0 p-3 flex items-end justify-between">

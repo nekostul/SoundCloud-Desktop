@@ -10,11 +10,9 @@ import { api, getTrackComments } from '../../lib/api';
 import { isAppBackgrounded } from '../../lib/app-visibility';
 import { useArtworkGradientPalette } from '../../lib/artwork-palette';
 import {
-  canSeekCurrentTrack,
   getPlaybackBufferSnapshot,
   getCurrentTime,
   getDuration,
-  getSeekableTimeLimit,
   getSmoothCurrentTime,
   handlePrev,
   seek,
@@ -105,6 +103,9 @@ export const ProgressSlider = React.memo(() => {
   const draggingRef = useRef(false);
   const dragRafRef = useRef<number | null>(null);
   const pendingDragValueRef = useRef<number | null>(null);
+  const bufferedFillRef = useRef<HTMLDivElement | null>(null);
+  const bufferedRatioRef = useRef(0);
+  const bufferedRafRef = useRef<number | null>(null);
 
   // Keep slider state in sync without competing DOM mutations
   useEffect(() => {
@@ -136,8 +137,9 @@ export const ProgressSlider = React.memo(() => {
   }, [isPlaying, targetFramerate, unlockFramerate]);
 
   const displayValue = dragging ? dragValue : syncedValue;
-  const seekableLimit = Math.min(duration || Number.POSITIVE_INFINITY, getSeekableTimeLimit());
-  const seekDisabled = !canSeekCurrentTrack() || duration <= 0;
+  const seekableLimit = duration > 0 ? Math.max(0, duration - 0.15) : Number.POSITIVE_INFINITY;
+  const seekDisabled = duration <= 0;
+  const hoverPreviewEnabled = duration > 0;
   const bufferedRatio =
     playbackBuffer.progress != null
       ? Math.max(0, Math.min(playbackBuffer.progress, 1))
@@ -148,9 +150,9 @@ export const ProgressSlider = React.memo(() => {
   const roundedBufferedPercent =
     bufferedPercent == null
       ? null
-      : bufferedPercent >= 99.5
+      : playbackBuffer.fullyCached || bufferedPercent >= 99.95
         ? 100
-        : Math.max(1, Math.round(bufferedPercent));
+        : Math.min(99, Math.max(1, Math.round(bufferedPercent)));
   const stateLabel =
     playbackBuffer.fullyCached
       ? null
@@ -177,6 +179,59 @@ export const ProgressSlider = React.memo(() => {
     pendingDragValueRef.current = null;
   }, []);
 
+  useEffect(() => {
+    if (bufferedRafRef.current != null) {
+      cancelAnimationFrame(bufferedRafRef.current);
+      bufferedRafRef.current = null;
+    }
+
+    if (bufferedRatio == null) {
+      bufferedRatioRef.current = 0;
+      if (bufferedFillRef.current) {
+        bufferedFillRef.current.style.transform = 'scaleX(0)';
+      }
+      return;
+    }
+
+    const target = Math.max(0, Math.min(bufferedRatio, 1));
+    if (target <= bufferedRatioRef.current) {
+      bufferedRatioRef.current = target;
+      if (bufferedFillRef.current) {
+        bufferedFillRef.current.style.transform = `scaleX(${target})`;
+      }
+      return;
+    }
+
+    const step = () => {
+      const current = bufferedRatioRef.current;
+      const delta = target - current;
+      if (delta <= 0.0015) {
+        bufferedRatioRef.current = target;
+        if (bufferedFillRef.current) {
+          bufferedFillRef.current.style.transform = `scaleX(${target})`;
+        }
+        bufferedRafRef.current = null;
+        return;
+      }
+
+      const next = current + Math.max(delta * 0.16, 0.0035);
+      bufferedRatioRef.current = Math.min(next, target);
+      if (bufferedFillRef.current) {
+        bufferedFillRef.current.style.transform = `scaleX(${bufferedRatioRef.current})`;
+      }
+      bufferedRafRef.current = requestAnimationFrame(step);
+    };
+
+    bufferedRafRef.current = requestAnimationFrame(step);
+
+    return () => {
+      if (bufferedRafRef.current != null) {
+        cancelAnimationFrame(bufferedRafRef.current);
+        bufferedRafRef.current = null;
+      }
+    };
+  }, [bufferedRatio]);
+
   const onValueChange = useCallback(([v]: number[]) => {
     if (seekDisabled) return;
     pendingDragValueRef.current = Math.min(v, seekableLimit);
@@ -198,7 +253,7 @@ export const ProgressSlider = React.memo(() => {
     }
     pendingDragValueRef.current = null;
     setDragValue(nextValue);
-    seek(nextValue);
+    seek(nextValue, true, true);
     draggingRef.current = false;
     setDragging(false);
     setSyncedValue(nextValue);
@@ -244,8 +299,17 @@ return (
 return (
   <div className="relative w-full group/slider z-20">
     <Slider.Root
+      onPointerDownCapture={(e) => {
+        if (!seekDisabled) return;
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      onKeyDown={(e) => {
+        if (!seekDisabled) return;
+        e.preventDefault();
+      }}
       onPointerMove={(e) => {
-        if (seekDisabled) return;
+        if (!hoverPreviewEnabled) return;
         const rect = e.currentTarget.getBoundingClientRect();
         const percent = (e.clientX - rect.left) / rect.width;
         setHoverPercent(Math.max(0, Math.min(1, percent)));
@@ -253,7 +317,6 @@ return (
       onPointerLeave={() => {
         setHoverPercent(null);
       }}
-      disabled={seekDisabled}
       aria-disabled={seekDisabled}
       className={`relative flex items-start w-full h-[10px] select-none touch-none group/slider ${
         seekDisabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'
@@ -272,10 +335,11 @@ return (
         <div className="absolute inset-0 bg-white/[0.08]" />
         {bufferedPercent != null ? (
           <div
-            className="absolute inset-y-0 left-0 rounded-full bg-white/[0.14] transition-[width] duration-200 ease-out"
-            style={{ width: `${bufferedPercent}%` }}
+            ref={bufferedFillRef}
+            className="absolute inset-y-0 left-0 rounded-full bg-white/[0.14] will-change-transform"
+            style={{ width: '100%', transform: `scaleX(${bufferedRatio})`, transformOrigin: 'left center' }}
           />
-        ) : playbackBuffer.phase !== 'ready' ? (
+        ) : playbackBuffer.phase !== 'ready' && !playbackBuffer.fullyCached ? (
           <div className="absolute inset-y-0 left-0 w-[22%] rounded-full bg-white/[0.12] animate-pulse" />
         ) : null}
 
@@ -290,7 +354,7 @@ return (
         </div>
       )}
 
-      {hoverPercent !== null && !isFullscreenOverlayOpen && !seekDisabled && (
+      {hoverPercent !== null && !isFullscreenOverlayOpen && hoverPreviewEnabled && (
         <div
           className="absolute top-[65px] px-2 py-1 rounded-xl bg-black/80 border border-white/10 text-white text-[10px] font-medium pointer-events-none backdrop-blur-sm"
           style={{
@@ -950,7 +1014,45 @@ const EqBtn = React.memo(() => {
 const TrackInfo = React.memo(() => {
   const navigate = useNavigate();
   const currentTrack = usePlayerStore((s) => s.currentTrack);
-  const artworkSmall = art(currentTrack?.artwork_url, 't200x200');
+  const artwork200 = art(currentTrack?.artwork_url, 't200x200');
+  const artwork500 = art(currentTrack?.artwork_url, 't500x500');
+  const artworkOriginal = artwork500 ? artwork500.replace('t500x500', 'original') : null;
+  const [artLoaded, setArtLoaded] = useState(false);
+  const [artFailed, setArtFailed] = useState(false);
+  const prevUrnRef = useRef<string | null>(currentTrack?.urn ?? null);
+
+  useEffect(() => {
+    const nextUrn = currentTrack?.urn ?? null;
+    if (prevUrnRef.current !== nextUrn) {
+      prevUrnRef.current = nextUrn;
+      setArtLoaded(false);
+      setArtFailed(false);
+    }
+  }, [currentTrack?.urn]);
+
+  useEffect(() => {
+    if (!currentTrack || !artwork500) return;
+
+    const urls = [artwork500, artworkOriginal].filter(
+      (value, index, items): value is string => Boolean(value) && items.indexOf(value) === index,
+    );
+    const preloaded: HTMLImageElement[] = [];
+
+    for (const [index, url] of urls.entries()) {
+      const img = new window.Image();
+      img.decoding = 'async';
+      img.loading = 'eager';
+      img.fetchPriority = index === 0 ? 'high' : 'auto';
+      img.src = url;
+      preloaded.push(img);
+    }
+
+    return () => {
+      for (const img of preloaded) {
+        img.src = '';
+      }
+    };
+  }, [currentTrack?.urn, artwork500, artworkOriginal]);
 
   if (!currentTrack) {
     return (
@@ -966,8 +1068,38 @@ const TrackInfo = React.memo(() => {
         className="relative w-16 h-16 rounded-[14px] shrink-0 overflow-hidden cursor-pointer shadow-xl shadow-black/40 ring-1 ring-white/[0.06] hover:ring-white/[0.12] transition-all duration-200 group/art -ml-1"
         onClick={() => artworkPanelApi.openFromMiniPlayer()}
       >
-        {artworkSmall ? (
-          <img src={artworkSmall} alt="" className="w-full h-full object-cover" />
+        {artwork500 ? (
+          <>
+            <img
+              key={`${currentTrack.urn}-artwork-low`}
+              src={artwork200 || artwork500}
+              alt=""
+              loading="eager"
+              decoding="async"
+              fetchPriority="high"
+              className={`absolute inset-0 w-full h-full object-cover scale-110 transition-opacity duration-300 ${
+                artLoaded && !artFailed ? 'opacity-0' : 'opacity-100'
+              }`}
+            />
+            <img
+              key={`${currentTrack.urn}-artwork-high`}
+              src={artwork500}
+              alt=""
+              loading="eager"
+              decoding="async"
+              fetchPriority="high"
+              onLoad={() => {
+                setArtLoaded(true);
+                setArtFailed(false);
+              }}
+              onError={() => {
+                setArtFailed(true);
+              }}
+              className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+                artLoaded && !artFailed ? 'opacity-100' : 'opacity-0'
+              }`}
+            />
+          </>
         ) : (
           <div className="w-full h-full bg-white/[0.04]" />
         )}

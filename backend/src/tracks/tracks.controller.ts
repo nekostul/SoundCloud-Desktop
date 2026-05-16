@@ -77,20 +77,6 @@ export class TracksController {
     return this.tracksService.search(token, params);
   }
 
-  @Get(':trackUrn')
-  @ApiOperation({ summary: 'Get track by URN' })
-  @ApiQuery({ name: 'secret_token', required: false })
-  @ApiOkResponse({ type: ScTrack })
-  getById(
-    @AccessToken() token: string,
-    @Param('trackUrn') trackUrn: string,
-    @Query('secret_token') secretToken?: string,
-  ) {
-    const params: Record<string, unknown> = {};
-    if (secretToken) params.secret_token = secretToken;
-    return this.tracksService.getById(token, trackUrn, params);
-  }
-
   @Put(':trackUrn')
   @ApiOperation({ summary: 'Update track metadata' })
   @ApiOkResponse({ type: ScTrack })
@@ -126,11 +112,42 @@ export class TracksController {
     return this.tracksService.getStreams(token, trackUrn, params);
   }
 
+  @Get(':trackId/stream-url')
+  @ApiOperation({
+    summary: 'Get direct CDN stream URL for progressive MP3',
+    description:
+      'Returns a signed CDN URL for direct audio streaming. The URL expires after ~1 hour. Client can use this URL with Range requests directly.',
+  })
+  @ApiQuery({
+    name: 'secret_token',
+    required: false,
+    description: 'Token for accessing private tracks',
+  })
+  @ApiOkResponse({
+    schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Direct CDN URL for audio streaming' },
+        contentType: { type: 'string', example: 'audio/mpeg' },
+        quality: { type: 'string', enum: ['hq', 'lq'] },
+      },
+    },
+  })
+  getCdnStreamUrl(
+    @AccessToken() token: string,
+    @Param('trackId') trackId: string,
+    @Query('secret_token') secretToken?: string,
+  ) {
+    const params: Record<string, unknown> = {};
+    if (secretToken) params.secret_token = secretToken;
+    return this.tracksService.getCdnStreamUrl(token, trackId, params);
+  }
+
   @Get(':trackUrn/stream')
   @ApiOperation({
-    summary: 'Proxy audio stream',
+    summary: 'Proxy audio stream (DEPRECATED)',
     description:
-      'Proxies the actual audio stream from SoundCloud with proper auth. Use the format query param to pick a transcoding. Supports Range requests for seeking.',
+      'DEPRECATED: Use /stream-url instead for direct CDN streaming. This endpoint proxies audio through the backend and should not be used for new applications.',
   })
   @ApiQuery({
     name: 'format',
@@ -154,7 +171,7 @@ export class TracksController {
     @AccessToken() token: string,
     @Res() res: StreamResponseLike,
     @Param('trackUrn') trackUrn: string,
-    @Query('format') format: string = 'hls_aac_160',
+    @Query('format') format: string = 'http_mp3_128',
     @Query('secret_token') secretToken?: string,
     @Query('hq') hq?: string,
     @Headers('range') range?: string,
@@ -304,5 +321,19 @@ export class TracksController {
   ) {
     const params: Record<string, unknown> = { ...query, access };
     return this.tracksService.getRelated(token, trackUrn, params);
+  }
+
+  @Get(':trackUrn')
+  @ApiOperation({ summary: 'Get track by URN' })
+  @ApiQuery({ name: 'secret_token', required: false })
+  @ApiOkResponse({ type: ScTrack })
+  getById(
+    @AccessToken() token: string,
+    @Param('trackUrn') trackUrn: string,
+    @Query('secret_token') secretToken?: string,
+  ) {
+    const params: Record<string, unknown> = {};
+    if (secretToken) params.secret_token = secretToken;
+    return this.tracksService.getById(token, trackUrn, params);
   }
 }
