@@ -61,6 +61,13 @@ const listeners = new Set<() => void>();
 const bufferListeners = new Set<() => void>();
 let bufferNotifyRafId: number | null = null;
 let bufferNotifyTimeout: ReturnType<typeof setTimeout> | null = null;
+
+// Throttle playback state notifications to prevent UI thread starvation during active playback
+let notifyRafId: number | null = null;
+let notifyTimeout: ReturnType<typeof setTimeout> | null = null;
+let notifyPending = false;
+const MAX_PLAYBACK_NOTIFY_HZ = 30; // Limit notification frequency to 30/sec max during playback
+
 const SEEK_DEBOUNCE_MS = 120;
 const SEEK_BUSY_RETRY_MS = 80;
 const SEEK_NO_SOURCE_RETRY_MS = 220;
@@ -117,8 +124,39 @@ let bufferLoadStartedAt = 0;
 let lastDownloadProgressAt = 0;
 let activeRangedSeekLoad = false;
 let estimatedStreamTotalBytes: number | null = null;
+const MAX_SMOOTH_TIME_EXTRAPOLATION_SECS = 5;
+
+let lastNotifyTime = 0;
+const throttleMs = 1000 / MAX_PLAYBACK_NOTIFY_HZ;
+
+function flushNotify() {
+  notifyPending = false;
+  lastNotifyTime = performance.now();
+  for (const l of listeners) l();
+}
 
 function notify() {
+  if (notifyPending) return;
+
+  const now = performance.now();
+  const timeSinceLastNotify = now - lastNotifyTime;
+
+  if (timeSinceLastNotify >= throttleMs) {
+    // Enough time has passed, flush immediately
+    notifyPending = true;
+    flushNotify();
+  } else {
+    // Schedule for later
+    notifyPending = true;
+    if (notifyTimeout != null) clearTimeout(notifyTimeout);
+    notifyTimeout = setTimeout(flushNotify, throttleMs - timeSinceLastNotify);
+  }
+}
+
+function flushNotifyImmediate() {
+  if (notifyTimeout != null) clearTimeout(notifyTimeout);
+  notifyPending = false;
+  lastNotifyTime = performance.now();
   for (const l of listeners) l();
 }
 
@@ -216,7 +254,7 @@ export function getSmoothCurrentTime(): number {
   const now = Date.now();
   if (lastTickAt === 0 || now < lastTickAt) return cachedTime;
   const elapsed = (now - lastTickAt) / 1000;
-  const raw = Math.min(cachedTime + elapsed, cachedTime + 1.0);
+  const raw = Math.min(cachedTime + elapsed, cachedTime + MAX_SMOOTH_TIME_EXTRAPOLATION_SECS);
 
   if (raw + 0.08 < lastSmoothTime && lastSmoothTime - raw < 1.25) {
     return lastSmoothTime;
@@ -309,8 +347,7 @@ function updateEstimatedStreamTotalBytes(durationSecs: number, format: string | 
 }
 
 function estimateBufferProgress(downloadedBytes: number, totalBytes: number | null, done: boolean) {
-  const effectiveTotalBytes =
-    totalBytes && totalBytes > 0 ? totalBytes : estimatedStreamTotalBytes;
+  const effectiveTotalBytes = totalBytes && totalBytes > 0 ? totalBytes : estimatedStreamTotalBytes;
   if (!effectiveTotalBytes || downloadedBytes <= 0) {
     return null;
   }
@@ -474,7 +511,7 @@ function updatePlaybackBufferProgress(
   const normalizedTotalBytes = totalBytes && totalBytes > 0 ? totalBytes : null;
   const effectiveProgress = activeRangedSeekLoad
     ? normalizedProgress
-    : normalizedProgress ?? estimateBufferProgress(downloadedBytes, normalizedTotalBytes, done);
+    : (normalizedProgress ?? estimateBufferProgress(downloadedBytes, normalizedTotalBytes, done));
   bufferProgressKnown = effectiveProgress != null && Number.isFinite(effectiveProgress);
   const fullyCached =
     !activeRangedSeekLoad && (cacheComplete || (done && normalizedProgress === 1));
@@ -498,7 +535,7 @@ function updatePlaybackBufferProgress(
         ? Math.max(0, Math.min(normalizedProgress, 1))
         : cacheComplete
           ? 1
-        : null,
+          : null,
   });
 
   if (shouldResolveStartupBuffer(effectiveProgress, fullyCached)) {
@@ -525,7 +562,10 @@ function updateTickDrivenBufferState(tickPos: number) {
   if (!Number.isFinite(tickPos) || tickPos <= 0) return;
 
   startupBufferedSecs = Math.max(startupBufferedSecs, tickPos);
-  const seekUnlocked = shouldUnlockSeek(playbackBufferSnapshot.progress, playbackBufferSnapshot.fullyCached);
+  const seekUnlocked = shouldUnlockSeek(
+    playbackBufferSnapshot.progress,
+    playbackBufferSnapshot.fullyCached,
+  );
 
   updatePlaybackBufferSnapshot({
     bufferedSecs: startupBufferedSecs,
@@ -533,7 +573,12 @@ function updateTickDrivenBufferState(tickPos: number) {
   });
 
   if (waitForReadyBuffer) {
-    if (shouldResolveStartupBuffer(playbackBufferSnapshot.progress, playbackBufferSnapshot.fullyCached)) {
+    if (
+      shouldResolveStartupBuffer(
+        playbackBufferSnapshot.progress,
+        playbackBufferSnapshot.fullyCached,
+      )
+    ) {
       resolveReadyBuffer('playback-tick');
       return;
     }
@@ -595,7 +640,11 @@ function inferCodecFromContentType(contentType: string | null | undefined): stri
   if (normalized.includes('opus')) return 'OPUS';
   if (normalized.includes('ogg')) return 'OGG';
   if (normalized.includes('mpeg') || normalized.includes('mp3')) return 'MP3';
-  if (normalized.includes('aac') || normalized.includes('mp4a') || normalized.includes('audio/mp4')) {
+  if (
+    normalized.includes('aac') ||
+    normalized.includes('mp4a') ||
+    normalized.includes('audio/mp4')
+  ) {
     return 'AAC';
   }
   if (normalized.includes('flac')) return 'FLAC';
@@ -750,7 +799,11 @@ async function syncPlaybackBufferFromCompleteCache(
 }
 
 function shouldUseDirectSeekReload(target: number): boolean {
-  if (!isTauriRuntime() || playbackBufferSnapshot.fullyCached || !playbackBufferSnapshot.seekUnlocked) {
+  if (
+    !isTauriRuntime() ||
+    playbackBufferSnapshot.fullyCached ||
+    !playbackBufferSnapshot.seekUnlocked
+  ) {
     return false;
   }
 
@@ -780,7 +833,7 @@ async function resyncFromNativePosition() {
     seekPendingUntil = 0;
     seekTargetTime = -1;
     resumeNativeAfterBufferedSeek();
-    notify();
+    flushNotifyImmediate();
     setTimeout(() => updateMediaPosition(), 120);
   } catch (error) {
     console.warn('[Audio] Failed to resync native position after seek error', error);
@@ -840,14 +893,7 @@ async function flushQueuedSeek() {
     if (isBusySeekError(error)) {
       if (isActiveSeekRequest(trackUrn, requestId)) {
         keepSeekGuardAlive(target, SEEK_BUSY_RETRY_MS + 2400);
-        scheduleQueuedSeek(
-          target,
-          trackUrn,
-          allowRecovery,
-          SEEK_BUSY_RETRY_MS,
-          retries,
-          requestId,
-        );
+        scheduleQueuedSeek(target, trackUrn, allowRecovery, SEEK_BUSY_RETRY_MS, retries, requestId);
       }
       return;
     }
@@ -931,9 +977,7 @@ async function flushQueuedSeek() {
     await delay(SEEK_RECOVERY_COALESCE_MS);
     if (
       !isActiveSeekRequest(trackUrn, requestId) ||
-      (queuedSeekTarget >= 0 &&
-        queuedSeekTrackUrn === trackUrn &&
-        queuedSeekRequestId > requestId)
+      (queuedSeekTarget >= 0 && queuedSeekTrackUrn === trackUrn && queuedSeekRequestId > requestId)
     ) {
       return;
     }
@@ -983,7 +1027,10 @@ async function flushQueuedSeek() {
     }
   } finally {
     nativeSeekInFlight = false;
-    if (queuedSeekTarget >= 0 && queuedSeekTrackUrn === usePlayerStore.getState().currentTrack?.urn) {
+    if (
+      queuedSeekTarget >= 0 &&
+      queuedSeekTrackUrn === usePlayerStore.getState().currentTrack?.urn
+    ) {
       clearQueuedSeekTimer();
       queuedSeekTimer = setTimeout(() => {
         queuedSeekTimer = null;
@@ -1022,7 +1069,7 @@ export function seek(seconds: number, allowRecovery = true, force = false) {
     cachedTime = target;
     lastSmoothTime = target;
     lastTickAt = Date.now();
-    notify();
+    flushNotifyImmediate(); // Seek needs immediate feedback to UI
     setTimeout(() => updateMediaPosition(), 150);
     void reloadTrackAtSeekTarget(track, target, requestId).then((reloaded) => {
       if (reloaded || !isActiveSeekRequest(track.urn, requestId)) {
@@ -1045,7 +1092,7 @@ export function seek(seconds: number, allowRecovery = true, force = false) {
   cachedTime = target;
   lastSmoothTime = target;
   lastTickAt = Date.now();
-  notify();
+  flushNotifyImmediate(); // Seek needs immediate feedback to UI
   setTimeout(() => updateMediaPosition(), 150);
 }
 
@@ -1062,6 +1109,11 @@ export function handlePrev() {
 function stopTrack() {
   resetQueuedSeekQueue();
   clearBufferedSeekPauseState();
+  if (notifyRafId != null) cancelAnimationFrame(notifyRafId);
+  if (notifyTimeout != null) clearTimeout(notifyTimeout);
+  notifyRafId = null;
+  notifyTimeout = null;
+  notifyPending = false;
   if (isTauriRuntime()) {
     invoke('audio_stop').catch(console.error);
   }
@@ -1113,8 +1165,12 @@ export async function reloadCurrentTrack() {
 
 type TrackMetadataPatch = Partial<Track> & { full_duration?: number };
 
-function getResolvedDurationMs(track: { duration?: number; full_duration?: number }): number | null {
-  if (typeof track.full_duration === 'number' && track.full_duration > 0) return track.full_duration;
+function getResolvedDurationMs(track: {
+  duration?: number;
+  full_duration?: number;
+}): number | null {
+  if (typeof track.full_duration === 'number' && track.full_duration > 0)
+    return track.full_duration;
   if (typeof track.duration === 'number' && track.duration > 0) return track.duration;
   return null;
 }
@@ -1172,7 +1228,7 @@ function commitTrackMetadata(track: Track) {
   fallbackDuration = durationSecs;
   cachedDuration = durationSecs;
   updateMetadata(track, durationSecs);
-  notify();
+  flushNotifyImmediate();
 }
 
 async function fetchFreshTrackMetadata(track: Track): Promise<Track> {
@@ -1219,7 +1275,9 @@ function syncNativeAudioRuntime() {
   invoke('audio_set_volume', { volume: usePlayerStore.getState().volume }).catch(console.error);
 
   const playerState = usePlayerStore.getState();
-  invoke('audio_set_playback_rate', { playbackRate: playerState.playbackRate }).catch(console.error);
+  invoke('audio_set_playback_rate', { playbackRate: playerState.playbackRate }).catch(
+    console.error,
+  );
   invoke('audio_set_pitch', {
     pitchSemitones: getEffectivePitchSemitones(
       playerState.playbackRate,
@@ -1262,7 +1320,7 @@ async function loadTrackAtImmediateSeekTarget(
   readyBufferResolver = null;
   beginPlaybackBufferTracking(fallbackDuration, true);
   usePlayerStore.setState({ downloadProgress: 0 });
-  notify();
+  flushNotifyImmediate();
 
   setupTauriBindings();
   syncNativeAudioRuntime();
@@ -1356,7 +1414,7 @@ async function loadTrackFromFullCacheAtSeekTarget(
   readyBufferResolver = null;
   beginPlaybackBufferTracking(fallbackDuration);
   usePlayerStore.setState({ downloadProgress: 1 });
-  notify();
+  flushNotifyImmediate();
 
   setupTauriBindings();
   syncNativeAudioRuntime();
@@ -1450,7 +1508,7 @@ async function loadTrack(track: Track, skipStop = false) {
   usePlayerStore.setState({ downloadProgress: null });
   usePlayerStore.getState().setCurrentTrackStreamQuality(undefined);
   usePlayerStore.getState().setCurrentTrackStreamCodec(undefined);
-  notify();
+  flushNotifyImmediate();
 
   if (!isTauriRuntime()) {
     hasTrack = false;
@@ -1480,7 +1538,9 @@ async function loadTrack(track: Track, skipStop = false) {
 
     const streamSource = await getTrackStreamSource(urn);
     updateEstimatedStreamTotalBytes(fallbackDuration, streamSource.format);
-    console.log(`[Audio] Loading direct stream: ${urn} (${streamSource.protocol}/${streamSource.format})`);
+    console.log(
+      `[Audio] Loading direct stream: ${urn} (${streamSource.protocol}/${streamSource.format})`,
+    );
     try {
       const result = await invoke<AudioLoadInvokeResult>('audio_load_url', {
         progressToken: gen,
@@ -1510,9 +1570,7 @@ async function loadTrack(track: Track, skipStop = false) {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(
-        `[Audio] Stream load failed: error=${message}`,
-      );
+      console.warn(`[Audio] Stream load failed: error=${message}`);
       throw error;
     }
   };
@@ -1626,13 +1684,21 @@ async function loadTrack(track: Track, skipStop = false) {
     // Wait for buffer to be ready
     await readyBufferPromise;
     clearTimeout(timeoutId);
-    if (gen !== loadGen || currentUrn !== urn || usePlayerStore.getState().currentTrack?.urn !== urn) {
+    if (
+      gen !== loadGen ||
+      currentUrn !== urn ||
+      usePlayerStore.getState().currentTrack?.urn !== urn
+    ) {
       return;
     }
     console.log(`[Audio] Prebuffer ready: ${startupBufferedSecs.toFixed(1)}s buffered`);
   }
 
-  if (gen !== loadGen || currentUrn !== urn || usePlayerStore.getState().currentTrack?.urn !== urn) {
+  if (
+    gen !== loadGen ||
+    currentUrn !== urn ||
+    usePlayerStore.getState().currentTrack?.urn !== urn
+  ) {
     return;
   }
   // Record to listening history (fire-and-forget)
@@ -1738,7 +1804,7 @@ async function recoverFromStall(elapsedMs: number) {
       if (clampedNativePos > 0.05) {
         waitingForStartupProgress = false;
       }
-      notify();
+      flushNotifyImmediate();
       return;
     }
 
@@ -1783,7 +1849,7 @@ function setupTauriBindings() {
         : payload?.position != null && Number.isFinite(payload.position)
           ? payload.position
           : null;
-    const tickGen = typeof payload === 'number' ? null : payload?.gen ?? null;
+    const tickGen = typeof payload === 'number' ? null : (payload?.gen ?? null);
     if (tickGen != null && tickGen !== loadGen) {
       return;
     }
@@ -1793,11 +1859,7 @@ function setupTauriBindings() {
     const now = Date.now();
     const durationLimit = cachedDuration > 0 ? cachedDuration : fallbackDuration;
 
-    if (
-      Number.isFinite(durationLimit) &&
-      durationLimit > 0 &&
-      tickPos > durationLimit + 1.5
-    ) {
+    if (Number.isFinite(durationLimit) && durationLimit > 0 && tickPos > durationLimit + 1.5) {
       console.warn('[Audio] Ignoring out-of-range playback tick', {
         tickPos,
         durationLimit,
@@ -1878,8 +1940,7 @@ function setupTauriBindings() {
 
   listen('audio:ended', () => {
     clearBufferedSeekPauseState();
-    const nearTrackEnd =
-      cachedDuration > 0 && cachedTime >= Math.max(0, cachedDuration - 1.2);
+    const nearTrackEnd = cachedDuration > 0 && cachedTime >= Math.max(0, cachedDuration - 1.2);
     if (Date.now() < endedGuardUntil && !nearTrackEnd) {
       console.warn('[Audio] Ignoring spurious ended event during seek transition');
       return;
@@ -1982,7 +2043,10 @@ function setupTauriBindings() {
     }
 
     const totalLoadBudgetMs = currentBufferStrategy.startupTimeoutMs + 3500;
-    if (noTickYet && loadAgeMs >= Math.max(totalLoadBudgetMs, STARTUP_RECOVERY_NO_TICK_TIMEOUT_MS)) {
+    if (
+      noTickYet &&
+      loadAgeMs >= Math.max(totalLoadBudgetMs, STARTUP_RECOVERY_NO_TICK_TIMEOUT_MS)
+    ) {
       void recoverFromStartupHang(`no playback tick after ${loadAgeMs}ms`);
     }
   }, 1000);

@@ -1,12 +1,26 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Outlet, useNavigate } from 'react-router-dom';
-import { canSeekCurrentTrack, getCurrentTime, getDuration, handlePrev, seek } from '../../lib/audio';
+import { useArtworkGradientPalette } from '../../lib/artwork-palette';
+import {
+  ARTWORK_SURFACE_BACKGROUND_POSITION,
+  ARTWORK_SURFACE_BACKGROUND_REPEAT,
+  ARTWORK_SURFACE_BACKGROUND_SIZE,
+  buildArtworkSurfaceVisual,
+} from '../../lib/artwork-surface';
+import {
+  canSeekCurrentTrack,
+  getCurrentTime,
+  getDuration,
+  handlePrev,
+  seek,
+} from '../../lib/audio';
 import { isAppBackgrounded } from '../../lib/app-visibility';
 import { getWallpaperUrl } from '../../lib/cache';
 import { art } from '../../lib/formatters';
 import { useIsMobile } from '../../lib/hooks/useIsMobile';
+import { ARTWORK_CROSSFADE_MS, useCrossfadeBackground } from '../../lib/useCrossfadeBackground';
 import { toggleWindowFullscreen } from '../../lib/window';
 import { useArtworkStore, useFullscreenPanelStore, useLyricsStore } from '../../stores/lyrics';
 import { usePlayerStore } from '../../stores/player';
@@ -353,56 +367,102 @@ export const AppShell = React.memo(() => {
   }, [navigate, queueOpen, kbOpen]);
 
   const isMobile = useIsMobile();
+  const themePreset = useSettingsStore((s) => s.themePreset);
+  const currentArtworkUrl = usePlayerStore((s) => s.currentTrack?.artwork_url ?? null);
+  const artworkGradientPalette = useArtworkGradientPalette(
+    themePreset === 'artwork' ? currentArtworkUrl : null,
+  );
+  const pageVisual = useMemo(
+    () => (artworkGradientPalette ? buildArtworkSurfaceVisual(artworkGradientPalette) : null),
+    [artworkGradientPalette],
+  );
+  const {
+    baseValue: pageBaseBackground,
+    overlayValue: pageOverlayBackground,
+    overlayVisible: pageOverlayVisible,
+  } = useCrossfadeBackground(pageVisual?.background ?? '', ARTWORK_CROSSFADE_MS);
 
-  return (<div
-  className="flex flex-col h-screen relative overflow-hidden"
-  style={{ background: '#000000' }}
->
-  <Titlebar />
-
-  <div
-    className={`flex flex-1 min-h-0 relative z-0 ${isMobile ? 'mb-[136px]' : 'mb-[96px]'}`}
-    style={{
-      isolation: 'isolate',
-      opacity: shellSuppressed ? 0 : 1,
-      visibility: shellSuppressed ? 'hidden' : 'visible',
-      pointerEvents: shellSuppressed ? 'none' : 'auto',
-      transition: shellSuppressed ? 'opacity 180ms ease' : 'opacity 220ms ease',
-    }}
-  >
-    {!isMobile && <Sidebar />}
-
-    <main
-      className="flex-2 mx-3 mt-[6px] mb-[16px] rounded-[17px] overflow-hidden border border-white/[0.15] relative"
-      style={{
-        background: 'var(--bg-primary)',
-      }}
+  return (
+    <div
+      className="flex flex-col h-screen relative overflow-hidden"
+      style={{ background: '#000000' }}
     >
-      <div className="absolute inset-0 z-0">
-        <CustomBackground />
-        <AmbientGlow />
+      <Titlebar />
+
+      <div
+        className={`flex flex-1 min-h-0 relative z-0 ${isMobile ? 'mb-[136px]' : 'mb-[96px]'}`}
+        style={{
+          isolation: 'isolate',
+          opacity: shellSuppressed ? 0 : 1,
+          visibility: shellSuppressed ? 'hidden' : 'visible',
+          pointerEvents: shellSuppressed ? 'none' : 'auto',
+          transition: shellSuppressed ? 'opacity 180ms ease' : 'opacity 220ms ease',
+        }}
+      >
+        {!isMobile && <Sidebar />}
+
+        <main
+          className="flex-2 mx-3 mt-[6px] mb-[16px] rounded-[17px] overflow-hidden border border-white/[0.15] relative"
+          style={{
+            backgroundColor: 'var(--bg-primary)',
+            backgroundImage: themePreset === 'artwork' ? 'none' : 'var(--theme-app-background)',
+            backgroundSize:
+              themePreset === 'artwork' ? undefined : 'var(--theme-app-background-size)',
+            backgroundPosition: themePreset === 'artwork' ? undefined : '0% 50%, 0% 100%, 85% 12%',
+            backgroundRepeat: themePreset === 'artwork' ? undefined : 'no-repeat',
+          }}
+        >
+          <div className="absolute inset-0 z-0">
+            {themePreset === 'artwork' && pageVisual ? (
+              <div
+                className="pointer-events-none absolute inset-0"
+                style={{
+                  background: pageBaseBackground || pageVisual.background,
+                  backgroundSize: ARTWORK_SURFACE_BACKGROUND_SIZE,
+                  backgroundPosition: ARTWORK_SURFACE_BACKGROUND_POSITION,
+                  backgroundRepeat: ARTWORK_SURFACE_BACKGROUND_REPEAT,
+                }}
+              />
+            ) : null}
+            {themePreset === 'artwork' && pageOverlayBackground ? (
+              <div
+                className="pointer-events-none absolute inset-0 transition-opacity ease-[var(--ease-apple)]"
+                style={{
+                  background: pageOverlayBackground,
+                  backgroundSize: ARTWORK_SURFACE_BACKGROUND_SIZE,
+                  backgroundPosition: ARTWORK_SURFACE_BACKGROUND_POSITION,
+                  backgroundRepeat: ARTWORK_SURFACE_BACKGROUND_REPEAT,
+                  opacity: pageOverlayVisible ? 1 : 0,
+                  transitionDuration: `${ARTWORK_CROSSFADE_MS}ms`,
+                  willChange: 'opacity',
+                }}
+              />
+            ) : null}
+            <CustomBackground />
+            <AmbientGlow />
+          </div>
+
+          <div className="h-full overflow-y-auto overflow-x-hidden relative z-10">
+            <StableOutlet />
+          </div>
+        </main>
       </div>
 
-      <div className="h-full overflow-y-auto overflow-x-hidden relative z-10">
-        <StableOutlet />
+      <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-10 flex flex-col">
+        <NowPlayingBar onQueueToggle={onQueueToggle} queueOpen={queueOpen} />
+
+        {isMobile && (
+          <div className="pointer-events-auto">
+            <MobileNav />
+          </div>
+        )}
       </div>
-    </main>
-  </div>
 
-  <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-10 flex flex-col">
-    <NowPlayingBar onQueueToggle={onQueueToggle} queueOpen={queueOpen} />
-
-    {isMobile && (
-      <div className="pointer-events-auto">
-        <MobileNav />
-      </div>
-    )}
-  </div>
-
-  <QueuePanel open={queueOpen} onClose={onQueueClose} />
-  <FullscreenPanels />
-  <KeybindingsDialog open={kbOpen} onOpenChange={setKbOpen} />
-  <HardwareAccelSync />
-  <FpsCounter />
-</div>);
+      <QueuePanel open={queueOpen} onClose={onQueueClose} />
+      <FullscreenPanels />
+      <KeybindingsDialog open={kbOpen} onOpenChange={setKbOpen} />
+      <HardwareAccelSync />
+      <FpsCounter />
+    </div>
+  );
 });

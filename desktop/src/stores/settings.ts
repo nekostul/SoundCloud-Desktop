@@ -94,7 +94,7 @@ const normalizePinnedPlaylists = (value: unknown): SidebarPinnedPlaylist[] => {
   return normalized;
 };
 
-export type ThemePreset = 'soundcloud' | 'dark' | 'neon' | 'forest' | 'crimson' | 'custom';
+export type ThemePreset = 'soundcloud' | 'artwork' | 'neon' | 'forest' | 'crimson' | 'custom';
 export type ThemeGradientType = 'linear' | 'radial';
 export type ThemeGradientAnimation = 'flow' | 'pulse' | 'breathe';
 export type DiscordRpcMode = 'text' | 'track' | 'artist' | 'activity';
@@ -139,7 +139,7 @@ export interface SidebarPinnedPlaylist {
 export interface ThemePresetDef {
   accent: string;
   bg: string;
-  name: string;
+  labelKey: string;
   /** [accent, bg, card] for preview swatch */
   preview: [string, string, string];
 }
@@ -148,33 +148,51 @@ export const THEME_PRESETS: Record<Exclude<ThemePreset, 'custom'>, ThemePresetDe
   soundcloud: {
     accent: '#ff5500',
     bg: '#050507',
-    name: 'SoundCloud',
+    labelKey: 'settings.theme_soundcloud',
     preview: ['#ff5500', '#050507', '#121216'],
   },
-  dark: {
-    accent: '#d7d9de',
-    bg: '#020203',
-    name: 'Тьма',
-    preview: ['#d7d9de', '#020203', '#0a0a0d'],
+  artwork: {
+    accent: '#ff5500',
+    bg: '#050507',
+    labelKey: 'settings.theme_artwork',
+    preview: ['#d8dde6', '#050507', '#161b24'],
   },
   neon: {
     accent: '#af63eb',
     bg: '#05030a',
-    name: 'Неон',
+    labelKey: 'settings.theme_neon',
     preview: ['#af63eb', '#05030a', '#120a1e'],
   },
   forest: {
     accent: '#28b764',
     bg: '#040905',
-    name: 'Лес',
+    labelKey: 'settings.theme_forest',
     preview: ['#28b764', '#040905', '#0b1710'],
   },
   crimson: {
     accent: '#ff476d',
     bg: '#060304',
-    name: 'Кармин',
+    labelKey: 'settings.theme_crimson',
     preview: ['#ff476d', '#060304', '#16070c'],
   },
+};
+
+const normalizeThemePreset = (value: unknown): ThemePreset => {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+  switch (normalized) {
+    case 'soundcloud':
+    case 'artwork':
+    case 'neon':
+    case 'forest':
+    case 'crimson':
+    case 'custom':
+      return normalized;
+    case 'dark':
+      return 'artwork';
+    default:
+      return 'soundcloud';
+  }
 };
 
 export interface SettingsState {
@@ -499,7 +517,11 @@ export const useSettingsStore = create<SettingsState>()(
           set({ themePreset: 'custom' });
         } else {
           const preset = THEME_PRESETS[id];
-          set({ themePreset: id, accentColor: preset.accent, bgPrimary: preset.bg });
+          set({
+            themePreset: id,
+            accentColor: preset.accent,
+            bgPrimary: preset.bg,
+          });
         }
       },
       setThemeGradientEnabled: (themeGradientEnabled) =>
@@ -740,6 +762,7 @@ export const useSettingsStore = create<SettingsState>()(
             : state.preferredLanguage,
         );
         const language = normalizeLanguage((state.language as string) || DEFAULTS.language);
+        const themePreset = normalizeThemePreset(state.themePreset);
         const {
           preferredLanguage: _legacyPreferredLanguage,
           preferredLanguages: _preferredLanguages,
@@ -749,6 +772,7 @@ export const useSettingsStore = create<SettingsState>()(
           ...DEFAULTS,
           ...restState,
           language,
+          themePreset,
           qdrantUrl,
           qdrantKey,
           pinnedPlaylists,
@@ -779,6 +803,7 @@ export const useSettingsStore = create<SettingsState>()(
             : state.preferredLanguage,
         );
         const language = normalizeLanguage((state.language as string) || currentState.language);
+        const themePreset = normalizeThemePreset(state.themePreset);
         const {
           preferredLanguage: _legacyPreferredLanguage,
           preferredLanguages: _preferredLanguages,
@@ -788,6 +813,7 @@ export const useSettingsStore = create<SettingsState>()(
           ...currentState,
           ...restState,
           language,
+          themePreset,
           qdrantUrl,
           qdrantKey,
           pinnedPlaylists,

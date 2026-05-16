@@ -1,7 +1,14 @@
 import * as Slider from '@radix-ui/react-slider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Sparkles, Volume, Volume2, VolumeX } from 'lucide-react';
-import React, { CSSProperties, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -9,6 +16,12 @@ import { artworkPanelApi, lyricsPanelApi } from '../../components/music/LyricsPa
 import { api, getTrackComments } from '../../lib/api';
 import { isAppBackgrounded } from '../../lib/app-visibility';
 import { useArtworkGradientPalette } from '../../lib/artwork-palette';
+import {
+  ARTWORK_SURFACE_BACKGROUND_POSITION,
+  ARTWORK_SURFACE_BACKGROUND_REPEAT,
+  ARTWORK_SURFACE_BACKGROUND_SIZE,
+  buildArtworkSurfaceVisual,
+} from '../../lib/artwork-surface';
 import {
   getPlaybackBufferSnapshot,
   getCurrentTime,
@@ -21,9 +34,10 @@ import {
 } from '../../lib/audio';
 import { updateDiscordLyric } from '../../lib/discord';
 import { art, formatTime } from '../../lib/formatters';
-import { getAnimationFrameBudgetMs } from '../../lib/framerate';
+import { cancelAnimationFrameImmediate, requestAnimationFrameImmediate } from '../../lib/framerate';
 import { invalidateAllLikesCache } from '../../lib/hooks';
 import { useIsMobile } from '../../lib/hooks/useIsMobile';
+import { ARTWORK_CROSSFADE_MS, useCrossfadeBackground } from '../../lib/useCrossfadeBackground';
 import {
   audioLines16,
   Ban,
@@ -50,28 +64,7 @@ import { EqualizerPanel } from '../music/EqualizerPanel';
 import { PlaybackSpeedPresets } from '../music/PlaybackSpeedPresets';
 import { StreamQualityBadge } from '../music/StreamQualityBadge';
 
-function hexToRgba(hex?: string | null, alpha = 1) {
-  if (!hex || typeof hex !== 'string') {
-    return `rgba(0, 0, 0, ${alpha})`;
-  }
-
-  const normalized = hex.trim().replace('#', '');
-
-  if (!/^[0-9A-Fa-f]{6}$/.test(normalized)) {
-    return `rgba(0, 0, 0, ${alpha})`;
-  }
-
-  const bigint = Number.parseInt(normalized, 16);
-
-  const r = (bigint >> 16) & 255;
-  const g = (bigint >> 8) & 255;
-  const b = bigint & 255;
-
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
 /* ── Download Progress Panel ────────────────────────────────── */
-
 
 /* ── Progress Slider ─────────────────────────────────────────── */
 
@@ -85,8 +78,7 @@ export const ProgressSlider = React.memo(() => {
   const artworkOpen = useArtworkStore((s) => s.open);
 
   const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
-  const targetFramerate = useSettingsStore((s) => s.targetFramerate);
-  const unlockFramerate = useSettingsStore((s) => s.unlockFramerate);
+  const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
 
   const { data: comments } = useQuery({
     queryKey: ['comments', currentTrackUrn],
@@ -99,6 +91,8 @@ export const ProgressSlider = React.memo(() => {
   const [hoverPercent, setHoverPercent] = useState<number | null>(null);
   const [dragValue, setDragValue] = useState(0);
   const [syncedValue, setSyncedValue] = useState(0);
+  const [layoutRevision, setLayoutRevision] = useState(0);
+  const [hideDurationTooltip, setHideDurationTooltip] = useState(false);
 
   const draggingRef = useRef(false);
   const dragRafRef = useRef<number | null>(null);
@@ -106,35 +100,76 @@ export const ProgressSlider = React.memo(() => {
   const bufferedFillRef = useRef<HTMLDivElement | null>(null);
   const bufferedRatioRef = useRef(0);
   const bufferedRafRef = useRef<number | null>(null);
+  const progressFillRef = useRef<HTMLDivElement | null>(null);
+  const progressDotRef = useRef<HTMLDivElement | null>(null);
+  const sliderRootRef = useRef<HTMLDivElement | null>(null);
+  const sliderTrackRef = useRef<HTMLSpanElement | null>(null);
+  const progressTooltipRef = useRef<HTMLDivElement | null>(null);
+  const durationTooltipRef = useRef<HTMLDivElement | null>(null);
+  const durationRef = useRef(duration);
+  const liveValueRef = useRef(0);
+
+  const paintProgressFill = useCallback((value: number) => {
+    liveValueRef.current = value;
+    const safeDuration = durationRef.current;
+    const ratio = safeDuration > 0 ? Math.max(0, Math.min(value / safeDuration, 1)) : 0;
+    const percent = `${ratio * 100}%`;
+    if (progressFillRef.current) {
+      progressFillRef.current.style.transform = `scaleX(${ratio})`;
+    }
+    if (progressDotRef.current) {
+      progressDotRef.current.style.left = percent;
+      progressDotRef.current.style.transform =
+        ratio <= 0.02 ? 'translateX(0)' : ratio >= 0.98 ? 'translateX(-100%)' : 'translateX(-50%)';
+    }
+    if (progressTooltipRef.current) {
+      progressTooltipRef.current.style.left = percent;
+      progressTooltipRef.current.style.transform =
+        ratio <= 0.08 ? 'translateX(0)' : ratio >= 0.92 ? 'translateX(-100%)' : 'translateX(-50%)';
+      progressTooltipRef.current.textContent = formatTime(value);
+    }
+  }, []);
+
+  useEffect(() => {
+    durationRef.current = duration;
+    paintProgressFill(dragging ? dragValue : syncedValue);
+  }, [dragValue, dragging, duration, paintProgressFill, syncedValue]);
+
+  useEffect(() => {
+    liveValueRef.current = 0;
+    paintProgressFill(0);
+    setSyncedValue(0);
+  }, [currentTrackUrn, paintProgressFill]);
 
   // Keep slider state in sync without competing DOM mutations
   useEffect(() => {
     let rafId: number;
-    let lastPaint = 0;
 
-    const loop = (ts: number) => {
-      rafId = requestAnimationFrame(loop);
-      if (draggingRef.current || isAppBackgrounded() || !isPlaying) return;
+    const loop = () => {
+      rafId = requestAnimationFrameImmediate(loop);
+      if (draggingRef.current || isAppBackgrounded()) {
+        return;
+      }
 
-      const frameBudgetMs = getAnimationFrameBudgetMs(targetFramerate, unlockFramerate);
-      if (frameBudgetMs > 0 && ts - lastPaint < frameBudgetMs) return;
-      lastPaint = ts;
-
-      setSyncedValue(getSmoothCurrentTime());
+      paintProgressFill(isPlaying ? getSmoothCurrentTime() : getCurrentTime());
     };
 
-    rafId = requestAnimationFrame(loop);
+    rafId = requestAnimationFrameImmediate(loop);
     const unsub = subscribe(() => {
       if (!draggingRef.current) {
-        setSyncedValue(getCurrentTime());
+        const nextValue = getCurrentTime();
+        paintProgressFill(nextValue);
+        setSyncedValue((previousValue) =>
+          Math.abs(previousValue - nextValue) < 0.05 ? previousValue : nextValue,
+        );
       }
     });
 
     return () => {
-      cancelAnimationFrame(rafId);
+      cancelAnimationFrameImmediate(rafId);
       unsub();
     };
-  }, [isPlaying, targetFramerate, unlockFramerate]);
+  }, [isPlaying, paintProgressFill]);
 
   const displayValue = dragging ? dragValue : syncedValue;
   const seekableLimit = duration > 0 ? Math.max(0, duration - 0.15) : Number.POSITIVE_INFINITY;
@@ -153,31 +188,45 @@ export const ProgressSlider = React.memo(() => {
       : playbackBuffer.fullyCached || bufferedPercent >= 99.95
         ? 100
         : Math.min(99, Math.max(1, Math.round(bufferedPercent)));
-  const stateLabel =
-    playbackBuffer.fullyCached
-      ? null
-      : roundedBufferedPercent != null
-        ? playbackBuffer.phase === 'loading'
-          ? t('player.loadingStreamProgress', 'Loading {{progress}}%', {
-              progress: roundedBufferedPercent,
-            })
-          : t('player.cachingStreamProgress', 'Caching {{progress}}%', {
-              progress: roundedBufferedPercent,
-            })
-        : playbackBuffer.phase === 'loading'
-          ? t('player.loadingStream', 'Loading track')
-          : playbackBuffer.phase === 'buffering'
-            ? t('player.bufferingStream', 'Buffering')
-            : !playbackBuffer.seekUnlocked
-              ? t('player.seekLocked', 'Seek locked')
-              : t('player.cachingStream', 'Caching track');
-
+  const stateLabel = playbackBuffer.fullyCached
+    ? null
+    : roundedBufferedPercent != null
+      ? playbackBuffer.phase === 'loading'
+        ? t('player.loadingStreamProgress', 'Loading {{progress}}%', {
+            progress: roundedBufferedPercent,
+          })
+        : t('player.cachingStreamProgress', 'Caching {{progress}}%', {
+            progress: roundedBufferedPercent,
+          })
+      : playbackBuffer.phase === 'loading'
+        ? t('player.loadingStream', 'Loading track')
+        : playbackBuffer.phase === 'buffering'
+          ? t('player.bufferingStream', 'Buffering')
+          : !playbackBuffer.seekUnlocked
+            ? t('player.seekLocked', 'Seek locked')
+            : t('player.cachingStream', 'Caching track');
+  const progressRatio = duration > 0 ? Math.max(0, Math.min(displayValue / duration, 1)) : 0;
+  const sliderAssistVisible = (hoverPercent !== null || dragging) && hoverPreviewEnabled;
+  const durationTooltipTransform = 'translateX(-100%)';
+  const hoverPreviewRect =
+    layoutRevision >= 0
+      ? (sliderTrackRef.current?.getBoundingClientRect() ??
+        sliderRootRef.current?.getBoundingClientRect() ??
+        null)
+      : null;
+  const hoverPreviewTop = hoverPreviewRect ? Math.max(8, hoverPreviewRect.top - 34) : 0;
+  const sliderRect = hoverPreviewRect;
   const flushPendingDragValue = useCallback(() => {
     dragRafRef.current = null;
     if (pendingDragValueRef.current == null) return;
-    setDragValue(pendingDragValueRef.current);
+    const nextValue = pendingDragValueRef.current;
+    paintProgressFill(nextValue);
+    setDragValue(nextValue);
     pendingDragValueRef.current = null;
-  }, []);
+  }, [paintProgressFill]);
+
+  const showHoverPreview = sliderAssistVisible;
+  const showHoverTooltips = showHoverPreview && !isFullscreenOverlayOpen;
 
   useEffect(() => {
     if (bufferedRafRef.current != null) {
@@ -232,32 +281,39 @@ export const ProgressSlider = React.memo(() => {
     };
   }, [bufferedRatio]);
 
-  const onValueChange = useCallback(([v]: number[]) => {
-    if (seekDisabled) return;
-    pendingDragValueRef.current = Math.min(v, seekableLimit);
-    if (dragRafRef.current == null) {
-      dragRafRef.current = requestAnimationFrame(flushPendingDragValue);
-    }
-    if (!draggingRef.current) {
-      draggingRef.current = true;
-      setDragging(true);
-    }
-  }, [flushPendingDragValue, seekDisabled, seekableLimit]);
+  const onValueChange = useCallback(
+    ([v]: number[]) => {
+      if (seekDisabled) return;
+      pendingDragValueRef.current = Math.min(v, seekableLimit);
+      if (dragRafRef.current == null) {
+        dragRafRef.current = requestAnimationFrame(flushPendingDragValue);
+      }
+      if (!draggingRef.current) {
+        draggingRef.current = true;
+        setDragging(true);
+      }
+    },
+    [flushPendingDragValue, seekDisabled, seekableLimit],
+  );
 
-  const onValueCommit = useCallback(([v]: number[]) => {
-    if (seekDisabled) return;
-    const nextValue = Math.min(v, seekableLimit);
-    if (dragRafRef.current != null) {
-      cancelAnimationFrame(dragRafRef.current);
-      dragRafRef.current = null;
-    }
-    pendingDragValueRef.current = null;
-    setDragValue(nextValue);
-    seek(nextValue, true, true);
-    draggingRef.current = false;
-    setDragging(false);
-    setSyncedValue(nextValue);
-  }, [seekDisabled, seekableLimit]);
+  const onValueCommit = useCallback(
+    ([v]: number[]) => {
+      if (seekDisabled) return;
+      const nextValue = Math.min(v, seekableLimit);
+      if (dragRafRef.current != null) {
+        cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      pendingDragValueRef.current = null;
+      paintProgressFill(nextValue);
+      setDragValue(nextValue);
+      seek(nextValue, true, true);
+      draggingRef.current = false;
+      setDragging(false);
+      setSyncedValue(nextValue);
+    },
+    [paintProgressFill, seekDisabled, seekableLimit],
+  );
 
   useEffect(() => {
     return () => {
@@ -268,6 +324,17 @@ export const ProgressSlider = React.memo(() => {
   }, []);
 
   useEffect(() => {
+    setLayoutRevision((v) => v + 1);
+    const handleResize = () => setLayoutRevision((v) => v + 1);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    setLayoutRevision((v) => v + 1);
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
     if (!seekDisabled) return;
     if (dragRafRef.current != null) {
       cancelAnimationFrame(dragRafRef.current);
@@ -275,9 +342,31 @@ export const ProgressSlider = React.memo(() => {
     }
     pendingDragValueRef.current = null;
     draggingRef.current = false;
+    paintProgressFill(0);
     setDragging(false);
     setHoverPercent(null);
-  }, [seekDisabled]);
+  }, [paintProgressFill, seekDisabled]);
+
+  useEffect(() => {
+    if (!showHoverTooltips) {
+      setHideDurationTooltip(false);
+      return;
+    }
+
+    const frameId = requestAnimationFrame(() => {
+      const firstRect = progressTooltipRef.current?.getBoundingClientRect();
+      const secondRect = durationTooltipRef.current?.getBoundingClientRect();
+      if (!firstRect || !secondRect) {
+        setHideDurationTooltip(false);
+        return;
+      }
+
+      const shouldHide = firstRect.right >= secondRect.left - 1;
+      setHideDurationTooltip((prev) => (prev === shouldHide ? prev : shouldHide));
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [showHoverTooltips, displayValue, duration, progressRatio]);
 
   // Markers (little dots) on the track
   const markers = React.useMemo(() => {
@@ -286,90 +375,170 @@ export const ProgressSlider = React.memo(() => {
       .filter((c) => c.timestamp != null)
       .map((c) => {
         const left = (c.timestamp! / (duration * 1000)) * 100;
-return (
-  <div
-    key={c.id}
-    className="absolute top-1/2 -translate-y-1/2 w-0.5 h-0.5 rounded-full pointer-events-none bg-white/10"
-    style={{ left: `${left}%` }}
-  />
-);
+        return (
+          <div
+            key={c.id}
+            className="absolute top-1/2 -translate-y-1/2 w-0.5 h-0.5 rounded-full pointer-events-none bg-white/10"
+            style={{ left: `${left}%` }}
+          />
+        );
       });
   }, [comments, duration]);
 
-return (
-  <div className="relative w-full group/slider z-20">
-    <Slider.Root
-      onPointerDownCapture={(e) => {
-        if (!seekDisabled) return;
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-      onKeyDown={(e) => {
-        if (!seekDisabled) return;
-        e.preventDefault();
-      }}
-      onPointerMove={(e) => {
-        if (!hoverPreviewEnabled) return;
-        const rect = e.currentTarget.getBoundingClientRect();
-        const percent = (e.clientX - rect.left) / rect.width;
-        setHoverPercent(Math.max(0, Math.min(1, percent)));
-      }}
-      onPointerLeave={() => {
-        setHoverPercent(null);
-      }}
-      aria-disabled={seekDisabled}
-      className={`relative flex items-start w-full h-[10px] select-none touch-none group/slider ${
-        seekDisabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'
-      }`}
-      value={[displayValue]}
-      max={duration || 1}
-      step={0.1}
-      onValueChange={onValueChange}
-      onValueCommit={onValueCommit}
-    >
-      <Slider.Track
-        className={`relative grow h-[3px] rounded-full overflow-hidden transition-all duration-150 ${
-          seekDisabled ? '' : 'group-hover/slider:h-[4px]'
+  return (
+    <div className="relative w-full group/slider z-20">
+      <Slider.Root
+        ref={sliderRootRef}
+        onPointerDownCapture={(e) => {
+          if (!seekDisabled) return;
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onKeyDown={(e) => {
+          if (!seekDisabled) return;
+          e.preventDefault();
+        }}
+        onPointerEnter={(e) => {
+          if (!hoverPreviewEnabled) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const percent = (e.clientX - rect.left) / rect.width;
+          setHoverPercent(Math.max(0, Math.min(1, percent)));
+        }}
+        onPointerMove={(e) => {
+          if (!hoverPreviewEnabled) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const percent = (e.clientX - rect.left) / rect.width;
+          setHoverPercent(Math.max(0, Math.min(1, percent)));
+        }}
+        onPointerLeave={() => {
+          setHoverPercent(null);
+        }}
+        aria-disabled={seekDisabled}
+        className={`relative flex items-start w-full h-[10px] select-none touch-none group/slider ${
+          seekDisabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'
         }`}
+        value={[displayValue]}
+        max={duration || 1}
+        step={0.1}
+        onValueChange={onValueChange}
+        onValueCommit={onValueCommit}
       >
-        <div className="absolute inset-0 bg-white/[0.08]" />
-        {bufferedPercent != null ? (
-          <div
-            ref={bufferedFillRef}
-            className="absolute inset-y-0 left-0 rounded-full bg-white/[0.14] will-change-transform"
-            style={{ width: '100%', transform: `scaleX(${bufferedRatio})`, transformOrigin: 'left center' }}
-          />
-        ) : playbackBuffer.phase !== 'ready' && !playbackBuffer.fullyCached ? (
-          <div className="absolute inset-y-0 left-0 w-[22%] rounded-full bg-white/[0.12] animate-pulse" />
-        ) : null}
-
-        <Slider.Range className="absolute h-full rounded-full will-change-transform theme-accent-progress theme-accent-animated" />
-
-        {markers}
-      </Slider.Track>
-
-      {stateLabel && !isFullscreenOverlayOpen && (
-        <div className="absolute top-[14px] right-0 rounded-full border border-white/10 bg-black/55 px-2 py-0.5 text-[10px] font-semibold text-white/65 backdrop-blur-md">
-          {stateLabel}
-        </div>
-      )}
-
-      {hoverPercent !== null && !isFullscreenOverlayOpen && hoverPreviewEnabled && (
-        <div
-          className="absolute top-[65px] px-2 py-1 rounded-xl bg-black/80 border border-white/10 text-white text-[10px] font-medium pointer-events-none backdrop-blur-sm"
-          style={{
-            left: `${hoverPercent * 100}%`,
-            transform: 'translateX(-50%)',
-          }}
+        <Slider.Track
+          ref={sliderTrackRef}
+          className={`relative grow h-[3px] rounded-full overflow-hidden transition-all duration-200 ease-[var(--ease-apple)] ${
+            seekDisabled ? '' : 'group-hover/slider:h-[4px]'
+          }`}
         >
-          {formatTime((duration || 0) * hoverPercent)}
-        </div>
-      )}
+          <div className="absolute inset-0 bg-white/[0.08]" />
+          {bufferedPercent != null ? (
+            <div
+              ref={bufferedFillRef}
+              className="absolute inset-y-0 left-0 rounded-full bg-white/[0.14] will-change-transform"
+              style={{
+                width: '100%',
+                transform: `scaleX(${bufferedRatio})`,
+                transformOrigin: 'left center',
+              }}
+            />
+          ) : playbackBuffer.phase !== 'ready' && !playbackBuffer.fullyCached ? (
+            <div className="absolute inset-y-0 left-0 w-[22%] rounded-full bg-white/[0.12] animate-pulse" />
+          ) : null}
 
-      <Slider.Thumb className="hidden" />
-    </Slider.Root>
-  </div>
-);
+          <div
+            ref={progressFillRef}
+            className={`absolute h-full rounded-full will-change-transform transition-colors duration-150 ease-linear ${
+              showHoverPreview ? 'bg-white' : 'theme-accent-progress theme-accent-animated'
+            }`}
+            style={{
+              width: '100%',
+              transform: 'scaleX(0)',
+              transformOrigin: 'left center',
+            }}
+          />
+
+          {markers}
+        </Slider.Track>
+
+        {stateLabel && !isFullscreenOverlayOpen && (
+          <div className="absolute top-[14px] right-0 rounded-full border border-white/10 bg-black/55 px-2 py-0.5 text-[10px] font-semibold text-white/65 backdrop-blur-md">
+            {stateLabel}
+          </div>
+        )}
+
+        <Slider.Thumb className="hidden" />
+      </Slider.Root>
+      {!seekDisabled &&
+        sliderRect &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[355] transition-opacity duration-200 ease-[var(--ease-apple)]"
+            style={{
+              top: sliderRect.top + sliderRect.height / 2,
+              left: sliderRect.left,
+              width: sliderRect.width,
+              opacity: showHoverPreview ? 1 : 0,
+            }}
+          >
+            <div
+              ref={progressDotRef}
+              className="absolute top-0"
+              style={{
+                left: '0%',
+                transform: 'translateX(0)',
+              }}
+            >
+              <div
+                className="h-2.5 w-2.5 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.32)] transition-transform duration-200 ease-[var(--ease-apple)]"
+                style={{
+                  transform: `translateY(-50%) scale(${showHoverPreview ? 1 : 0.72})`,
+                }}
+              />
+            </div>
+          </div>,
+          document.body,
+        )}
+      {!isFullscreenOverlayOpen &&
+        hoverPreviewRect &&
+        createPortal(
+          <>
+            <div
+              className="pointer-events-none fixed z-[360] transition-[opacity,transform] duration-200 ease-[var(--ease-apple)]"
+              style={{
+                top: hoverPreviewTop,
+                left: hoverPreviewRect.left,
+                width: hoverPreviewRect.width,
+                opacity: showHoverTooltips ? 1 : 0,
+                transform: `translateY(${showHoverTooltips ? '0px' : '6px'}) scale(${showHoverTooltips ? 1 : 0.94})`,
+              }}
+            >
+              <div
+                ref={progressTooltipRef}
+                className="absolute rounded-xl border border-white/10 bg-black/80 px-2 py-1 text-[10px] font-medium text-white backdrop-blur-sm"
+                style={{
+                  left: '0%',
+                  transform: 'translateX(0)',
+                }}
+              >
+                {formatTime(displayValue)}
+              </div>
+            </div>
+            <div
+              ref={durationTooltipRef}
+              className="pointer-events-none fixed z-[360] rounded-xl border border-white/10 bg-black/80 px-2 py-1 text-[10px] font-medium text-white/75 backdrop-blur-sm transition-[opacity,transform] duration-200 ease-[var(--ease-apple)]"
+              style={{
+                top: hoverPreviewTop,
+                left: hoverPreviewRect.right,
+                opacity: showHoverTooltips && !hideDurationTooltip ? 1 : 0,
+                transform: `${durationTooltipTransform} translateY(${showHoverTooltips && !hideDurationTooltip ? '0px' : '6px'}) scale(${showHoverTooltips && !hideDurationTooltip ? 1 : 0.94})`,
+              }}
+            >
+              {formatTime(duration || 0)}
+            </div>
+          </>,
+          document.body,
+        )}
+    </div>
+  );
 });
 
 /* ── Volume Slider ───────────────────────────────────────────── */
@@ -420,9 +589,7 @@ const ControlVolumeBtn = React.memo(({ size = 'default' }: { size?: 'default' | 
       type="button"
       onClick={() => setVolume(volume > 0 ? 0 : volumeBeforeMute)}
       className={`${s} rounded-full flex items-center justify-center transition-all duration-150 ease-[var(--ease-apple)] cursor-pointer hover:bg-white/[0.04] ${
-        volume === 0
-          ? 'text-accent'
-          : 'text-white/40 hover:text-white/70'
+        volume === 0 ? 'text-accent' : 'text-white/40 hover:text-white/70'
       }`}
     >
       {volume === 0 ? (
@@ -438,20 +605,53 @@ const ControlVolumeBtn = React.memo(({ size = 'default' }: { size?: 'default' | 
 
 /* ── Volume % label ──────────────────────────────────────────── */
 
-
 /* ── Progress Time (updates once per second) ─────────────────── */
 
 export const ProgressTime = React.memo(() => {
-  const currentSecond = useSyncExternalStore(subscribe, () => Math.floor(getCurrentTime()));
   const duration = useSyncExternalStore(subscribe, getDuration);
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const currentRef = useRef<HTMLSpanElement | null>(null);
+  const durationRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    let rafId: number;
+
+    const paint = () => {
+      if (currentRef.current) {
+        currentRef.current.textContent = formatTime(
+          Math.floor(isPlaying ? getSmoothCurrentTime() : getCurrentTime()),
+        );
+      }
+      if (durationRef.current) {
+        durationRef.current.textContent = formatTime(duration);
+      }
+    };
+
+    paint();
+    rafId = requestAnimationFrameImmediate(function loop() {
+      if (!isAppBackgrounded()) {
+        paint();
+      }
+      rafId = requestAnimationFrameImmediate(loop);
+    });
+
+    const unsub = subscribe(() => {
+      paint();
+    });
+
+    return () => {
+      cancelAnimationFrameImmediate(rafId);
+      unsub();
+    };
+  }, [isPlaying]);
 
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-[11px] text-white/50 tabular-nums font-medium">
-        {formatTime(currentSecond)}
+      <span ref={currentRef} className="text-[11px] text-white/50 tabular-nums font-medium">
+        {formatTime(Math.floor(getCurrentTime()))}
       </span>
       <span className="text-[11px] text-white/20">/</span>
-      <span className="text-[11px] text-white/30 tabular-nums font-medium">
+      <span ref={durationRef} className="text-[11px] text-white/30 tabular-nums font-medium">
         {formatTime(duration)}
       </span>
     </div>
@@ -828,9 +1028,7 @@ const PrevBtn = React.memo(() => {
       type="button"
       onClick={handleLockedPrev}
       disabled={locked}
-      className={`${btnClass(false, 'default')} ${
-        locked ? 'opacity-40 cursor-default' : ''
-      }`}
+      className={`${btnClass(false, 'default')} ${locked ? 'opacity-40 cursor-default' : ''}`}
     >
       {skipBack20}
     </button>
@@ -859,9 +1057,7 @@ const NextBtn = React.memo(() => {
       type="button"
       onClick={handleNext}
       disabled={locked}
-      className={`${btnClass(false, 'default')} ${
-        locked ? 'opacity-40 cursor-default' : ''
-      }`}
+      className={`${btnClass(false, 'default')} ${locked ? 'opacity-40 cursor-default' : ''}`}
     >
       {skipForward20}
     </button>
@@ -1251,38 +1447,25 @@ export const NowPlayingBar = React.memo(
     const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
     const visualizerPlaybar = useSettingsStore((s) => s.visualizerPlaybar);
     const artworkGradientPalette = useArtworkGradientPalette(currentArtworkUrl);
-    const palette = artworkGradientPalette ?? {
-      gradientA: '#ffffff',
-      gradientB: '#ffffff',
-      gradientC: '#000000',
-      accent: '#ffffff',
-    };
     const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
     const desktopBarOffset = sidebarCollapsed ? 66 : 210;
-    
-    // Memoize desktopDockStyle to prevent style object recreation
+    const dockVisual = useMemo(
+      () => (artworkGradientPalette ? buildArtworkSurfaceVisual(artworkGradientPalette) : null),
+      [artworkGradientPalette],
+    );
+    const {
+      baseValue: dockBaseBackground,
+      overlayValue: dockOverlayBackground,
+      overlayVisible: dockOverlayVisible,
+    } = useCrossfadeBackground(dockVisual?.background ?? '', ARTWORK_CROSSFADE_MS);
+
     const desktopDockStyle = useMemo(() => {
       if (isMobile) return undefined;
-      
-      const baseStyle: CSSProperties = {
+
+      return {
         marginLeft: `${desktopBarOffset}px`,
       };
-      
-      if (artworkGradientPalette) {
-        return {
-          ...baseStyle,
-          background: `
-            linear-gradient(180deg, rgba(255,255,255,0.042), rgba(255,255,255,0.06)),
-            radial-gradient(circle at 16% 18%, ${hexToRgba(palette.gradientA, 0.12)} 0%, ${hexToRgba(palette.gradientB, 0.07)} 34%, rgba(0,0,0,0) 62%),
-            linear-gradient(135deg, ${hexToRgba(palette.gradientB, 0.06)} 0%, ${hexToRgba(palette.gradientC, 0.04)} 52%, rgba(8,8,10,0.78) 100%)
-          `,
-          borderColor: hexToRgba(palette.gradientA, 0.1),
-          boxShadow: `0 12px 34px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.04), 0 0 20px ${hexToRgba(palette.gradientA, 0.05)}`,
-        };
-      }
-      
-      return baseStyle;
-    }, [isMobile, desktopBarOffset, artworkGradientPalette, palette]);
+    }, [isMobile, desktopBarOffset]);
 
     return (
       <div
@@ -1293,15 +1476,43 @@ export const NowPlayingBar = React.memo(
 
         {visualizerPlaybar && !isMobile && !isFullscreenOverlayOpen}
 
-        <div className={`relative z-10 ${isMobile ? '' : 'pointer-events-none'}`} style={{ isolation: 'isolate' }}>
+        <div
+          className={`relative z-10 ${isMobile ? '' : 'pointer-events-none'}`}
+          style={{ isolation: 'isolate' }}
+        >
           <div
             className={
               isMobile
                 ? 'h-[72px] flex items-center px-5 gap-3 relative'
-                : 'pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] bg-black/40 backdrop-blur-lg border border-white/[0.04] transition-[margin,background,border-color,box-shadow] duration-200 ease-[var(--ease-apple)]'
+                : 'pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] bg-black/40 backdrop-blur-lg border border-white/[0.04] transition-[margin] duration-200 ease-[var(--ease-apple)]'
             }
             style={desktopDockStyle}
           >
+            {!isMobile && dockVisual ? (
+              <div
+                className="pointer-events-none absolute inset-0 z-0"
+                style={{
+                  background: dockBaseBackground || dockVisual.background,
+                  backgroundSize: ARTWORK_SURFACE_BACKGROUND_SIZE,
+                  backgroundPosition: ARTWORK_SURFACE_BACKGROUND_POSITION,
+                  backgroundRepeat: ARTWORK_SURFACE_BACKGROUND_REPEAT,
+                }}
+              />
+            ) : null}
+            {!isMobile && dockOverlayBackground ? (
+              <div
+                className="pointer-events-none absolute inset-0 z-0 transition-opacity ease-[var(--ease-apple)]"
+                style={{
+                  background: dockOverlayBackground,
+                  backgroundSize: ARTWORK_SURFACE_BACKGROUND_SIZE,
+                  backgroundPosition: ARTWORK_SURFACE_BACKGROUND_POSITION,
+                  backgroundRepeat: ARTWORK_SURFACE_BACKGROUND_REPEAT,
+                  opacity: dockOverlayVisible ? 1 : 0,
+                  transitionDuration: `${ARTWORK_CROSSFADE_MS}ms`,
+                  willChange: 'opacity',
+                }}
+              />
+            ) : null}
             <div className="absolute top-[-1px] left-0 right-0 z-20">
               {!isMobile && <ProgressSlider />}
             </div>

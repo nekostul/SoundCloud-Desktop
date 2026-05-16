@@ -349,8 +349,6 @@ export function useArtworkGradientPalette(artworkUrl: string | null | undefined)
       return;
     }
 
-    setPalette(null);
-
     let cancelled = false;
     extractArtworkGradientPalette(src).then((nextPalette) => {
       if (!cancelled) {

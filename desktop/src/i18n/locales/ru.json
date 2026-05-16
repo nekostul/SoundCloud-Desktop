@@ -269,6 +269,7 @@
     "apiSetupDesc": "Скопируйте эту строку запроса, чтобы идентифицировать шаблоны трафика SoundCloud, если ваш прокси требует специфической идентификации клиента.",
     "themePreset": "Тема",
     "theme_soundcloud": "SoundCloud",
+    "theme_artwork": "Обложка",
     "theme_dark": "Тёмная",
     "theme_neon": "Неон",
     "theme_forest": "Лес",

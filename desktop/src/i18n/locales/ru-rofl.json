@@ -283,6 +283,7 @@
     "apiSetupDescCustom": "Backend тот же, но client_id и secret вводишь руками как настоящий страдалец.",
     "themePreset": "Вайб темы",
     "theme_soundcloud": "Классический SC",
+    "theme_artwork": "По обложке",
     "theme_dark": "Тёмное ебалово",
     "theme_neon": "Неоновая шиза",
     "theme_forest": "Лесной трип",

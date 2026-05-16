@@ -269,6 +269,7 @@
     "apiSetupDesc": "Copy this request string to identify SoundCloud traffic patterns if your custom proxy requires specific client identification.",
     "themePreset": "Theme",
     "theme_soundcloud": "SoundCloud",
+    "theme_artwork": "Artwork",
     "theme_dark": "Dark",
     "theme_neon": "Neon",
     "theme_forest": "Forest",

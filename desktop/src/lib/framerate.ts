@@ -148,6 +148,25 @@ export function installGlobalFrameLimiter() {
   ensureFrameLimiterInstalled();
 }
 
+export function requestAnimationFrameImmediate(callback: FrameRequestCallback): number {
+  const root = getFrameLimiterRoot();
+  const nativeRequestAnimationFrame = root?.__scdNativeRequestAnimationFrame;
+  if (nativeRequestAnimationFrame) {
+    return nativeRequestAnimationFrame(callback);
+  }
+  return window.requestAnimationFrame(callback);
+}
+
+export function cancelAnimationFrameImmediate(id: number) {
+  const root = getFrameLimiterRoot();
+  const nativeCancelAnimationFrame = root?.__scdNativeCancelAnimationFrame;
+  if (nativeCancelAnimationFrame) {
+    nativeCancelAnimationFrame(id);
+    return;
+  }
+  window.cancelAnimationFrame(id);
+}
+
 export function setGlobalFrameLimiterConfig(targetFramerate: number, unlockFramerate: boolean) {
   const state = ensureFrameLimiterInstalled();
   if (!state) {

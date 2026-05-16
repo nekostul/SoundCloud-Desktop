@@ -70,14 +70,18 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const themeGlowOpacity = useSettingsStore((s) => s.themeGlowOpacity);
   const lowPerformanceMode = useSettingsStore((s) => s.lowPerformanceMode);
   const currentArtworkUrl = usePlayerStore((s) => s.currentTrack?.artwork_url ?? null);
+  const artworkThemeSelected = themePreset === 'artwork';
+  const shouldUseArtworkPalette = artworkThemeSelected || themeGradientFollowArtwork;
   const artworkGradientPalette = useArtworkGradientPalette(
-    themeGradientFollowArtwork ? currentArtworkUrl : null,
+    shouldUseArtworkPalette ? currentArtworkUrl : null,
   );
-  const gradientFromArtworkActive =
+  const artworkThemeActive = artworkThemeSelected && Boolean(artworkGradientPalette);
+  const customArtworkGradientActive =
     themePreset === 'custom' &&
     themeGradientEnabled &&
     themeGradientFollowArtwork &&
     Boolean(artworkGradientPalette);
+  const gradientFromArtworkActive = customArtworkGradientActive || artworkThemeActive;
   const effectiveAccentColor = gradientFromArtworkActive
     ? artworkGradientPalette!.gradientB
     : accentColor;
@@ -93,13 +97,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const root = document.documentElement;
+    const effectiveBgPrimary = bgPrimary;
     const rgb = hexToRgb(effectiveAccentColor);
     const [r, g, b] = hexToRgbTuple(effectiveAccentColor);
-    const bgRgb = hexToRgb(bgPrimary);
+    const bgRgb = hexToRgb(effectiveBgPrimary);
     const hover = `rgb(${Math.min(255, r + 26)}, ${Math.min(255, g + 26)}, ${Math.min(255, b + 26)})`;
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     const isCustomTheme = themePreset === 'custom';
-    const gradientActive = isCustomTheme && themeGradientEnabled;
+    const themeUsesAccentSurfaces = isCustomTheme || artworkThemeActive;
+    const gradientActive = artworkThemeActive || (isCustomTheme && themeGradientEnabled);
     const glowActive = isCustomTheme && themeGlowEnabled;
     const animateGradient = gradientActive && themeGradientAnimated && !lowPerformanceMode;
     const glowStrength = glowActive ? clamp(themeGlowIntensity / 100, 0, 1) : 0;
@@ -111,7 +117,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
         ? `rgba(${rgb}, 0)`
         : `rgba(${rgb}, 0.2)`;
     const selection = glowActive ? `rgba(${rgb}, ${0.18 + glowAlpha * 0.34})` : `rgba(${rgb}, 0.3)`;
-    const surfaceAccentColor = isCustomTheme
+    const surfaceAccentColor = themeUsesAccentSurfaces
       ? mixHex(
           effectiveAccentColor,
           bgPrimary,
@@ -161,7 +167,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
         ? surfaceGradientB
         : surfaceGradientB
       : surfaceAccentColor;
-    const baseGlassTint = isCustomTheme
+    const baseGlassTint = themeUsesAccentSurfaces
       ? 0.026 + (gradientActive ? 0.014 : 0) + glowAlpha * 0.05
       : 0.02;
     const glassTint = gradientFromArtworkActive
@@ -173,42 +179,49 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       ? glassTint + 0.024
       : gradientActive
         ? glassTint + 0.028
-        : isCustomTheme
+        : themeUsesAccentSurfaces
           ? glassTint + 0.04
           : 0.05;
     const glassSaturate = gradientFromArtworkActive
       ? 1.04 + glowAlpha * 0.12
       : gradientActive
         ? 1.16 + glowAlpha * 0.14
-        : isCustomTheme
+        : themeUsesAccentSurfaces
           ? 1.28 + glowAlpha * 0.16
           : 1.42;
     const glassFeaturedSaturate = gradientFromArtworkActive
       ? 1.1 + glowAlpha * 0.14
       : gradientActive
         ? 1.24 + glowAlpha * 0.16
-        : isCustomTheme
+        : themeUsesAccentSurfaces
           ? 1.36 + glowAlpha * 0.18
           : 1.55;
-    const glassBorder = isCustomTheme
+    const glassBorder = themeUsesAccentSurfaces
       ? hexToRgba(surfaceAccentColor, 0.06 + glowAlpha * 0.08)
       : 'rgba(255, 255, 255, 0.05)';
-    const glassBorderHi = isCustomTheme
+    const glassBorderHi = themeUsesAccentSurfaces
       ? hexToRgba(surfaceAccentColor, 0.1 + glowAlpha * 0.12)
       : 'rgba(255, 255, 255, 0.1)';
     const featureShadow = glowActive
       ? `0 0 0 1px rgba(255, 255, 255, 0.03) inset, 0 12px 48px rgba(0, 0, 0, 0.34), 0 0 ${Math.round(26 + glowStrength * 44)}px ${hexToRgba(effectiveAccentColor, 0.12 + glowAlpha * 0.18)}`
       : '0 0 0 1px rgba(255, 255, 255, 0.03) inset, 0 8px 40px rgba(0, 0, 0, 0.3)';
     const headingAccent = gradientActive ? effectiveThemeGradientColorC : effectiveAccentColor;
+    const appBackground = artworkThemeActive
+      ? [
+          'linear-gradient(180deg, rgba(255, 255, 255, 0.042), rgba(255, 255, 255, 0.06))',
+          `radial-gradient(circle at 16% 18%, ${hexToRgba(effectiveThemeGradientColorA, 0.12)} 0%, ${hexToRgba(effectiveThemeGradientColorB, 0.07)} 34%, rgba(0, 0, 0, 0) 62%)`,
+          `linear-gradient(135deg, ${hexToRgba(effectiveThemeGradientColorB, 0.06)} 0%, ${hexToRgba(effectiveThemeGradientColorC, 0.04)} 52%, rgba(8, 8, 10, 0.78) 100%)`,
+        ].join(', ')
+      : TRANSPARENT_STACK;
 
     root.style.setProperty('--color-accent', effectiveAccentColor);
     root.style.setProperty('--color-accent-hover', hover);
     root.style.setProperty('--color-accent-glow', accentGlow);
     root.style.setProperty('--color-accent-selection', selection);
     root.style.setProperty('--color-accent-contrast', lum > 160 ? '#000000' : '#ffffff');
-    root.style.setProperty('--bg-primary', bgPrimary);
+    root.style.setProperty('--bg-primary', effectiveBgPrimary);
     root.style.setProperty('--bg-titlebar', `rgba(${bgRgb}, 0.95)`);
-    root.style.setProperty('--theme-app-background', TRANSPARENT_STACK);
+    root.style.setProperty('--theme-app-background', appBackground);
     root.style.setProperty('--theme-app-background-size', '100% 100%, 100% 100%, 100% 100%');
     root.style.setProperty('--theme-gradient-speed', `${Math.max(6, themeGradientSpeed)}s`);
     root.style.setProperty('--theme-accent-gradient', accentGradient);
@@ -255,11 +268,12 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     root.dataset.themePreset = themePreset;
     root.dataset.themeGradientAnimated = animateGradient ? 'true' : 'false';
     root.dataset.themeGradientAnimation = animateGradient ? themeGradientAnimation : 'none';
-    root.style.backgroundColor = bgPrimary;
-document.body.style.backgroundColor = '#000000';
+    root.style.backgroundColor = '#000000';
+    document.body.style.backgroundColor = '#000000';
   }, [
     bgPrimary,
     effectiveAccentColor,
+    artworkThemeActive,
     effectiveThemeGradientColorA,
     effectiveThemeGradientColorB,
     effectiveThemeGradientColorC,

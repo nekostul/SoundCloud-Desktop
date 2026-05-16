@@ -248,6 +248,11 @@ async function handleRpcOpenTrack(urnRaw: string) {
   lastHandledRpcUrn = urn;
   lastHandledRpcAt = now;
 
+  const { currentTrack } = usePlayerStore.getState();
+  if (currentTrack?.urn === urn) {
+    return;
+  }
+
   navigateToTrack(urn);
 
   try {

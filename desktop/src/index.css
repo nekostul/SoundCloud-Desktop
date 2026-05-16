@@ -76,14 +76,7 @@ body,
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background-color: var(--bg-primary);
-  background-image: var(--theme-app-background);
-  background-size: var(--theme-app-background-size);
-  background-position:
-    0% 50%,
-    0% 100%,
-    85% 12%;
-  background-repeat: no-repeat;
+  background-color: #000000;
   color: var(--color-text-primary);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
@@ -92,19 +85,9 @@ body,
 }
 
 #root {
-  background-color: var(--bg-primary);
-  background-image: var(--theme-app-background);
-  background-size: var(--theme-app-background-size);
-  background-position:
-    0% 50%,
-    0% 100%,
-    85% 12%;
-  background-repeat: no-repeat;
+  background-color: #000000;
   overflow: hidden;
-  transition:
-    background-color 240ms ease,
-    background-image 240ms ease,
-    background-size 240ms ease;
+  transition: background-color 240ms ease;
 }
 
 @keyframes themeGradientFlow {
@@ -303,21 +286,25 @@ body,
 }
 
 :root[data-theme-preset="custom"] .bg-accent,
-:root[data-theme-preset="custom"] .bg-accent\/90 {
+:root[data-theme-preset="custom"] .bg-accent\/90,
+:root[data-theme-preset="artwork"] .bg-accent,
+:root[data-theme-preset="artwork"] .bg-accent\/90 {
   background-color: transparent !important;
   background-image: var(--theme-accent-gradient) !important;
   background-size: var(--theme-accent-gradient-size) !important;
   background-repeat: no-repeat !important;
 }
 
-:root[data-theme-preset="custom"] .hover\:bg-accent-hover:hover {
+:root[data-theme-preset="custom"] .hover\:bg-accent-hover:hover,
+:root[data-theme-preset="artwork"] .hover\:bg-accent-hover:hover {
   background-color: transparent !important;
   background-image: var(--theme-accent-gradient-hover) !important;
   background-size: var(--theme-accent-gradient-size) !important;
   background-repeat: no-repeat !important;
 }
 
-:root[data-theme-preset="custom"] .text-accent {
+:root[data-theme-preset="custom"] .text-accent,
+:root[data-theme-preset="artwork"] .text-accent {
   text-shadow: 0 0 12px var(--color-accent-glow);
 }
 

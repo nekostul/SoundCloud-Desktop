@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { getCurrentTime, getDuration, seek, subscribe } from '../../../lib/audio';
+import { getDuration, getSmoothCurrentTime, seek, subscribe } from '../../../lib/audio';
+import {
+  cancelAnimationFrameImmediate,
+  requestAnimationFrameImmediate,
+} from '../../../lib/framerate';
 import { useTrackWaveform } from '../../../lib/waveform';
 import type { Track } from '../../../stores/player';
 
@@ -67,15 +71,26 @@ export const LiveWaveform = React.memo(
         if (hintRef.current) hintRef.current.style.left = '0%';
         return;
       }
+
       const paint = () => {
-        const t = getCurrentTime();
+        const t = getSmoothCurrentTime();
         const d = getDuration();
         const pct = d > 0 ? Math.min(100, Math.max(0, (t / d) * 100)) : 0;
         if (rootRef.current) rootRef.current.style.setProperty('--sw-progress', `${pct}%`);
         if (hintRef.current) hintRef.current.style.left = `${pct}%`;
       };
+
       paint();
-      return subscribe(paint);
+      let rafId = requestAnimationFrameImmediate(function loop() {
+        paint();
+        rafId = requestAnimationFrameImmediate(loop);
+      });
+      const unsub = subscribe(paint);
+
+      return () => {
+        cancelAnimationFrameImmediate(rafId);
+        unsub();
+      };
     }, [isCurrent]);
 
     const handleBarClick = (e: React.MouseEvent<HTMLDivElement>) => {

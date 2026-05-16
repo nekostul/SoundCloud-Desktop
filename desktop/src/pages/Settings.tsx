@@ -41,6 +41,7 @@ import {
   type DiscordRpcMode,
   type ThemeGradientAnimation,
   type ThemeGradientType,
+  type ThemePreset,
 } from '../stores/settings';
 import { usePlayerStore } from '../stores/player';
 import { DirectOAuthSection } from '../components/settings/DirectOAuthSection';
@@ -607,9 +608,7 @@ const AppFontSection = React.memo(function AppFontSection() {
   };
 
   return (
-    <section
-      className="relative bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl"
-    >
+    <section className="relative bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl">
       <h3 className="text-[15px] font-bold text-white/80 tracking-tight">
         {t('settings.appFontHeader')}
       </h3>
@@ -646,13 +645,15 @@ const AppFontSection = React.memo(function AppFontSection() {
             >
               <span
                 className="text-[15px] text-white/85 truncate"
-                style={{ fontFamily: systemFamily ? `"${systemFamily}", ${DEFAULT_FONT_STACK}` : DEFAULT_FONT_STACK }}
+                style={{
+                  fontFamily: systemFamily
+                    ? `"${systemFamily}", ${DEFAULT_FONT_STACK}`
+                    : DEFAULT_FONT_STACK,
+                }}
               >
                 {systemFamily || t('settings.appFontSystemPlaceholder')}
               </span>
-              <span className="text-white/40 text-[12px] shrink-0">
-                {systemOpen ? '▲' : '▼'}
-              </span>
+              <span className="text-white/40 text-[12px] shrink-0">{systemOpen ? '▲' : '▼'}</span>
             </button>
 
             {systemOpen && (
@@ -771,9 +772,7 @@ const AppFontSection = React.memo(function AppFontSection() {
 
       <div className="mt-6">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[12px] text-white/55 font-medium">
-            {t('settings.appFontSize')}
-          </span>
+          <span className="text-[12px] text-white/55 font-medium">{t('settings.appFontSize')}</span>
           <div className="flex items-center gap-2">
             <span className="text-[12px] text-white/80 font-semibold tabular-nums">{size}px</span>
             {size !== APP_FONT_SIZE_DEFAULT && (
@@ -800,9 +799,7 @@ const AppFontSection = React.memo(function AppFontSection() {
 
       <div className="mt-5">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[12px] text-white/55 font-medium">
-            {t('settings.appUiScale')}
-          </span>
+          <span className="text-[12px] text-white/55 font-medium">{t('settings.appUiScale')}</span>
           <div className="flex items-center gap-2">
             <span className="text-[12px] text-white/80 font-semibold tabular-nums">
               {Math.round(uiScale * 100)}%
@@ -827,9 +824,7 @@ const AppFontSection = React.memo(function AppFontSection() {
           onChange={(e) => setUiScale(Number(e.target.value) / 100)}
           className="w-full accent-accent cursor-pointer"
         />
-        <p className="text-[11px] text-white/30 mt-1.5">
-          {t('settings.appUiScaleHint')}
-        </p>
+        <p className="text-[11px] text-white/30 mt-1.5">{t('settings.appUiScaleHint')}</p>
       </div>
     </section>
   );
@@ -894,7 +889,9 @@ const CacheSection = React.memo(function CacheSection() {
     getCacheSize().then(setAudioSize);
     getAssetsCacheSize().then(setAssetsSize);
     getLyricsCacheSize().then(setLyricsSize);
-    invoke<number>('image_cache_size').then(setImagesSize).catch(() => setImagesSize(0));
+    invoke<number>('image_cache_size')
+      .then(setImagesSize)
+      .catch(() => setImagesSize(0));
   }, []);
 
   const handleClearAudio = useCallback(async () => {
@@ -959,7 +956,10 @@ const CacheSection = React.memo(function CacheSection() {
         </h3>
 
         <div className="min-w-[80px] flex justify-end">
-          {audioSize !== null && assetsSize !== null && lyricsSize !== null && imagesSize !== null ? (
+          {audioSize !== null &&
+          assetsSize !== null &&
+          lyricsSize !== null &&
+          imagesSize !== null ? (
             <span className="text-[12px] text-white/30 tabular-nums">
               {t('settings.total')}: {formatBytes(totalSize)}
             </span>
@@ -1193,7 +1193,13 @@ const WallpaperPicker = React.memo(function WallpaperPicker() {
 
 /* ── Theme Section ──────────────────────────────────────── */
 
-const THEME_PRESET_KEYS = ['soundcloud', 'dark', 'neon', 'forest', 'crimson'] as const;
+const THEME_PRESET_KEYS = [
+  'soundcloud',
+  'artwork',
+  'neon',
+  'forest',
+  'crimson',
+] as const satisfies ReadonlyArray<Exclude<ThemePreset, 'custom'>>;
 const THEME_GRADIENT_TYPES: Array<{ id: ThemeGradientType; labelKey: string }> = [
   { id: 'linear', labelKey: 'settings.themeGradientTypeLinear' },
   { id: 'radial', labelKey: 'settings.themeGradientTypeRadial' },
@@ -1397,7 +1403,7 @@ const ThemeSection = React.memo(function ThemeSection() {
                   <span
                     className={`text-[12px] font-medium ${isActive ? 'text-white/90' : 'text-white/50'}`}
                   >
-                    {def.name}
+                    {t(def.labelKey)}
                   </span>
                 </div>
               </button>
@@ -1890,10 +1896,10 @@ const PlaybackSection = React.memo(function PlaybackSection() {
   const setCrossfadeMode = useSettingsStore((s) => s.setCrossfadeMode);
   const setCrossfadeDuration = useSettingsStore((s) => s.setCrossfadeDuration);
   const crossfadeModes = [
-  { value: 'off' as const, label: t('settings.crossfadeOff') },
-  { value: 'manual' as const, label: t('settings.crossfadeManual') },
-  { value: 'smart' as const, label: t('settings.crossfadeSmart') },
-];
+    { value: 'off' as const, label: t('settings.crossfadeOff') },
+    { value: 'manual' as const, label: t('settings.crossfadeManual') },
+    { value: 'smart' as const, label: t('settings.crossfadeSmart') },
+  ];
   return (
     <section className="bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl space-y-5">
       <h3 className="text-[15px] font-bold text-white/80 tracking-tight">
@@ -1926,129 +1932,116 @@ const PlaybackSection = React.memo(function PlaybackSection() {
       <div className="border-t border-white/[0.04]" />
 
       {isPremium && (
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-[13px] text-white/70 font-medium">
-            {t('settings.highQualityStreaming')}
-          </p>
-          <p className="text-[11px] text-white/30 mt-0.5">
-            {t('settings.highQualityStreamingDesc')}
-          </p>
-        </div>
-        <button
-          onClick={() => setHighQualityStreaming(!highQualityStreaming)}
-          className={`w-11 h-6 rounded-full transition-all duration-200 cursor-pointer relative ${
-            highQualityStreaming ? 'bg-accent' : 'bg-white/10'
-          }`}
-        >
-          <div
-            className={`absolute top-0.5 w-5 h-5 rounded-full shadow-md transition-all duration-200 ${
-              highQualityStreaming ? 'left-[22px] bg-accent-contrast' : 'left-0.5 bg-white'
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[13px] text-white/70 font-medium">
+              {t('settings.highQualityStreaming')}
+            </p>
+            <p className="text-[11px] text-white/30 mt-0.5">
+              {t('settings.highQualityStreamingDesc')}
+            </p>
+          </div>
+          <button
+            onClick={() => setHighQualityStreaming(!highQualityStreaming)}
+            className={`w-11 h-6 rounded-full transition-all duration-200 cursor-pointer relative ${
+              highQualityStreaming ? 'bg-accent' : 'bg-white/10'
             }`}
-          />
-        </button>
-      </div>
+          >
+            <div
+              className={`absolute top-0.5 w-5 h-5 rounded-full shadow-md transition-all duration-200 ${
+                highQualityStreaming ? 'left-[22px] bg-accent-contrast' : 'left-0.5 bg-white'
+              }`}
+            />
+          </button>
+        </div>
       )}
 
       <div className="border-t border-white/[0.04]" />
 
-{/* Crossfade */}
-<div className="flex flex-col gap-4">
-  <div className="space-y-0.5">
-    <p className="text-[13px] text-white/70 font-medium">
-      {t('settings.crossfade')}
-    </p>
+      {/* Crossfade */}
+      <div className="flex flex-col gap-4">
+        <div className="space-y-0.5">
+          <p className="text-[13px] text-white/70 font-medium">{t('settings.crossfade')}</p>
 
-    <p className="text-[11px] text-white/30">
-      {t('settings.crossfadeDesc')}
-    </p>
-  </div>
+          <p className="text-[11px] text-white/30">{t('settings.crossfadeDesc')}</p>
+        </div>
 
-{/* Mode selector */}
-<div className="flex items-center gap-2">
-  {crossfadeModes.map((mode) => (
-    <button
-      key={mode.value}
-      type="button"
-      onClick={() => setCrossfadeMode(mode.value)}
-      className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 cursor-pointer ${
-        crossfadeMode === mode.value
-          ? 'bg-accent text-accent-contrast'
-          : 'bg-white/[0.05] text-white/45 hover:bg-white/[0.08] hover:text-white/70'
-      }`}
-    >
-      {mode.label}
-    </button>
-  ))}
-</div>
+        {/* Mode selector */}
+        <div className="flex items-center gap-2">
+          {crossfadeModes.map((mode) => (
+            <button
+              key={mode.value}
+              type="button"
+              onClick={() => setCrossfadeMode(mode.value)}
+              className={`px-3 py-1.5 rounded-full text-[12px] font-medium transition-all duration-200 cursor-pointer ${
+                crossfadeMode === mode.value
+                  ? 'bg-accent text-accent-contrast'
+                  : 'bg-white/[0.05] text-white/45 hover:bg-white/[0.08] hover:text-white/70'
+              }`}
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
 
-{/* Manual duration */}
-{crossfadeMode === 'manual' && (
-  <div className="transition-all duration-300 space-y-3">
-    <div className="flex items-center justify-between">
-      <label className="text-[13px] text-white/60">
-        {t('settings.crossfadeDuration')}
-      </label>
+        {/* Manual duration */}
+        {crossfadeMode === 'manual' && (
+          <div className="transition-all duration-300 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-[13px] text-white/60">{t('settings.crossfadeDuration')}</label>
 
-      <span className="text-[12px] text-white/40 tabular-nums">
-        {crossfadeDuration}s
-      </span>
-    </div>
+              <span className="text-[12px] text-white/40 tabular-nums">{crossfadeDuration}s</span>
+            </div>
 
-    <input
-      type="range"
-      min={1}
-      max={15}
-      step={1}
-      value={crossfadeDuration}
-      onChange={(e) => setCrossfadeDuration(Number(e.target.value))}
-      className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
-    />
-  </div>
-)}
-
-{/* Smart mode info */}
-{crossfadeMode === 'smart' && (
-  <div className="rounded-2xl border border-white/[0.06] bg-white/[0.03] px-4 py-3">
-    <p className="text-[12px] text-white/55 leading-relaxed">
-      {t('settings.crossfadeSmartDesc')}
-    </p>
-  </div>
-)}
-
-<div className="border-t border-white/[0.04]" />
-
-<div className="space-y-4">
-  <div className="flex items-center justify-between">
-    <div>
-      <p className="text-[13px] text-white/70 font-medium">
-        {t('settings.discordRpc', 'Discord Rich Presence')}
-      </p>
-
-      <p className="text-[11px] text-white/30 mt-0.5">
-        {t(
-          'settings.discordRpcDesc',
-          'Show what you are listening to in Discord',
+            <input
+              type="range"
+              min={1}
+              max={15}
+              step={1}
+              value={crossfadeDuration}
+              onChange={(e) => setCrossfadeDuration(Number(e.target.value))}
+              className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)]"
+            />
+          </div>
         )}
-      </p>
-    </div>
 
-    <button
-      onClick={() => setDiscordRpc(!discordRpc)}
-      className={`w-11 h-6 rounded-full transition-all duration-200 cursor-pointer relative ${
-        discordRpc ? 'bg-accent' : 'bg-white/10'
-      }`}
-    >
-      <div
-        className={`absolute top-0.5 w-5 h-5 rounded-full shadow-md transition-all duration-200 ${
-          discordRpc
-            ? 'left-[22px] bg-accent-contrast'
-            : 'left-0.5 bg-white'
-        }`}
-      />
-    </button>
-  </div>
-</div>
+        {/* Smart mode info */}
+        {crossfadeMode === 'smart' && (
+          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.03] px-4 py-3">
+            <p className="text-[12px] text-white/55 leading-relaxed">
+              {t('settings.crossfadeSmartDesc')}
+            </p>
+          </div>
+        )}
+
+        <div className="border-t border-white/[0.04]" />
+
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[13px] text-white/70 font-medium">
+                {t('settings.discordRpc', 'Discord Rich Presence')}
+              </p>
+
+              <p className="text-[11px] text-white/30 mt-0.5">
+                {t('settings.discordRpcDesc', 'Show what you are listening to in Discord')}
+              </p>
+            </div>
+
+            <button
+              onClick={() => setDiscordRpc(!discordRpc)}
+              className={`w-11 h-6 rounded-full transition-all duration-200 cursor-pointer relative ${
+                discordRpc ? 'bg-accent' : 'bg-white/10'
+              }`}
+            >
+              <div
+                className={`absolute top-0.5 w-5 h-5 rounded-full shadow-md transition-all duration-200 ${
+                  discordRpc ? 'left-[22px] bg-accent-contrast' : 'left-0.5 bg-white'
+                }`}
+              />
+            </button>
+          </div>
+        </div>
 
         {discordRpc && (
           <>

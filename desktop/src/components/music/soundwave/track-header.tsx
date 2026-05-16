@@ -1,7 +1,11 @@
 import React, { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getCurrentTime, getDuration, subscribe } from '../../../lib/audio';
+import { getDuration, getSmoothCurrentTime, subscribe } from '../../../lib/audio';
 import { art, dur } from '../../../lib/formatters';
+import {
+  cancelAnimationFrameImmediate,
+  requestAnimationFrameImmediate,
+} from '../../../lib/framerate';
 import { pauseBlack14, playBlack14 } from '../../../lib/icons';
 import { useTrackPlay } from '../../../lib/useTrackPlay';
 import type { Track } from '../../../stores/player';
@@ -19,12 +23,24 @@ const CurrentTimeDisplay = React.memo(function CurrentTimeDisplay() {
   const dRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
+    let rafId: number;
+
     const paint = () => {
-      if (tRef.current) tRef.current.textContent = formatMMSS(getCurrentTime());
+      if (tRef.current) tRef.current.textContent = formatMMSS(getSmoothCurrentTime());
       if (dRef.current) dRef.current.textContent = formatMMSS(getDuration());
     };
+
     paint();
-    return subscribe(paint);
+    rafId = requestAnimationFrameImmediate(function loop() {
+      paint();
+      rafId = requestAnimationFrameImmediate(loop);
+    });
+
+    const unsub = subscribe(paint);
+    return () => {
+      cancelAnimationFrameImmediate(rafId);
+      unsub();
+    };
   }, []);
 
   return (
