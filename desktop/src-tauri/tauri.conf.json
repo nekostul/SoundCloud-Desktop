@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "node ./scripts/prepare-tauri-build.cjs",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -19,9 +19,6 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": ["nsis"],
-    "resources": [
-      "resources/backend"
-    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

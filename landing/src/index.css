@@ -360,6 +360,123 @@ body::before {
   padding: 120px 24px;
 }
 
+.callback-shell {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+}
+
+.callback-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 72px 72px;
+}
+
+.callback-card {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 520px);
+  padding: 40px 32px;
+  text-align: center;
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.callback-icon-shell {
+  width: 88px;
+  height: 88px;
+  margin: 0 auto 24px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 0 0 10px rgba(255, 255, 255, 0.015),
+    0 20px 60px rgba(255, 85, 0, 0.12);
+}
+
+.callback-icon-success {
+  color: #ff7a36;
+}
+
+.callback-icon-error {
+  color: #ff9966;
+}
+
+.callback-title {
+  font-family: "General Sans", "Satoshi", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: clamp(2rem, 4vw, 2.6rem);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+  margin-bottom: 14px;
+}
+
+.callback-body {
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.callback-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 24px;
+  margin-bottom: 18px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 0.92rem;
+}
+
+.callback-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--sc);
+  box-shadow: 0 0 18px rgba(255, 85, 0, 0.8);
+  animation: callback-pulse 1.8s ease-in-out infinite;
+}
+
+.callback-helper {
+  max-width: 340px;
+  margin: 0 auto 26px;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
+
+.callback-cta {
+  width: 100%;
+  justify-content: center;
+}
+
+@keyframes callback-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
 @media (max-width: 640px) {
   .section-gap {
     padding: 80px 16px;

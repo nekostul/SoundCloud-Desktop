@@ -335,5 +335,16 @@
     "hideLikedLabel": "Begenileri gizle",
     "hideLikedOn": "Begenilen parcalar dalgaya dahil edilmez",
     "hideLikedOff": "Begenilen parcalari dalgadan cikarmak icin ac"
+  },
+  "oauthCallback": {
+    "pageTitleSuccess": "SoundCloud baglandi",
+    "pageTitleError": "SoundCloud giris sorunu",
+    "successTitle": "SoundCloud basariyla baglandi",
+    "successBody": "Giris basarili. Masaustu uygulamasina geri donuluyor...",
+    "errorTitle": "Giris tamamlanamadi",
+    "errorBody": "Tekrar deneyebilmeniz icin masaustu uygulamasina geri donuluyor.",
+    "statusOpening": "SoundCloud Desktop aciliyor...",
+    "helper": "Uygulama otomatik olarak acilmadiysa asagidaki dugmeye tiklayin.",
+    "openApp": "SoundCloud Desktop'u Ac"
   }
 }

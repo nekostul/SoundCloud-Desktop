@@ -1,5 +1,4 @@
 mod audio_player;
-mod backend_sidecar;
 mod constants;
 mod discord;
 mod hls;
@@ -408,33 +407,6 @@ pub fn run() {
                 .expect("failed to resolve app data dir");
             std::fs::create_dir_all(&config_dir).ok();
 
-            let backend_state = Arc::new(
-                backend_sidecar::BackendState::new(&app.handle()).map_err(std::io::Error::other)?,
-            );
-
-            // DISABLED: No longer starting backend sidecar for standalone audio playback
-            // Audio streaming now works directly via Tauri + SoundCloud API
-            //
-            // if let Err(error) = backend_state.ensure_started(&app.handle()) {
-            //     let app_handle = app.handle().clone();
-            //     let logs_dir = backend_state.logs_dir().to_path_buf();
-            //     let message = format!(
-            //         "The embedded backend failed to start.\n\n{error}\n\nLogs: {}",
-            //         logs_dir.display()
-            //     );
-            //     append_bootstrap_error_log(&message);
-            //     std::thread::spawn(move || {
-            //         app_handle
-            //             .dialog()
-            //             .message(message)
-            //             .title("SoundCloud Desktop startup failed")
-            //             .kind(MessageDialogKind::Error)
-            //             .blocking_show();
-            //         app_handle.exit(1);
-            //     });
-            //     return Ok(());
-            // }
-            app.manage(backend_state);
             app.manage(soundcloud_api::OAuthCallbackState::default());
             soundcloud_api::init_deep_link(&app.handle()).map_err(std::io::Error::other)?;
 

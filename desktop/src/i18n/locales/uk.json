@@ -357,5 +357,16 @@
     "hideLikedLabel": "Ховати вже лайкнуте лайно",
     "hideLikedOn": "Лайкнуте вигнано з хвилі",
     "hideLikedOff": "Лайкнуте знову лізе назад"
+  },
+  "oauthCallback": {
+    "pageTitleSuccess": "SoundCloud підключено",
+    "pageTitleError": "Проблема з входом у SoundCloud",
+    "successTitle": "SoundCloud успішно підключено",
+    "successBody": "Вхід виконано. Повертаємось у десктопний застосунок...",
+    "errorTitle": "Не вдалося завершити вхід",
+    "errorBody": "Повертаємось у десктопний застосунок, щоб ти міг спробувати ще раз.",
+    "statusOpening": "Відкриваємо SoundCloud Desktop...",
+    "helper": "Якщо застосунок не відкрився автоматично, натисни кнопку нижче.",
+    "openApp": "Відкрити SoundCloud Desktop"
   }
 }

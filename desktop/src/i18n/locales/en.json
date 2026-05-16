@@ -594,5 +594,16 @@
     "hideLikedLabel": "Hide already liked garbage",
     "hideLikedOn": "Liked tracks banished from the wave",
     "hideLikedOff": "Liked tracks crawling back in"
+  },
+  "oauthCallback": {
+    "pageTitleSuccess": "SoundCloud connected",
+    "pageTitleError": "SoundCloud login issue",
+    "successTitle": "Successfully connected to SoundCloud",
+    "successBody": "Login successful. Returning to the desktop app...",
+    "errorTitle": "Login could not be completed",
+    "errorBody": "Returning to the desktop app so you can try again.",
+    "statusOpening": "Opening SoundCloud Desktop...",
+    "helper": "If the app didn't open automatically, click the button below.",
+    "openApp": "Open SoundCloud Desktop"
   }
 }

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import {
@@ -27,9 +27,18 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
   const directSetTokens = useDirectAuthStore((s) => s.setTokens);
   const directSetUser = useDirectAuthStore((s) => s.setUser);
   const [loading, setLoading] = useState(false);
+  const loadingTimeoutRef = useRef<number | null>(null);
+  const latestAttemptRef = useRef(0);
 
   const hasCredentials =
     soundcloudClientId.trim().length > 0 && soundcloudClientSecret.trim().length > 0;
+
+  const clearLoadingTimeout = useCallback(() => {
+    if (loadingTimeoutRef.current !== null) {
+      window.clearTimeout(loadingTimeoutRef.current);
+      loadingTimeoutRef.current = null;
+    }
+  }, []);
 
   const handleDirectOAuth = useCallback(async () => {
     if (!hasCredentials) {
@@ -37,13 +46,26 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
       return;
     }
 
+    const attemptId = latestAttemptRef.current + 1;
+    latestAttemptRef.current = attemptId;
+    clearLoadingTimeout();
     setLoading(true);
+
+    loadingTimeoutRef.current = window.setTimeout(() => {
+      if (latestAttemptRef.current === attemptId) {
+        setLoading(false);
+      }
+    }, 10_000);
 
     try {
       const tokens = await startDirectOAuthFlow(
         soundcloudClientId.trim(),
         soundcloudClientSecret.trim(),
       );
+
+      if (latestAttemptRef.current !== attemptId) {
+        return;
+      }
 
       directSetTokens(
         tokens.accessToken,
@@ -54,6 +76,11 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
       const userInfo = await invoke<DirectSoundCloudUserInfo>('fetch_soundcloud_me', {
         accessToken: tokens.accessToken,
       });
+
+      if (latestAttemptRef.current !== attemptId) {
+        return;
+      }
+
       const appUser = mapDirectUserToAuthUser(userInfo);
 
       directSetUser(appUser);
@@ -69,12 +96,20 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
       toast.success('SoundCloud OAuth подключён');
       window.location.hash = '/';
     } catch (error) {
+      if (latestAttemptRef.current !== attemptId) {
+        return;
+      }
+
       console.error('[DirectOAuth] Failed:', error);
       toast.error(`OAuth не удался: ${String(error)}`);
     } finally {
-      setLoading(false);
+      if (latestAttemptRef.current === attemptId) {
+        clearLoadingTimeout();
+        setLoading(false);
+      }
     }
   }, [
+    clearLoadingTimeout,
     clearReloginRequest,
     directSetTokens,
     directSetUser,
@@ -82,6 +117,8 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
     soundcloudClientId,
     soundcloudClientSecret,
   ]);
+
+  useEffect(() => clearLoadingTimeout, [clearLoadingTimeout]);
 
   useEffect(() => {
     if (!autoStartRequestId || loading || !hasCredentials) return;
@@ -125,7 +162,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
               {t('auth.oauthTitle')}
             </p>
             <p className="text-[12px] leading-relaxed text-white/45">
-              Прямой OAuth через официальный SoundCloud API, без localhost и без Nest backend.
+              Прямой OAuth через официальный SoundCloud API.
             </p>
           </div>
 
@@ -146,22 +183,23 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
               className="w-full rounded-2xl border border-white/[0.06] bg-white/[0.04] px-4 py-3 text-[13px] text-white/85 placeholder:text-white/20 outline-none transition-all focus:border-white/[0.12] focus:bg-white/[0.06]"
             />
 
-            <div className="rounded-2xl border border-white/[0.06] bg-black/20 px-4 py-3">
-              <p className="text-[10px] uppercase tracking-[0.12em] text-white/30">
-                OAuth Redirect URI
-              </p>
-              <p className="mt-1 text-[12px] text-white/70 break-all">
-                https://sc-auth-redirect.web.app
-              </p>
-            </div>
-
             {hasCredentials ? (
               <p className="text-[11px] text-green-400/70 flex items-center gap-1.5">
                 <Check size={12} />
                 {t('auth.oauthSaved')}
               </p>
             ) : (
-              <p className="text-[11px] text-red-300/80">{t('auth.oauthRequired')}</p>
+              <p className="text-[11px] text-red-300/80">
+                {t('auth.oauthRequired')}{' '}
+                <a
+                  href="https://soundcloud.com/you/apps"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-red-200 underline decoration-red-200/60 underline-offset-2 hover:text-white transition-colors"
+                >
+                  получить здесь
+                </a>
+              </p>
             )}
           </div>
         </div>
@@ -180,8 +218,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
             >
               {t('auth.signIn')}
             </button>
-            <div>
-            </div>
+            <div></div>
           </div>
         )}
       </form>
