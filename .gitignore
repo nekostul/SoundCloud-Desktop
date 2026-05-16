@@ -18,6 +18,11 @@ desktop/src-tauri/target/
 # FireBase
 .firebase
 
+# Local landing callback prototype
+landing/src/OAuthCallbackPage.tsx
+landing/src/RootApp.tsx
+landing/src/oauth-callback-i18n.ts
+
 # Internal tool/temp
 .agents/
 tmp-repo/
