@@ -19,6 +19,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use discord::DiscordState;
@@ -329,6 +330,69 @@ fn save_framerate_config(app: tauri::AppHandle, target: u32, unlocked: bool) {
     audio_player::set_framerate_config(&state, config.target, config.unlocked);
 }
 
+#[derive(serde::Serialize)]
+struct ExternalHttpResponse {
+    status: u16,
+    content_type: String,
+    body: String,
+}
+
+#[tauri::command]
+async fn external_http_get(url: String, accept: Option<String>) -> Result<ExternalHttpResponse, String> {
+    let parsed_url = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return Err("Unsupported URL scheme".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(6500))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut request = client.get(parsed_url);
+    if let Some(accept) = accept.filter(|value| !value.trim().is_empty()) {
+        request = request.header(reqwest::header::ACCEPT, accept);
+    }
+    request = request
+        .header(
+            reqwest::header::ACCEPT_LANGUAGE,
+            "en-US,en;q=0.8,ru;q=0.7",
+        )
+        .header(
+            reqwest::header::USER_AGENT,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        );
+
+    if let Some(host) = request
+        .try_clone()
+        .and_then(|req| req.build().ok())
+        .and_then(|req| req.url().host_str().map(str::to_owned))
+    {
+        if host.contains("music.yandex.") {
+            request = request
+                .header(reqwest::header::REFERER, "https://music.yandex.ru/")
+                .header(reqwest::header::ORIGIN, "https://music.yandex.ru");
+        }
+    }
+
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = response.text().await.map_err(|e| e.to_string())?;
+
+    Ok(ExternalHttpResponse {
+        status,
+        content_type,
+        body,
+    })
+}
+
 pub(crate) fn emit_window_visibility(app: &tauri::AppHandle, visible: bool) {
     let state = app.state::<audio_player::AudioState>();
     state.window_visible.store(visible, Ordering::Relaxed);
@@ -424,8 +488,8 @@ pub fn run() {
             let mut win_builder =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                     .title("SoundCloud Desktop")
-                    .inner_size(1200.0, 800.0)
-                    .min_inner_size(800.0, 470.0)
+                    .inner_size(1300.0, 820.0)
+                    .min_inner_size(1300.0, 820.0)
                     .decorations(false);
 
             #[cfg(target_os = "windows")]
@@ -573,6 +637,7 @@ pub fn run() {
             refresh_system_fonts,
             read_font_family,
             copy_custom_font,
+            external_http_get,
             // 7.1.0 port: direct-from-SC track cache + permanent image cache.
             track_cache::track_ensure_cached,
             track_cache::track_is_cached,

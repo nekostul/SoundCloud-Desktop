@@ -350,8 +350,6 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
     setActiveQuery('');
   }, []);
 
-  if (!isAuthenticated) return null;
-
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
@@ -460,6 +458,8 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
   const showSearchEmpty = isSearchMode && !searchBusy && searchTracks.length === 0;
   const isDetailsCollapsed = isWaveActive && !isWaveSuspended && queueSource === 'soundwave';
   const isRefreshHidden = isWaveActive && !isWaveSuspended && queueSource === 'soundwave';
+
+  if (!isAuthenticated) return null;
 
   return (
     <section

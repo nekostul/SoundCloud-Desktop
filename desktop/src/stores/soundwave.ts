@@ -31,6 +31,13 @@ export interface SoundWavePreset {
   timeHours?: number[];
 }
 
+export interface SoundWaveLaunchContext {
+  kind: 'playlist' | 'artist';
+  key: string;
+  title?: string;
+  subtitle?: string;
+}
+
 export const ACTIVITY_PRESETS: Record<string, SoundWavePreset> = {
   wakeup: {
     name: 'Просыпаюсь',
@@ -1591,6 +1598,7 @@ interface SoundWaveState {
   startupVisible: boolean;
   startupStage: StartupStageKey;
   currentPreset: SoundWavePreset | null;
+  launchContext: SoundWaveLaunchContext | null;
   seedTracks: Track[];
   explorePool: Track[];
   genreWeights: Record<string, number>;
@@ -1614,6 +1622,7 @@ interface SoundWaveState {
     seedTracks?: Track[];
     preserveCurrentTrack?: boolean;
     preset?: SoundWavePreset | null;
+    launchContext?: SoundWaveLaunchContext | null;
   }) => Promise<void>;
   stop: () => void;
   suspendForExternalPlayback: (queue: Track[], queueIndex: number) => void;
@@ -1633,6 +1642,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
   startupVisible: false,
   startupStage: 'idle',
   currentPreset: null,
+  launchContext: null,
   seedTracks: [],
   explorePool: [],
   genreWeights: {},
@@ -1914,6 +1924,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       isActive: true,
       isSuspended: false,
       currentPreset: preset,
+      launchContext: null,
       playedUrns: new Set(),
       sessionPositive: [],
       sessionNegative: [],
@@ -1953,7 +1964,13 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     }
   },
 
-  startFromQueue: async ({ queue, seedTracks = [], preserveCurrentTrack = false, preset = null }) => {
+  startFromQueue: async ({
+    queue,
+    seedTracks = [],
+    preserveCurrentTrack = false,
+    preset = null,
+    launchContext = null,
+  }) => {
     const normalizedQueue = queue.filter((track) => !!track?.urn);
     if (normalizedQueue.length === 0) return;
 
@@ -2001,6 +2018,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       isActive: true,
       isSuspended: false,
       currentPreset: preset,
+      launchContext,
       playedUrns: new Set(),
       sessionPositive: positiveIds.slice(-30),
       sessionNegative: [],
@@ -2033,6 +2051,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       startupProgress: 0,
       startupStage: 'idle',
       currentPreset: null,
+      launchContext: null,
       playedUrns: new Set(),
       sessionPositive: [],
       sessionNegative: [],

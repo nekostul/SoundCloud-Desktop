@@ -136,4 +136,10 @@ export class UsersController {
   getWebProfiles(@AccessToken() token: string, @Param('userUrn') userUrn: string) {
     return this.usersService.getWebProfiles(token, userUrn);
   }
+
+  @Get(':userUrn/artist-insights')
+  @ApiOperation({ summary: 'Get cross-platform artist insights for a user profile' })
+  getArtistInsights(@AccessToken() token: string, @Param('userUrn') userUrn: string) {
+    return this.usersService.getArtistInsights(token, userUrn);
+  }
 }

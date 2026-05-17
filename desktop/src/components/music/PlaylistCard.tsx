@@ -77,10 +77,10 @@ export const PlaylistCard = React.memo(
           {/* Hover / playing overlay */}
           {showPlayback ? (
             <div
-              className={`absolute inset-0 flex items-center justify-center transition-all duration-300 ${
+              className={`absolute inset-0 rounded-[inherit] flex items-center justify-center transition-all duration-300 ${
                 isPlayingFromThis
-                  ? 'bg-black/40 backdrop-blur-sm opacity-100'
-                  : 'bg-black/0 opacity-0 group-hover:bg-black/40 group-hover:backdrop-blur-sm group-hover:opacity-100'
+                  ? 'bg-black/40 opacity-100'
+                  : 'bg-black/0 opacity-0 group-hover:bg-black/40 group-hover:opacity-100'
               }`}
             >
               <div
@@ -104,7 +104,7 @@ export const PlaylistCard = React.memo(
 
           {playlist.track_count != null && (
             <div
-              className={`absolute bottom-2.5 right-2.5 flex items-center gap-1.5 text-[11px] font-medium bg-black/60 backdrop-blur-md text-white/90 px-2.5 py-1 rounded-full shadow-lg ${
+              className={`absolute bottom-2.5 right-2.5 flex items-center gap-1.5 text-[11px] font-medium bg-black/60 text-white/90 px-2.5 py-1 rounded-full shadow-lg ${
                 showPlayback
                   ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-300'
                   : ''

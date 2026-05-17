@@ -1050,7 +1050,14 @@ export function seek(seconds: number, allowRecovery = true, force = false) {
   const maxSeek = duration > 0 ? Math.max(0, duration - 0.15) : Number.POSITIVE_INFINITY;
   const seekableLimit = force ? maxSeek : Math.min(getBufferedSeekWindowEnd(), maxSeek);
   const unclampedTarget = Math.max(0, Math.min(seconds, maxSeek));
-  const directSeekReload = !force && shouldUseDirectSeekReload(unclampedTarget);
+  const currentPositionBeforeSeek = Math.max(cachedTime, getSmoothCurrentTime());
+  const hardReloadAtTrackStart =
+    !force &&
+    isTauriRuntime() &&
+    unclampedTarget <= 0.05 &&
+    currentPositionBeforeSeek > 1;
+  const directSeekReload =
+    hardReloadAtTrackStart || (!force && shouldUseDirectSeekReload(unclampedTarget));
   const target = directSeekReload
     ? unclampedTarget
     : force

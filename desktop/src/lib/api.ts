@@ -1,4 +1,4 @@
-import { isTauri } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { toast } from 'sonner';
 import i18n from '../i18n';
@@ -7,6 +7,7 @@ import { waitForAuthHydration } from './auth-hydration';
 import { buildApiUrl } from './constants';
 import { useAuthStore } from '../stores/auth';
 import { useDirectAuthStore } from '../stores/direct-auth';
+import { isTauriRuntime } from './runtime';
 
 let sessionId: string | null = null;
 let rateLimitUntil = 0;
@@ -94,10 +95,585 @@ type DirectRecommendResult = {
 
 type DirectRecord = Record<string, unknown>;
 
+type ArtistInsightSource = 'spotify' | 'yandex_music';
+
+type ArtistInsightPlatform = {
+  source: ArtistInsightSource;
+  label: string;
+  matchedName: string;
+  url: string | null;
+  audience: number | null;
+};
+
+type UserArtistInsights = {
+  estimatedMonthlyPlays: number | null;
+  platforms: ArtistInsightPlatform[];
+  similarArtists: unknown[];
+};
+
+type ExternalHttpResponse = {
+  status: number;
+  content_type?: string;
+  body: string;
+};
+
+async function tryInvokeExternalHttpGet(
+  url: string,
+  accept: string,
+): Promise<ExternalHttpResponse | null> {
+  try {
+    return await invoke<ExternalHttpResponse>('external_http_get', {
+      url,
+      accept,
+    });
+  } catch (error) {
+    console.log('[artist-insights][external-http][invoke-failed]', {
+      url,
+      accept,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+type SearchResult = {
+  title: string;
+  url: string;
+  snippet: string;
+};
+
+type ExternalWebProfile = {
+  url?: string;
+  title?: string | null;
+  username?: string | null;
+  service?: string | null;
+};
+
+type ExternalUserProfile = {
+  username?: string;
+  full_name?: string | null;
+  permalink?: string | null;
+  website?: string | null;
+  website_title?: string | null;
+};
+
+type ExternalArtistTrack = {
+  title?: string | null;
+  metadata_artist?: string | null;
+  playback_count?: number | null;
+};
+
+type ExternalTrackCollection = {
+  collection?: ExternalArtistTrack[];
+};
+
+type YandexMusicArtistSearchResponse = {
+  result?: {
+    artists?: {
+      results?: Array<{
+        id?: number | string;
+        name?: string;
+        likesCount?: number;
+        ratings?: {
+          month?: number;
+        };
+      }>;
+    };
+  };
+};
+
+type YandexMusicArtistBriefInfoResponse = {
+  result?: {
+    artist?: {
+      id?: number | string;
+      name?: string;
+    };
+    stats?: {
+      lastMonthListeners?: number;
+    };
+  };
+};
+
 function asDirectRecord(value: unknown): DirectRecord | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as DirectRecord)
     : null;
+}
+
+function normalizeArtistText(value: string | null | undefined): string {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{Letter}\p{Number}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenizeArtistText(value: string | null | undefined): string[] {
+  return normalizeArtistText(value)
+    .split(' ')
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+}
+
+function computeArtistMatchScore(query: string, candidate: string): number {
+  const normalizedQuery = normalizeArtistText(query);
+  const normalizedCandidate = normalizeArtistText(candidate);
+
+  if (!normalizedQuery || !normalizedCandidate) return 0;
+  if (normalizedQuery === normalizedCandidate) return 1;
+
+  if (
+    normalizedQuery.includes(normalizedCandidate) ||
+    normalizedCandidate.includes(normalizedQuery)
+  ) {
+    return 0.9;
+  }
+
+  const queryTokens = new Set(tokenizeArtistText(normalizedQuery));
+  const candidateTokens = new Set(tokenizeArtistText(normalizedCandidate));
+
+  if (queryTokens.size === 0 || candidateTokens.size === 0) return 0;
+
+  let overlap = 0;
+  for (const token of queryTokens) {
+    if (candidateTokens.has(token)) overlap += 1;
+  }
+
+  return overlap / Math.max(queryTokens.size, candidateTokens.size);
+}
+
+function roundAudience(value: number | null | undefined): number | null {
+  if (!value || !Number.isFinite(value) || value <= 0) return null;
+  return Math.max(1, Math.round(value));
+}
+
+function parseCompactAudience(value: string | null | undefined): number | null {
+  const normalized = String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/,/g, '.')
+    .trim();
+
+  if (!normalized) return null;
+
+  const match = normalized.match(/^(\d+(?:\.\d+)?)([KMB])?$/i);
+  if (!match) {
+    const digitsOnly = normalized.replace(/[^\d]/g, '');
+    return digitsOnly ? roundAudience(Number(digitsOnly)) : null;
+  }
+
+  const base = Number(match[1]);
+  if (!Number.isFinite(base) || base <= 0) return null;
+
+  const multiplier =
+    match[2]?.toUpperCase() === 'B'
+      ? 1_000_000_000
+      : match[2]?.toUpperCase() === 'M'
+        ? 1_000_000
+        : match[2]?.toUpperCase() === 'K'
+          ? 1_000
+          : 1;
+
+  return roundAudience(base * multiplier);
+}
+
+function extractMonthlyAudienceSnippet(
+  html: string,
+  label: 'monthly listeners' | 'monthly audience',
+): number | null {
+  const normalized = html.replace(/&#x27;/g, "'");
+  const match = normalized.match(
+    new RegExp(`(\\d[\\d.,]*\\s*[KMB]?)\\s+${label.replace(' ', '\\s+')}`, 'i'),
+  );
+  return parseCompactAudience(match?.[1] || null);
+}
+
+function extractYandexArtistIdsFromSearchHtml(html: string): string[] {
+  return [
+    ...new Set(
+      [...html.matchAll(/\/artist\/(\d+)/g)]
+        .map((match) => match[1] || '')
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function extractYandexArtistNameFromHtml(html: string): string | null {
+  const ogTitleMatch = html.match(/og:title"\s+content="([^"]+)"/i);
+  if (ogTitleMatch?.[1]) {
+    return decodeHtmlEntities(ogTitleMatch[1]).trim();
+  }
+
+  const titleMatch = html.match(/<title>([\s\S]*?)<\/title>/i);
+  if (!titleMatch?.[1]) return null;
+
+  const decoded = decodeHtmlEntities(titleMatch[1]).trim();
+  return decoded.split(/\s*[\u2013\u2014-]\s*/)[0]?.trim() || null;
+}
+
+function extractYandexArtistAudienceFromHtml(html: string): number | null {
+  const match = html.match(/"lastMonthListeners"\s*:\s*(\d+)/);
+  return roundAudience(match ? Number(match[1]) : null);
+}
+
+type YandexHtmlArtistMatch = {
+  artistId: string;
+  matchedName: string;
+  audience: number | null;
+  url: string;
+};
+
+function isYandexArtistNameCompatible(artistNames: string[], candidateName: string): boolean {
+  const normalizedCandidate = normalizeArtistText(candidateName);
+  if (!normalizedCandidate) return false;
+
+  return artistNames.some((artistName) => {
+    const normalizedArtistName = normalizeArtistText(artistName);
+    return (
+      normalizedArtistName === normalizedCandidate ||
+      normalizedArtistName.includes(normalizedCandidate) ||
+      normalizedCandidate.includes(normalizedArtistName)
+    );
+  });
+}
+
+async function fetchYandexArtistHtmlMatch(url: string): Promise<YandexHtmlArtistMatch | null> {
+  const html = await fetchExternalText(url);
+  if (!html) return null;
+
+  const artistId = extractArtistIdFromUrl(url);
+  if (!artistId) return null;
+
+  return {
+    artistId,
+    matchedName: extractYandexArtistNameFromHtml(html) || artistId,
+    audience: extractYandexArtistAudienceFromHtml(html),
+    url,
+  };
+}
+
+async function resolveYandexHtmlFallback(
+  artistNames: string[],
+  profileUrl: string | null,
+  artistId: string | null,
+): Promise<YandexHtmlArtistMatch | null> {
+  const candidateUrls: string[] = [];
+  const seenIds = new Set<string>();
+
+  const pushArtistUrl = (url: string | null | undefined) => {
+    const candidateId = extractArtistIdFromUrl(url);
+    if (!candidateId || seenIds.has(candidateId)) return;
+    seenIds.add(candidateId);
+    candidateUrls.push(`https://music.yandex.ru/artist/${candidateId}`);
+  };
+
+  pushArtistUrl(profileUrl);
+  if (artistId) {
+    pushArtistUrl(`https://music.yandex.ru/artist/${artistId}`);
+  }
+
+  const searchQueries = [
+    ...new Set([
+      ...artistNames.map((artistName) => artistName.trim()).filter(Boolean),
+      ...artistNames.flatMap((artistName) => getArtistSearchVariants(artistName)),
+    ]),
+  ].slice(0, 6);
+
+  for (const query of searchQueries) {
+    const html = await fetchExternalText(
+      `https://music.yandex.ru/search?type=artists&text=${encodeURIComponent(query)}`,
+    );
+    if (!html) continue;
+
+    for (const candidateId of extractYandexArtistIdsFromSearchHtml(html).slice(0, 6)) {
+      pushArtistUrl(`https://music.yandex.ru/artist/${candidateId}`);
+    }
+
+    if (candidateUrls.length >= 6) break;
+  }
+
+  if (candidateUrls.length === 0) return null;
+
+  const matches = (
+    await Promise.all(candidateUrls.slice(0, 6).map((url) => fetchYandexArtistHtmlMatch(url)))
+  ).filter((match): match is YandexHtmlArtistMatch => Boolean(match));
+
+  if (matches.length === 0) return null;
+
+  const scoredMatches = matches.map((match) => ({
+    match,
+    score: Math.max(
+      ...artistNames.map((artistName) => computeArtistMatchScore(artistName, match.matchedName)),
+    ),
+  }));
+
+  return (
+    scoredMatches
+      .filter(
+        ({ match, score }) =>
+          score >= 0.45 || isYandexArtistNameCompatible(artistNames, match.matchedName),
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          Number(b.match.audience || 0) - Number(a.match.audience || 0),
+      )[0]?.match || null
+  );
+}
+
+function extractPlatformUrl(
+  profiles: ExternalWebProfile[],
+  predicates: Array<(url: URL) => boolean>,
+): string | null {
+  for (const profile of profiles) {
+    try {
+      const url = new URL(profile.url || '');
+      if (predicates.some((predicate) => predicate(url))) return profile.url || null;
+    } catch {}
+  }
+  return null;
+}
+
+function extractArtistIdFromUrl(url: string | null | undefined): string | null {
+  const match = String(url || '').match(/\/artist\/(\d+)/);
+  return match?.[1] || null;
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+const CYRILLIC_TO_LATIN_MAP: Record<string, string> = {
+  а: 'a',
+  б: 'b',
+  в: 'v',
+  г: 'g',
+  д: 'd',
+  е: 'e',
+  ё: 'yo',
+  ж: 'zh',
+  з: 'z',
+  и: 'i',
+  й: 'i',
+  к: 'k',
+  л: 'l',
+  м: 'm',
+  н: 'n',
+  о: 'o',
+  п: 'p',
+  р: 'r',
+  с: 's',
+  т: 't',
+  у: 'u',
+  ф: 'f',
+  х: 'kh',
+  ц: 'ts',
+  ч: 'ch',
+  ш: 'sh',
+  щ: 'shch',
+  ъ: '',
+  ы: 'y',
+  ь: '',
+  э: 'e',
+  ю: 'yu',
+  я: 'ya',
+};
+
+function transliterateCyrillicToLatin(value: string): string {
+  return Array.from(String(value || ''))
+    .map((char) => {
+      const lower = char.toLowerCase();
+      const mapped = CYRILLIC_TO_LATIN_MAP[lower];
+      if (mapped == null) return char;
+      return char === lower ? mapped : mapped.charAt(0).toUpperCase() + mapped.slice(1);
+    })
+    .join('');
+}
+
+function getArtistSearchVariants(value: string): string[] {
+  const source = String(value || '').trim();
+  const normalizedSource = normalizeArtistText(source);
+  const variants = new Set<string>();
+  const push = (candidate: string) => {
+    const normalized = candidate.trim().replace(/\s+/g, ' ');
+    if (normalized) variants.add(normalized);
+  };
+
+  const bases = new Set([source, source.replace(/ё/gi, 'е')]);
+  if (normalizedSource) {
+    bases.add(normalizedSource);
+    bases.add(normalizedSource.replace(/ё/gi, 'е'));
+  }
+
+  for (const base of bases) {
+    push(base);
+
+    const transliterated = transliterateCyrillicToLatin(base);
+    push(transliterated);
+    push(transliterated.replace(/yo/gi, 'e'));
+    push(transliterated.replace(/yy/gi, 'y'));
+    push(transliterated.replace(/yy/gi, 'i'));
+    push(transliterated.replace(/yo/gi, 'e').replace(/yy/gi, 'y'));
+    push(transliterated.replace(/yo/gi, 'e').replace(/yy/gi, 'i'));
+  }
+
+  return [...variants];
+}
+
+const GENERIC_PROFILE_LABELS = new Set([
+  'tg',
+  'telegram',
+  'youtube',
+  'instagram',
+  'tiktok',
+  'tour',
+  'website',
+  'site',
+  'link',
+]);
+
+function pushArtistNameCandidate(target: Set<string>, value: string | null | undefined) {
+  const candidate = String(value || '').trim();
+  if (!candidate) return;
+  target.add(candidate);
+}
+
+function splitArtistCredits(value: string | null | undefined): string[] {
+  return String(value || '')
+    .split(/\s*(?:,|&|\+|\/|;|\|| feat\.? | ft\.? | featuring | x )\s*/i)
+    .map((candidate) => candidate.trim())
+    .filter((candidate) => candidate.length >= 2);
+}
+
+function appendUrlArtistCandidates(target: Set<string>, rawUrl: string | null | undefined) {
+  try {
+    const url = new URL(String(rawUrl || '').trim());
+    const ignoredHostSegments = new Set([
+      'www',
+      'm',
+      'music',
+      'open',
+      'soundcloud',
+      'spotify',
+      'youtube',
+      'youtu',
+      'instagram',
+      'tiktok',
+      'telegram',
+      'twitter',
+      'x',
+      't',
+      'me',
+      'ru',
+      'com',
+      'net',
+      'org',
+    ]);
+    const hostCandidate = url.hostname
+      .split('.')
+      .map((segment) => segment.toLowerCase())
+      .find((segment) => segment && !ignoredHostSegments.has(segment));
+
+    if (hostCandidate) {
+      pushArtistNameCandidate(target, hostCandidate.replace(/[-_.]+/g, ' '));
+    }
+
+    const pathCandidates = url.pathname
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .map((segment) => segment.replace(/^@/, '').trim())
+      .filter(Boolean)
+      .filter((segment) => !['artist', 'channel', 'user', 'users'].includes(segment.toLowerCase()))
+      .slice(-2);
+
+    for (const segment of pathCandidates) {
+      pushArtistNameCandidate(target, segment.replace(/[-_.]+/g, ' '));
+    }
+  } catch {}
+}
+
+function collectArtistInsightNames(
+  user: ExternalUserProfile | null | undefined,
+  profiles: ExternalWebProfile[],
+  tracks: ExternalArtistTrack[] = [],
+): string[] {
+  const candidates = new Set<string>();
+
+  pushArtistNameCandidate(candidates, user?.username);
+  pushArtistNameCandidate(candidates, user?.full_name);
+  pushArtistNameCandidate(candidates, String(user?.permalink || '').replace(/[-_.]+/g, ' '));
+
+  const normalizedWebsiteTitle = normalizeArtistText(user?.website_title);
+  if (normalizedWebsiteTitle && !GENERIC_PROFILE_LABELS.has(normalizedWebsiteTitle)) {
+    pushArtistNameCandidate(candidates, user?.website_title);
+  }
+  appendUrlArtistCandidates(candidates, user?.website);
+
+  for (const profile of profiles) {
+    const normalizedTitle = normalizeArtistText(profile.title);
+    if (normalizedTitle && !GENERIC_PROFILE_LABELS.has(normalizedTitle)) {
+      pushArtistNameCandidate(candidates, profile.title);
+    }
+    pushArtistNameCandidate(candidates, profile.username);
+    appendUrlArtistCandidates(candidates, profile.url);
+  }
+
+  const prioritizedTracks = [...tracks]
+    .sort((a, b) => (b.playback_count ?? 0) - (a.playback_count ?? 0))
+    .slice(0, 8);
+
+  for (const track of prioritizedTracks) {
+    pushArtistNameCandidate(candidates, track.metadata_artist);
+    for (const credit of splitArtistCredits(track.metadata_artist)) {
+      pushArtistNameCandidate(candidates, credit);
+    }
+  }
+
+  return [...candidates];
+}
+
+function prioritizeArtistNames(
+  primaryName: string | null | undefined,
+  extraNames: string[],
+): string[] {
+  const result = new Set<string>();
+  const normalizedSeen = new Set<string>();
+  const push = (value: string | null | undefined) => {
+    const candidate = String(value || '').trim();
+    if (!candidate) return;
+    const normalized = normalizeArtistText(candidate);
+    if (!normalized || normalizedSeen.has(normalized)) return;
+    normalizedSeen.add(normalized);
+    result.add(candidate);
+  };
+
+  push(primaryName);
+  for (const name of extraNames) {
+    push(name);
+  }
+
+  return [...result];
+}
+
+function withSoftTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve(fallback);
+      });
+  });
 }
 
 function toNumericId(value: unknown): string | null {
@@ -615,7 +1191,7 @@ export function setUnauthorizedHandler(handler: (() => void) | null) {
 }
 
 async function requestWithFallback(input: string, init: RequestInit): Promise<Response> {
-  if (!isTauri()) {
+  if (!isTauriRuntime()) {
     return await fetch(input, init);
   }
 
@@ -831,6 +1407,555 @@ async function requestDirectPath<T>(
   const response = await performDirectHttpRequest(buildDirectApiUrl(path), requestOptions, ctx);
   const parsed = await parseResponseBody<unknown>(response);
   return normalizeDirectResponse(path, parsed) as T;
+}
+
+async function fetchExternalJson<T>(url: string): Promise<T | null> {
+  const invokedResponse = await tryInvokeExternalHttpGet(url, 'application/json');
+  if (invokedResponse) {
+    if (invokedResponse.status < 200 || invokedResponse.status >= 300) {
+      console.log('[artist-insights][external-json][non-ok]', {
+        url,
+        status: invokedResponse.status,
+      });
+      return null;
+    }
+
+    try {
+      return JSON.parse(invokedResponse.body) as T;
+    } catch (error) {
+      console.log('[artist-insights][external-json][parse-failed]', {
+        url,
+        error: error instanceof Error ? error.message : String(error),
+        bodyPreview: invokedResponse.body.slice(0, 240),
+      });
+      return null;
+    }
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6500);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+      },
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      console.log('[artist-insights][external-json][fetch-non-ok]', {
+        url,
+        status: response.status,
+      });
+      return null;
+    }
+    return (await response.json()) as T;
+  } catch (error) {
+    console.log('[artist-insights][external-json][fetch-failed]', {
+      url,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchExternalText(url: string): Promise<string | null> {
+  const accept =
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8';
+  const invokedResponse = await tryInvokeExternalHttpGet(url, accept);
+  if (invokedResponse) {
+    if (invokedResponse.status < 200 || invokedResponse.status >= 300) {
+      console.log('[artist-insights][external-text][non-ok]', {
+        url,
+        status: invokedResponse.status,
+      });
+      return null;
+    }
+
+    return invokedResponse.body;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6500);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: accept,
+      },
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      console.log('[artist-insights][external-text][fetch-non-ok]', {
+        url,
+        status: response.status,
+      });
+      return null;
+    }
+    return await response.text();
+  } catch (error) {
+    console.log('[artist-insights][external-text][fetch-failed]', {
+      url,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseBingRssResults(xml: string): SearchResult[] {
+  return [...xml.matchAll(/<item><title>([\s\S]*?)<\/title><link>([\s\S]*?)<\/link><description>([\s\S]*?)<\/description>/g)]
+    .map((match) => ({
+      title: decodeHtmlEntities(match[1] || '').trim(),
+      url: decodeHtmlEntities(match[2] || '').trim(),
+      snippet: decodeHtmlEntities(match[3] || '').trim(),
+    }))
+    .filter((result) => result.url.startsWith('http'));
+}
+
+async function searchBing(query: string): Promise<SearchResult[]> {
+  const xml = await fetchExternalText(
+    `https://www.bing.com/search?format=rss&q=${encodeURIComponent(query)}`,
+  );
+  return xml ? parseBingRssResults(xml) : [];
+}
+
+function buildPlatformSearchVariants(artistNames: string[]): string[] {
+  const seeds = artistNames
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .slice(0, 2);
+
+  return [...new Set(seeds.flatMap((name) => getArtistSearchVariants(name)))].slice(0, 6);
+}
+
+function pickBestPlatformSearchResultByAudience(
+  results: SearchResult[],
+  artistNames: string[],
+  domainHint: string,
+  extractAudience: (result: SearchResult) => number | null,
+): { audience: number | null; result: SearchResult } | null {
+  return (
+    [...results]
+      .filter((result) => result.url.includes(domainHint))
+      .map((result) => ({
+        audience: extractAudience(result),
+        result,
+        score: Math.max(
+          ...artistNames.map((artistName) =>
+            computeArtistMatchScore(
+              artistName,
+              `${result.title} ${result.snippet} ${result.url}`,
+            ),
+          ),
+        ),
+      }))
+      .filter((entry) => entry.score >= 0.45)
+      .sort(
+        (a, b) =>
+          Number(b.audience || 0) - Number(a.audience || 0) ||
+          b.score - a.score,
+      )[0] || null
+  );
+}
+
+async function fetchSpotifyPlatform(
+  artistNames: string[],
+  profiles: ExternalWebProfile[],
+): Promise<ArtistInsightPlatform | null> {
+  const profileUrl = extractPlatformUrl(profiles, [
+    (url) => url.hostname.includes('spotify.com') && url.pathname.includes('/artist/'),
+  ]);
+  const normalizedArtistNames = artistNames.map((name) => name.trim()).filter(Boolean);
+  const primaryArtistName = normalizedArtistNames[0] || '';
+  if (!primaryArtistName) return null;
+
+  const searchQueries = buildPlatformSearchVariants(normalizedArtistNames).map((artistName) =>
+    `site:open.spotify.com/artist "${artistName}" "monthly listeners"`,
+  );
+  const searchResults = (
+    await Promise.all(searchQueries.map((query) => searchBing(query)))
+  ).flat();
+  const match = pickBestPlatformSearchResultByAudience(
+    searchResults,
+    normalizedArtistNames,
+    'open.spotify.com/artist/',
+    (result) =>
+      extractMonthlyAudienceSnippet(result.snippet || '', 'monthly listeners') ??
+      extractMonthlyAudienceSnippet(result.title || '', 'monthly listeners'),
+  );
+  const audience = match?.audience ?? null;
+  const url = profileUrl || match?.result.url || null;
+
+  console.log('[artist-insights][spotify]', {
+    artistNames: normalizedArtistNames,
+    profileUrl,
+    searchResultsCount: searchResults.length,
+    matchedUrl: match?.result.url ?? null,
+    audience,
+    url,
+  });
+
+  if (!audience && !url) return null;
+
+  return {
+    source: 'spotify',
+    label: 'Spotify',
+    matchedName: primaryArtistName,
+    url,
+    audience,
+  };
+}
+
+async function fetchYandexMusicPlatform(
+  artistNames: string[],
+  profiles: ExternalWebProfile[],
+): Promise<ArtistInsightPlatform | null> {
+  const normalizedArtistNames = artistNames.map((name) => name.trim()).filter(Boolean);
+  const primaryArtistName = normalizedArtistNames[0] || '';
+  if (!primaryArtistName) return null;
+
+  let profileUrl = extractPlatformUrl(profiles, [
+    (url) => url.hostname.includes('music.yandex.') && url.pathname.includes('/artist/'),
+  ]);
+
+  let artistId = extractArtistIdFromUrl(profileUrl);
+  let matchedName = primaryArtistName;
+  let audience: number | null = null;
+  let resolvedBriefInfo: YandexMusicArtistBriefInfoResponse | null = null;
+  let candidateDebug: Array<{
+    id: string;
+    name: string;
+    score: number;
+    ratingsMonth: number;
+    likesCount: number;
+  }> = [];
+  let searchDebug: Array<{ query: string; count: number }> = [];
+
+  if (artistId) {
+    const profileHtmlMatch = await fetchYandexArtistHtmlMatch(
+      `https://music.yandex.ru/artist/${artistId}`,
+    );
+    if (profileHtmlMatch?.audience) {
+      console.log('[artist-insights][yandex][profile-html-hit]', {
+        artistNames: normalizedArtistNames,
+        profileUrl,
+        artistId: profileHtmlMatch.artistId,
+        matchedName: profileHtmlMatch.matchedName,
+        audience: profileHtmlMatch.audience,
+      });
+      return {
+        source: 'yandex_music',
+        label: 'Yandex Music',
+        matchedName: profileHtmlMatch.matchedName || matchedName,
+        url: profileUrl || profileHtmlMatch.url,
+        audience: profileHtmlMatch.audience,
+      };
+    }
+
+    if (profileHtmlMatch) {
+      matchedName = profileHtmlMatch.matchedName || matchedName;
+      profileUrl = profileUrl || profileHtmlMatch.url;
+    }
+  }
+
+  if (!artistId) {
+    const exactQueries = normalizedArtistNames.flatMap((artistName) => {
+      const normalized = artistName.trim();
+      if (!normalized) return [];
+      const withPlainE = normalized.replace(/ё/gi, 'е');
+      return [...new Set([normalized, withPlainE])];
+    });
+    const searchVariants = [
+      ...new Set([
+        ...exactQueries,
+        ...normalizedArtistNames.flatMap((artistName) => getArtistSearchVariants(artistName)),
+      ]),
+    ].slice(0, 12);
+    const candidatesMap = new Map<
+      string,
+      {
+        id?: number | string;
+        name?: string;
+        likesCount?: number;
+        ratings?: {
+          month?: number;
+        };
+      }
+    >();
+    let nonEmptyQueries = 0;
+
+    for (const query of searchVariants) {
+      const response = await fetchExternalJson<YandexMusicArtistSearchResponse>(
+        `https://api.music.yandex.net/search?type=artist&text=${encodeURIComponent(query)}&page=0&nocorrect=false`,
+      );
+      const results = response?.result?.artists?.results || [];
+      searchDebug.push({ query, count: results.length });
+
+      if (results.length > 0) {
+        nonEmptyQueries += 1;
+      }
+
+      for (const candidate of results) {
+        if (!candidate.id) continue;
+        const key = String(candidate.id);
+        if (!candidatesMap.has(key)) {
+          candidatesMap.set(key, candidate);
+        }
+      }
+
+      if (candidatesMap.size >= 8 && nonEmptyQueries >= 1) {
+        break;
+      }
+    }
+
+    const candidates = [...candidatesMap.values()];
+
+    if (candidates.length === 0) {
+      const htmlMatch = await resolveYandexHtmlFallback(normalizedArtistNames, profileUrl, artistId);
+      if (htmlMatch) {
+        artistId = htmlMatch.artistId;
+        matchedName = htmlMatch.matchedName;
+        audience = htmlMatch.audience;
+        profileUrl = profileUrl || htmlMatch.url;
+      } else {
+        console.log('[artist-insights][yandex][no-candidates]', {
+          artistNames: normalizedArtistNames,
+          searchVariants,
+          searchDebug,
+        });
+        return null;
+      }
+    }
+
+    if (!artistId) {
+      const scoredCandidates = [...candidates]
+        .map((candidate) => ({
+          candidate,
+          score: Math.max(
+            ...normalizedArtistNames.map((artistName) =>
+              computeArtistMatchScore(artistName, candidate.name || ''),
+            ),
+          ),
+        }))
+        .filter((entry) => entry.candidate.id);
+
+      candidateDebug = scoredCandidates.slice(0, 10).map((entry) => ({
+        id: String(entry.candidate.id),
+        name: entry.candidate.name || '',
+        score: Number(entry.score.toFixed(3)),
+        ratingsMonth: Number(entry.candidate.ratings?.month || 0),
+        likesCount: Number(entry.candidate.likesCount || 0),
+      }));
+
+      const rankedCandidates = scoredCandidates
+        .filter((entry) => entry.score >= 0.45)
+        .sort(
+          (a, b) =>
+            b.score - a.score ||
+            Number(b.candidate.ratings?.month || 0) - Number(a.candidate.ratings?.month || 0) ||
+            Number(b.candidate.likesCount || 0) - Number(a.candidate.likesCount || 0),
+        );
+
+      const fallbackCandidates =
+        rankedCandidates.length > 0
+          ? rankedCandidates
+          : scoredCandidates
+              .filter((entry) =>
+                isYandexArtistNameCompatible(normalizedArtistNames, entry.candidate.name || ''),
+              )
+              .sort(
+                (a, b) =>
+                  Number(b.candidate.ratings?.month || 0) - Number(a.candidate.ratings?.month || 0) ||
+                  Number(b.candidate.likesCount || 0) - Number(a.candidate.likesCount || 0) ||
+                  b.score - a.score,
+              );
+
+      if (fallbackCandidates.length === 0) {
+        const htmlMatch = await resolveYandexHtmlFallback(
+          normalizedArtistNames,
+          profileUrl,
+          artistId,
+        );
+        if (htmlMatch) {
+          artistId = htmlMatch.artistId;
+          matchedName = htmlMatch.matchedName;
+          audience = htmlMatch.audience;
+          profileUrl = profileUrl || htmlMatch.url;
+        } else {
+          console.log('[artist-insights][yandex][no-ranked-candidates]', {
+            artistNames: normalizedArtistNames,
+            profileUrl,
+            searchDebug,
+            candidates: candidateDebug,
+          });
+          return null;
+        }
+      } else {
+        const detailedMatch =
+          (
+            await Promise.all(
+              fallbackCandidates.slice(0, 4).map(async ({ candidate, score }) => {
+                const candidateId = String(candidate.id);
+                const briefInfo = await fetchExternalJson<YandexMusicArtistBriefInfoResponse>(
+                  `https://api.music.yandex.net/artists/${candidateId}/brief-info`,
+                );
+
+                return {
+                  candidate,
+                  score,
+                  candidateId,
+                  briefInfo,
+                  audience:
+                    roundAudience(briefInfo?.result?.stats?.lastMonthListeners) ??
+                    roundAudience(candidate.ratings?.month),
+                  matchedName: briefInfo?.result?.artist?.name || candidate.name || primaryArtistName,
+                };
+              }),
+            )
+          )
+            .sort(
+              (a, b) =>
+                Number(b.audience || 0) - Number(a.audience || 0) ||
+                b.score - a.score ||
+                Number(b.candidate.ratings?.month || 0) - Number(a.candidate.ratings?.month || 0) ||
+                Number(b.candidate.likesCount || 0) - Number(a.candidate.likesCount || 0),
+            )[0] ?? null;
+
+        const fallbackMatch = fallbackCandidates[0];
+        const selectedMatch = detailedMatch ?? {
+          candidate: fallbackMatch.candidate,
+          score: fallbackMatch.score,
+          candidateId: String(fallbackMatch.candidate.id),
+          briefInfo: null,
+          audience: roundAudience(fallbackMatch.candidate.ratings?.month),
+          matchedName: fallbackMatch.candidate.name || primaryArtistName,
+        };
+
+        artistId = selectedMatch.candidateId;
+        matchedName = selectedMatch.matchedName;
+        audience = selectedMatch.audience;
+        resolvedBriefInfo = selectedMatch.briefInfo;
+      }
+    }
+  }
+
+  if (!resolvedBriefInfo && artistId) {
+    resolvedBriefInfo = await fetchExternalJson<YandexMusicArtistBriefInfoResponse>(
+      `https://api.music.yandex.net/artists/${artistId}/brief-info`,
+    );
+  }
+
+  audience = audience ?? roundAudience(resolvedBriefInfo?.result?.stats?.lastMonthListeners);
+  matchedName = resolvedBriefInfo?.result?.artist?.name || matchedName;
+
+  if (artistId && audience == null) {
+    const htmlMatch = await resolveYandexHtmlFallback(normalizedArtistNames, profileUrl, artistId);
+    if (htmlMatch) {
+      matchedName = htmlMatch.matchedName || matchedName;
+      audience = htmlMatch.audience ?? audience;
+      profileUrl = profileUrl || htmlMatch.url;
+    }
+  }
+
+  console.log('[artist-insights][yandex]', {
+    artistNames: normalizedArtistNames,
+    profileUrl,
+    artistId,
+    matchedName,
+    audience,
+    searchDebug,
+    candidates: candidateDebug,
+    resolvedListeners: resolvedBriefInfo?.result?.stats?.lastMonthListeners ?? null,
+  });
+
+  return {
+    source: 'yandex_music',
+    label: 'Yandex Music',
+    matchedName,
+    url: profileUrl || `https://music.yandex.ru/artist/${artistId}`,
+    audience,
+  };
+}
+
+async function buildDirectArtistInsights(
+  userRef: string,
+  ctx: DirectRequestContext,
+): Promise<UserArtistInsights> {
+  const trackSearchParams = new URLSearchParams({
+    limit: '12',
+    linked_partitioning: 'true',
+    access: 'playable,preview,blocked',
+  });
+  const [user, webProfiles] = await Promise.all([
+    requestDirectPath<ExternalUserProfile>(buildNormalizedResourcePath('users', userRef), {}, ctx),
+    requestDirectPath<ExternalWebProfile[]>(
+      buildNormalizedResourcePath('users', userRef, ['web-profiles']),
+      {},
+      ctx,
+    ).catch(() => []),
+  ]);
+  const tracksResponse = await requestDirectPath<ExternalTrackCollection>(
+    buildNormalizedResourcePath('users', userRef, ['tracks'], trackSearchParams),
+    {},
+    ctx,
+  ).catch(() => ({ collection: [] }));
+
+  const artistNames = prioritizeArtistNames(
+    user?.username,
+    collectArtistInsightNames(user, webProfiles, tracksResponse.collection ?? []),
+  );
+  console.log('[artist-insights][direct][input]', {
+    userRef,
+    username: user?.username ?? null,
+    webProfiles,
+    artistNames,
+    trackCount: tracksResponse.collection?.length ?? 0,
+  });
+  if (artistNames.length === 0) {
+    console.log('[artist-insights][direct][empty-artist-names]', { userRef, user });
+    return {
+      estimatedMonthlyPlays: null,
+      platforms: [],
+      similarArtists: [],
+    };
+  }
+
+  const [spotifyPlatform, yandexPlatform] = await Promise.all([
+    withSoftTimeout(fetchSpotifyPlatform(artistNames, webProfiles), 2800, null),
+    withSoftTimeout(fetchYandexMusicPlatform(artistNames, webProfiles), 9000, null),
+  ]);
+
+  const platforms = [spotifyPlatform, yandexPlatform].filter(
+    (platform): platform is ArtistInsightPlatform => Boolean(platform),
+  );
+  const numericAudiences = platforms
+    .map((platform) => platform.audience)
+    .filter((audience): audience is number => typeof audience === 'number' && audience > 0);
+  const result = {
+    estimatedMonthlyPlays:
+      numericAudiences.length > 0
+        ? Math.round(
+            numericAudiences.reduce((sum, audience) => sum + audience, 0) / numericAudiences.length,
+          )
+        : null,
+    platforms,
+    similarArtists: [],
+  };
+
+  console.log('[artist-insights][direct][result]', {
+    userRef,
+    result,
+  });
+
+  return result;
 }
 
 async function handleLocalHistoryRequest<T>(
@@ -1194,6 +2319,10 @@ async function handleDirectRoute<T>(
   }
 
   if (pathSegments[0] === 'users' && pathSegments[1]) {
+    if (pathSegments[2] === 'artist-insights' && method === 'GET') {
+      return buildDirectArtistInsights(pathSegments[1], ctx) as Promise<T>;
+    }
+
     if (pathSegments[2] === 'followings' && pathSegments[3] && method === 'GET') {
       try {
         const userPath = buildNormalizedResourcePath(
@@ -1348,16 +2477,38 @@ export async function api<T = unknown>(
     const { getDirectAccessToken, hasValidDirectToken } = await import('./direct-soundcloud-api');
     const directAccessToken =
       (hasValidDirectToken() ? getDirectAccessToken() : null) ?? getDirectStoreAccessToken();
+    const isArtistInsightsRequest = path.includes('/artist-insights');
+
+    if (isArtistInsightsRequest) {
+      console.log('[artist-insights][api][start]', {
+        path,
+        hasDirectAccessToken: Boolean(directAccessToken),
+        hasSessionId: Boolean(sessionId ?? useAuthStore.getState().sessionId),
+      });
+    }
 
     if (directAccessToken) {
       try {
-        return await performStandaloneRequest<T>(
+        const result = await performStandaloneRequest<T>(
           path,
           requestOptions,
           { accessToken: directAccessToken, timeoutMs },
         );
+        if (isArtistInsightsRequest) {
+          console.log('[artist-insights][api][direct-result]', {
+            path,
+            result,
+          });
+        }
+        return result;
       } catch (error) {
         console.warn(`[api] Direct SoundCloud request failed for ${path}:`, error);
+        if (isArtistInsightsRequest) {
+          console.log('[artist-insights][api][direct-error]', {
+            path,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         throw error;
       }
     }
@@ -1470,7 +2621,14 @@ export async function api<T = unknown>(
     useAppStatusStore.getState().setSoundcloudBlocked(false);
 
     if (contentType?.includes('application/json')) {
-      return res.json();
+      const result = await res.json();
+      if (isArtistInsightsRequest) {
+        console.log('[artist-insights][api][backend-result]', {
+          path,
+          result,
+        });
+      }
+      return result;
     }
 
     return res.text() as T;

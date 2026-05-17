@@ -122,6 +122,20 @@ export interface WebProfile {
   username?: string;
 }
 
+export interface ArtistInsightPlatform {
+  source: 'spotify' | 'yandex_music';
+  label: string;
+  matchedName: string;
+  url: string | null;
+  audience: number | null;
+}
+
+export interface UserArtistInsights {
+  estimatedMonthlyPlays: number | null;
+  platforms: ArtistInsightPlatform[];
+  similarArtists: SCUser[];
+}
+
 interface UserListResponse {
   collection: SCUser[];
   next_href: string | null;
@@ -674,6 +688,19 @@ export function useUserWebProfiles(userUrn: string | undefined) {
     queryFn: () => api<WebProfile[]>(`/users/${encodeURIComponent(userUrn!)}/web-profiles`),
     enabled: !!userUrn,
     refetchOnMount: 'always',
+  });
+}
+
+export function useUserArtistInsights(userUrn: string | undefined) {
+  return useQuery({
+    queryKey: ['user', userUrn, 'artist-insights-v13'],
+    queryFn: () => api<UserArtistInsights>(`/users/${encodeURIComponent(userUrn!)}/artist-insights`),
+    enabled: !!userUrn,
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: Number.POSITIVE_INFINITY,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 

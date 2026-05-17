@@ -17,6 +17,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useShallow } from 'zustand/shallow';
 import { LikeButton } from '../components/music/LikeButton';
+import { SoundWaveLaunchButton } from '../components/music/SoundWaveLaunchButton';
 import { CopyLinkButton } from '../components/ui/CopyLinkButton';
 import { api } from '../lib/api';
 import { preloadTrack } from '../lib/audio';
@@ -98,7 +99,7 @@ const PlaylistLikeBtn = React.memo(
       <button
         type="button"
         onClick={toggle}
-        className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer ${
+        className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer ${
           liked
             ? 'bg-accent/15 text-accent border border-accent/20 shadow-[0_0_20px_rgba(255,85,0,0.1)]'
             : 'glass hover:bg-white/[0.05] text-white/60 hover:text-white/80'
@@ -519,22 +520,11 @@ export const PlaylistPage = React.memo(() => {
   return (
     <div className="p-6 pb-4 space-y-7 animate-fade-in-up">
       {/* ── Hero ─────────────────────────────────────── */}
-      <section className="relative rounded-3xl overflow-hidden glass-featured">
-        {cover && (
-          <div className="absolute inset-0 pointer-events-none">
-            <img
-              src={cover}
-              alt=""
-              className="w-full h-full object-cover scale-[1.5] blur-[100px] opacity-25 saturate-150"
-            />
-            <div className="absolute inset-0 bg-gradient-to-r from-[rgb(8,8,10)]/80 via-[rgb(8,8,10)]/60 to-[rgb(8,8,10)]/80" />
-          </div>
-        )}
-
+      <section className="relative">
         <div className="relative flex items-center gap-7 p-7">
           {/* Artwork */}
           <div
-            className="relative w-[200px] h-[200px] rounded-2xl overflow-hidden shrink-0 shadow-2xl ring-1 ring-white/[0.1] cursor-pointer group/cover"
+            className="relative isolate w-[200px] h-[200px] rounded-2xl overflow-hidden shrink-0 shadow-2xl ring-1 ring-white/[0.1] cursor-pointer group/cover"
             onClick={handlePlayAll}
           >
             {cover ? (
@@ -551,7 +541,7 @@ export const PlaylistPage = React.memo(() => {
 
             {/* Play overlay */}
             <div
-              className={`absolute inset-0 flex items-center justify-center transition-all duration-300 ${
+              className={`absolute inset-0 rounded-[inherit] overflow-hidden flex items-center justify-center transition-all duration-300 ${
                 isPlayingFromThis
                   ? 'bg-black/30 opacity-100'
                   : 'bg-black/0 opacity-0 group-hover/cover:bg-black/30 group-hover/cover:opacity-100'
@@ -607,7 +597,7 @@ export const PlaylistPage = React.memo(() => {
               <button
                 type="button"
                 onClick={handlePlayAll}
-                className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer shadow-[0_0_20px_var(--color-accent-glow)] ${
+                className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-medium transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer shadow-[0_0_20px_var(--color-accent-glow)] ${
                   isPlayingFromThis
                     ? 'bg-white text-black hover:bg-white/90'
                     : 'bg-accent text-accent-contrast hover:bg-accent-hover active:scale-[0.97]'
@@ -616,11 +606,20 @@ export const PlaylistPage = React.memo(() => {
                 {isPlayingFromThis ? pauseCurrent16 : playCurrent16}
                 {t('playlist.playAll')}
               </button>
+              <SoundWaveLaunchButton
+                seedTracks={tracks}
+                context={{
+                  kind: 'playlist',
+                  key: playlist.urn,
+                  title: playlist.title,
+                  subtitle: playlist.user.username,
+                }}
+              />
 
               <button
                 type="button"
                 onClick={handleShuffle}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium glass hover:bg-white/[0.05] text-white/60 hover:text-white/80 transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium glass hover:bg-white/[0.05] text-white/60 hover:text-white/80 transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer"
               >
                 <Shuffle size={16} />
                 {t('playlist.shuffle')}
@@ -628,7 +627,7 @@ export const PlaylistPage = React.memo(() => {
               <button
                 type="button"
                 onClick={handleTogglePin}
-                className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer ${
+                className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer ${
                   isPinned
                     ? 'bg-white/[0.08] text-white/85 border border-white/[0.12]'
                     : 'glass hover:bg-white/[0.05] text-white/60 hover:text-white/80'
@@ -638,12 +637,12 @@ export const PlaylistPage = React.memo(() => {
                 {isPinned ? t('sidebar.unpinPlaylist') : t('sidebar.pinPlaylist')}
               </button>
               <PlaylistLikeBtn playlistUrn={playlist.urn} count={playlist.likes_count} />
-              <CopyLinkButton url={playlist.permalink_url} />
+              <CopyLinkButton url={playlist.permalink_url} className="rounded-full" />
               {isOwner && (
                 <button
                   type="button"
                   onClick={() => setShowDeleteConfirm(true)}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium glass hover:bg-red-500/10 text-white/40 hover:text-red-400 transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium glass hover:bg-red-500/10 text-white/40 hover:text-red-400 transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer"
                 >
                   <Trash2 size={16} />
                   {t('playlist.delete')}
@@ -679,13 +678,7 @@ export const PlaylistPage = React.memo(() => {
       </section>
 
       {/* ── Description ──────────────────────────────── */}
-      {playlist.description && (
-        <section className="glass rounded-2xl p-5">
-          <p className="text-[13px] text-white/45 leading-relaxed whitespace-pre-wrap break-words">
-            {playlist.description}
-          </p>
-        </section>
-      )}
+      
 
       {/* ── Track list ───────────────────────────────── */}
       <section>
@@ -764,6 +757,14 @@ export const PlaylistPage = React.memo(() => {
       </section>
 
       {/* ── Delete confirmation ────────────────────── */}
+      {playlist.description && (
+        <section className="glass rounded-2xl p-5">
+          <p className="text-[13px] text-white/45 leading-relaxed whitespace-pre-wrap break-words">
+            {playlist.description}
+          </p>
+        </section>
+      )}
+
       <Dialog.Root open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 animate-fade-in" />

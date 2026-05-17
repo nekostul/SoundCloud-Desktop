@@ -18,9 +18,11 @@ function cleanPermalink(url: string): string {
 export function CopyLinkButton({
   url,
   size = 'md',
+  className = '',
 }: {
   url: string | undefined;
   size?: 'sm' | 'md';
+  className?: string;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -44,7 +46,7 @@ export function CopyLinkButton({
         copied
           ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
           : 'bg-white/[0.04] border-white/[0.06] text-white/50 hover:bg-white/[0.08] hover:text-white/80 hover:border-white/[0.1]'
-      } ${size === 'sm' ? 'px-3 py-1.5 text-[11px]' : 'px-4 py-2.5 text-[12px]'}`}
+      } ${size === 'sm' ? 'px-3 py-1.5 text-[11px]' : 'px-4 py-2.5 text-[12px]'} ${className}`}
     >
       {copied ? <Check size={iconSize} className="text-emerald-400" /> : <Link size={iconSize} />}
       {copied ? t('auth.copied') : t('auth.copyLink')}
