@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { getDuration, getSmoothCurrentTime, seek, subscribe } from '../../../lib/audio';
+import {
+  getDuration,
+  getSmoothCurrentTime,
+  seek,
+  subscribe,
+} from '../../../lib/audio';
 import {
   cancelAnimationFrameImmediate,
   requestAnimationFrameImmediate,
@@ -64,11 +69,13 @@ export const LiveWaveform = React.memo(
 
     const rootRef = useRef<HTMLDivElement>(null);
     const hintRef = useRef<HTMLDivElement>(null);
+    const lastProgressPercentRef = useRef<number>(-1);
 
     useEffect(() => {
       if (!isCurrent) {
         if (rootRef.current) rootRef.current.style.setProperty('--sw-progress', '0%');
-        if (hintRef.current) hintRef.current.style.left = '0%';
+        if (hintRef.current) hintRef.current.style.transform = 'translateX(0px)';
+        lastProgressPercentRef.current = 0;
         return;
       }
 
@@ -76,8 +83,13 @@ export const LiveWaveform = React.memo(
         const t = getSmoothCurrentTime();
         const d = getDuration();
         const pct = d > 0 ? Math.min(100, Math.max(0, (t / d) * 100)) : 0;
+        if (Math.abs(lastProgressPercentRef.current - pct) < 0.08) return;
+        lastProgressPercentRef.current = pct;
         if (rootRef.current) rootRef.current.style.setProperty('--sw-progress', `${pct}%`);
-        if (hintRef.current) hintRef.current.style.left = `${pct}%`;
+        if (hintRef.current && rootRef.current) {
+          const offset = (pct / 100) * rootRef.current.clientWidth;
+          hintRef.current.style.transform = `translateX(${offset}px)`;
+        }
       };
 
       paint();
@@ -134,12 +146,13 @@ export const LiveWaveform = React.memo(
             ref={hintRef}
             className="absolute top-0 bottom-0 w-[2px] pointer-events-none rounded-full"
             style={{
-              left: '0%',
+              left: 0,
+              transform: 'translateX(0px)',
               // Plain white line — neutral against any accent / artwork
               // gradient, doesn't compete with the colored bars below.
               background: 'rgba(255, 255, 255, 0.75)',
               boxShadow: '0 0 6px rgba(255, 255, 255, 0.35), 0 0 12px rgba(255, 255, 255, 0.18)',
-              willChange: 'left',
+              willChange: 'transform',
               // Bars and line both update instantly on each audio tick now
               // (CSS transition removed from .sw-layer-accent for the same
               // reason — see index.css comment). They stay perfectly in

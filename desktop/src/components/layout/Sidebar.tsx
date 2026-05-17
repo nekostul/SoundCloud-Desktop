@@ -30,7 +30,6 @@ export const Sidebar = React.memo(() => {
   const { t, i18n } = useTranslation();
 
   const user = useAuthStore((s) => s.user);
-
   const { collapsed, pinnedPlaylists, toggleSidebar } = useSettingsStore(
     useShallow((s) => ({
       collapsed: s.sidebarCollapsed,

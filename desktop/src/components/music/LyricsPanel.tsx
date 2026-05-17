@@ -1760,7 +1760,7 @@ const displayText =
                         container.scrollTo({ top, behavior: 'smooth' });
                       }
                     } else {
-                      seek(line.time);
+                      seek(line.time, true, true);
                     }
                   }
                 }}
@@ -2424,7 +2424,7 @@ return (
                       });
                     }
                   } else {
-                    seek(line.time);
+                    seek(line.time, true, true);
                   }
                 }
               }}

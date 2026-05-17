@@ -20,6 +20,7 @@ import {
   useRecommendedTracks,
   useRelatedPool,
 } from '../lib/hooks';
+import { useMountFrameGate } from '../lib/useMountFrameGate';
 import {
   Compass,
   Headphones,
@@ -695,6 +696,8 @@ const FeedStream = React.memo(function FeedStream() {
 export function Home() {
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const heavyContentReady = useMountFrameGate(isPlaying, 3);
 
   const { tracks: likedTracks, isLoading: isLikesLoading } = useLikedTracks(100);
   const { data: pool, isLoading: isPoolLoading } = useRelatedPool(likedTracks);
@@ -710,13 +713,27 @@ export function Home() {
         <div className="mt-5 h-px bg-gradient-to-r from-white/[0.08] via-white/[0.04] to-transparent w-full" />
       </section>
 
-      <SoundWaveBlock />
-      <MixShelf pool={pool} isLoading={isPoolLoading} />
-      <FallbackShelf />
-      <LikedShelf likedTracks={likedTracks} isLoading={isLikesLoading} />
-      <FollowingShelf />
-      <DiscoverSection likedTracks={likedTracks} pool={pool} isLoading={isPoolLoading} />
-      <FeedStream />
+      {heavyContentReady ? (
+        <>
+          <SoundWaveBlock />
+          <MixShelf pool={pool} isLoading={isPoolLoading} />
+          <FallbackShelf />
+          <LikedShelf likedTracks={likedTracks} isLoading={isLikesLoading} />
+          <FollowingShelf />
+          <DiscoverSection likedTracks={likedTracks} pool={pool} isLoading={isPoolLoading} />
+          <FeedStream />
+        </>
+      ) : (
+        <>
+          <div className="glass-featured rounded-3xl min-h-[420px]" />
+          <section>
+            <HorizontalScroll>
+              <ShelfSkeleton count={6} />
+            </HorizontalScroll>
+          </section>
+          <FeedSkeleton count={4} />
+        </>
+      )}
     </div>
   );
 }

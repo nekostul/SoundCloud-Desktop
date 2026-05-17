@@ -20,6 +20,7 @@ import {
   useMyPlaylists,
 } from '../lib/hooks';
 import { filterTracksByQuery } from '../lib/track-search';
+import { useMountFrameGate } from '../lib/useMountFrameGate';
 import {
   Heart,
   headphones11,
@@ -907,6 +908,8 @@ export const Library = React.memo(() => {
   const [filter, setFilter] = useState('');
   const deferredFilter = useDeferredValue(filter);
   const user = useAuthStore((s) => s.user);
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const heavyContentReady = useMountFrameGate(isPlaying, 3);
 
   const rawTabParam = searchParams.get('tab');
   const activeTab: LibraryTab = isLibraryTab(rawTabParam) ? rawTabParam : 'likes';
@@ -988,11 +991,28 @@ export const Library = React.memo(() => {
         </div>
       </div>
 
-      {activeTab === 'likes' && <LikesTab filter={deferredFilter} />}
-      {activeTab === 'following' && <FollowingTab filter={deferredFilter} />}
-      {activeTab === 'playlists' && <PlaylistsTab filter={deferredFilter} />}
-      {activeTab === 'history' && <HistoryTab />}
-      {activeTab === 'dislikes' && <DislikesTab filter={deferredFilter} />}
+      {heavyContentReady ? (
+        <>
+          {activeTab === 'likes' && <LikesTab filter={deferredFilter} />}
+          {activeTab === 'following' && <FollowingTab filter={deferredFilter} />}
+          {activeTab === 'playlists' && <PlaylistsTab filter={deferredFilter} />}
+          {activeTab === 'history' && <HistoryTab />}
+          {activeTab === 'dislikes' && <DislikesTab filter={deferredFilter} />}
+        </>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(380px,1fr))] gap-2.5">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="glass-flat rounded-2xl p-3 flex items-center gap-3.5">
+              <div className="w-[76px] h-[76px] shrink-0 rounded-xl bg-white/[0.04]" />
+              <div className="flex-1 space-y-2">
+                <div className="h-4 w-3/4 rounded bg-white/[0.06]" />
+                <div className="h-3 w-1/2 rounded bg-white/[0.04]" />
+                <div className="h-2.5 w-2/5 rounded bg-white/[0.03]" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 });

@@ -90,7 +90,7 @@ export const ProgressSlider = React.memo(() => {
   const [dragging, setDragging] = useState(false);
   const [hoverPercent, setHoverPercent] = useState<number | null>(null);
   const [dragValue, setDragValue] = useState(0);
-  const [syncedValue, setSyncedValue] = useState(0);
+  const [sliderValue, setSliderValue] = useState(0);
   const [layoutRevision, setLayoutRevision] = useState(0);
   const [hideDurationTooltip, setHideDurationTooltip] = useState(false);
 
@@ -132,13 +132,13 @@ export const ProgressSlider = React.memo(() => {
 
   useEffect(() => {
     durationRef.current = duration;
-    paintProgressFill(dragging ? dragValue : syncedValue);
-  }, [dragValue, dragging, duration, paintProgressFill, syncedValue]);
+    paintProgressFill(dragging ? dragValue : liveValueRef.current);
+  }, [dragValue, dragging, duration, paintProgressFill]);
 
   useEffect(() => {
     liveValueRef.current = 0;
     paintProgressFill(0);
-    setSyncedValue(0);
+    setSliderValue(0);
   }, [currentTrackUrn, paintProgressFill]);
 
   // Keep slider state in sync without competing DOM mutations
@@ -159,9 +159,6 @@ export const ProgressSlider = React.memo(() => {
       if (!draggingRef.current) {
         const nextValue = getCurrentTime();
         paintProgressFill(nextValue);
-        setSyncedValue((previousValue) =>
-          Math.abs(previousValue - nextValue) < 0.05 ? previousValue : nextValue,
-        );
       }
     });
 
@@ -171,7 +168,7 @@ export const ProgressSlider = React.memo(() => {
     };
   }, [isPlaying, paintProgressFill]);
 
-  const displayValue = dragging ? dragValue : syncedValue;
+  const displayValue = dragging ? dragValue : liveValueRef.current;
   const seekableLimit = duration > 0 ? Math.max(0, duration - 0.15) : Number.POSITIVE_INFINITY;
   const seekDisabled = duration <= 0;
   const hoverPreviewEnabled = duration > 0;
@@ -310,7 +307,7 @@ export const ProgressSlider = React.memo(() => {
       seek(nextValue, true, true);
       draggingRef.current = false;
       setDragging(false);
-      setSyncedValue(nextValue);
+      setSliderValue(nextValue);
     },
     [paintProgressFill, seekDisabled, seekableLimit],
   );
@@ -368,6 +365,11 @@ export const ProgressSlider = React.memo(() => {
     return () => cancelAnimationFrame(frameId);
   }, [showHoverTooltips, displayValue, duration, progressRatio]);
 
+  useEffect(() => {
+    if (!showHoverPreview && !showHoverTooltips) return;
+    paintProgressFill(dragging ? dragValue : liveValueRef.current);
+  }, [dragValue, dragging, paintProgressFill, showHoverPreview, showHoverTooltips]);
+
   // Markers (little dots) on the track
   const markers = React.useMemo(() => {
     if (!comments || !duration) return null;
@@ -417,7 +419,7 @@ export const ProgressSlider = React.memo(() => {
         className={`relative flex items-start w-full h-[10px] select-none touch-none group/slider ${
           seekDisabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'
         }`}
-        value={[displayValue]}
+        value={[dragging ? dragValue : sliderValue]}
         max={duration || 1}
         step={0.1}
         onValueChange={onValueChange}
@@ -468,6 +470,7 @@ export const ProgressSlider = React.memo(() => {
         <Slider.Thumb className="hidden" />
       </Slider.Root>
       {!seekDisabled &&
+        showHoverPreview &&
         sliderRect &&
         createPortal(
           <div
@@ -498,6 +501,7 @@ export const ProgressSlider = React.memo(() => {
           document.body,
         )}
       {!isFullscreenOverlayOpen &&
+        showHoverTooltips &&
         hoverPreviewRect &&
         createPortal(
           <>
@@ -612,38 +616,45 @@ export const ProgressTime = React.memo(() => {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const currentRef = useRef<HTMLSpanElement | null>(null);
   const durationRef = useRef<HTMLSpanElement | null>(null);
+  const lastCurrentSecondRef = useRef<number | null>(null);
+  const lastDurationRef = useRef<number | null>(null);
 
   useEffect(() => {
     let rafId: number;
 
     const paint = () => {
-      if (currentRef.current) {
-        currentRef.current.textContent = formatTime(
-          Math.floor(isPlaying ? getSmoothCurrentTime() : getCurrentTime()),
-        );
+      const currentSecond = Math.floor(isPlaying ? getSmoothCurrentTime() : getCurrentTime());
+      if (currentRef.current && lastCurrentSecondRef.current !== currentSecond) {
+        lastCurrentSecondRef.current = currentSecond;
+        currentRef.current.textContent = formatTime(currentSecond);
       }
-      if (durationRef.current) {
+      if (durationRef.current && lastDurationRef.current !== duration) {
+        lastDurationRef.current = duration;
         durationRef.current.textContent = formatTime(duration);
       }
     };
 
     paint();
-    rafId = requestAnimationFrameImmediate(function loop() {
-      if (!isAppBackgrounded()) {
-        paint();
-      }
-      rafId = requestAnimationFrameImmediate(loop);
-    });
+    if (isPlaying) {
+      rafId = requestAnimationFrameImmediate(function loop() {
+        if (!isAppBackgrounded()) {
+          paint();
+        }
+        rafId = requestAnimationFrameImmediate(loop);
+      });
+    }
 
     const unsub = subscribe(() => {
       paint();
     });
 
     return () => {
-      cancelAnimationFrameImmediate(rafId);
+      if (rafId) {
+        cancelAnimationFrameImmediate(rafId);
+      }
       unsub();
     };
-  }, [isPlaying]);
+  }, [duration, isPlaying]);
 
   return (
     <div className="flex items-center gap-1.5">

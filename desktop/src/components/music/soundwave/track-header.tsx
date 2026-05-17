@@ -1,6 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getDuration, getSmoothCurrentTime, subscribe } from '../../../lib/audio';
+import {
+  getDuration,
+  getSmoothCurrentTime,
+  subscribe,
+} from '../../../lib/audio';
 import { art, dur } from '../../../lib/formatters';
 import {
   cancelAnimationFrameImmediate,
@@ -21,13 +25,23 @@ function formatMMSS(sec: number): string {
 const CurrentTimeDisplay = React.memo(function CurrentTimeDisplay() {
   const tRef = useRef<HTMLSpanElement>(null);
   const dRef = useRef<HTMLSpanElement>(null);
+  const lastCurrentSecondRef = useRef<number | null>(null);
+  const lastDurationSecondRef = useRef<number | null>(null);
 
   useEffect(() => {
     let rafId: number;
 
     const paint = () => {
-      if (tRef.current) tRef.current.textContent = formatMMSS(getSmoothCurrentTime());
-      if (dRef.current) dRef.current.textContent = formatMMSS(getDuration());
+      const currentSecond = Math.floor(getSmoothCurrentTime());
+      const durationSecond = Math.floor(getDuration());
+      if (tRef.current && lastCurrentSecondRef.current !== currentSecond) {
+        lastCurrentSecondRef.current = currentSecond;
+        tRef.current.textContent = formatMMSS(currentSecond);
+      }
+      if (dRef.current && lastDurationSecondRef.current !== durationSecond) {
+        lastDurationSecondRef.current = durationSecond;
+        dRef.current.textContent = formatMMSS(durationSecond);
+      }
     };
 
     paint();
