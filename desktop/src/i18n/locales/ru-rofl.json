@@ -208,10 +208,6 @@
     "noPlaylists": "Плейлистов нет"
   },
   "home": {
-    "goodMorning": "Ну доброе утро бля",
-    "goodAfternoon": "Опять музыку гоняешь?",
-    "goodEvening": "Вечерний вайб пошёл",
-    "goodNight": "Иди спать",
     "yourFeed": "Твоя лента хуйни",
     "freshReleases": "Свежак подъехал",
     "reposted": "Спизжено репостом",
@@ -629,6 +625,8 @@
   "soundwave": {
     "tagline": "Твоя личная волна шизы",
     "playAll": "ВРУБИТЬ ВСЁ",
+    "pausePlayback": "ПРИТОРМОЗИТЬ",
+    "resumePlayback": "ДОЖАТЬ",
     "refresh": "Перегенерить хуйню",
     "languages": "Языки",
     "allLanguages": "Любой бубнёж",

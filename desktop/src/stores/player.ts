@@ -247,6 +247,7 @@ interface PlayerState {
   resetPitchSemitones: () => void;
   setPitchControlMode: (mode: PitchControlMode) => void;
   setQueue: (queue: Track[]) => void;
+  replaceQueueKeepingCurrent: (queue: Track[], source?: 'manual' | 'soundwave') => void;
   addToQueue: (tracks: Track[]) => void;
   addToQueueNext: (tracks: Track[]) => void;
   removeFromQueue: (index: number) => void;
@@ -492,6 +493,25 @@ export const usePlayerStore = create<PlayerState>()(
             queue: uniqueQueue,
             queueIndex: idx >= 0 ? idx : s.queueIndex,
             originalQueue: s.shuffle ? [...uniqueQueue] : null,
+          };
+        }),
+
+      replaceQueueKeepingCurrent: (queue, source = 'manual') =>
+        set((s) => {
+          if (!s.currentTrack) return {};
+
+          const uniqueQueue = dedupeTracks(queue);
+          const nextQueue =
+            uniqueQueue.findIndex((track) => track.urn === s.currentTrack!.urn) >= 0
+              ? uniqueQueue
+              : dedupeTracks([s.currentTrack, ...uniqueQueue]);
+          const queueIndex = nextQueue.findIndex((track) => track.urn === s.currentTrack!.urn);
+
+          return {
+            queue: nextQueue,
+            queueIndex,
+            queueSource: source,
+            originalQueue: s.shuffle ? [...nextQueue] : null,
           };
         }),
 

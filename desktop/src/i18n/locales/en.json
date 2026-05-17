@@ -208,10 +208,6 @@
     "noPlaylists": "No playlists found"
   },
   "home": {
-    "goodMorning": "Good morning",
-    "goodAfternoon": "Good afternoon",
-    "goodEvening": "Good evening",
-    "goodNight": "Good night",
     "yourFeed": "Your Feed",
     "freshReleases": "Fresh Releases",
     "reposted": "Reposted",
@@ -629,6 +625,8 @@
   "soundwave": {
     "tagline": "Your personal radio — picked just for you",
     "playAll": "Play all",
+    "pausePlayback": "Pause",
+    "resumePlayback": "Resume",
     "refresh": "Refresh",
     "languages": "Languages",
     "allLanguages": "All languages",

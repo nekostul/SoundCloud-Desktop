@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   getDuration,
@@ -10,8 +10,8 @@ import {
   cancelAnimationFrameImmediate,
   requestAnimationFrameImmediate,
 } from '../../../lib/framerate';
-import { pauseBlack14, playBlack14 } from '../../../lib/icons';
-import { useTrackPlay } from '../../../lib/useTrackPlay';
+import { playBlack14 } from '../../../lib/icons';
+import { usePlayerStore } from '../../../stores/player';
 import type { Track } from '../../../stores/player';
 
 function formatMMSS(sec: number): string {
@@ -19,6 +19,23 @@ function formatMMSS(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function uniqueCoverSources(values: Array<string | null | undefined>): string[] {
+  return values.filter(
+    (value, index, items): value is string => Boolean(value) && items.indexOf(value) === index,
+  );
+}
+
+function buildCoverSources(url: string | null | undefined): string[] {
+  if (!url) return [];
+  return uniqueCoverSources([
+    url,
+    art(url, 't500x500'),
+    art(url, 't300x300'),
+    art(url, 't200x200'),
+    art(url, 't120x120'),
+  ]);
 }
 
 /** Elapsed / total time readout. DOM-ref updates — zero React re-renders. */
@@ -76,42 +93,108 @@ interface Props {
 
 /** Cover + title/artist row rendered above the waveform. */
 export const WaveTrackHeader = React.memo(
-  function WaveTrackHeader({ track, queue, isCurrent }: Props) {
+  function WaveTrackHeader({ track, queue: _queue, isCurrent }: Props) {
     const navigate = useNavigate();
-    const { isThisPlaying, togglePlay } = useTrackPlay(track, queue);
-    const cover = art(track.artwork_url, 't120x120');
+    const isPlaying = usePlayerStore((s) => s.isPlaying);
+    const previousCoverClearTimeoutRef = useRef<number | null>(null);
+    const lastResolvedCoverRef = useRef<string | null>(null);
+    const coverSources = useMemo(
+      () =>
+        uniqueCoverSources([
+          ...buildCoverSources(track.artwork_url),
+          ...buildCoverSources(track.user.avatar_url),
+        ]),
+      [track.artwork_url, track.user.avatar_url],
+    );
+    const [coverIndex, setCoverIndex] = useState(0);
+    const [coverLoaded, setCoverLoaded] = useState(false);
+    const [previousCover, setPreviousCover] = useState<string | null>(null);
+    const [previousCoverVisible, setPreviousCoverVisible] = useState(false);
+    const isThisPlaying = isCurrent && isPlaying;
+
+    useLayoutEffect(() => {
+      if (previousCoverClearTimeoutRef.current !== null) {
+        window.clearTimeout(previousCoverClearTimeoutRef.current);
+        previousCoverClearTimeoutRef.current = null;
+      }
+      setPreviousCover(lastResolvedCoverRef.current);
+      setPreviousCoverVisible(Boolean(lastResolvedCoverRef.current));
+      setCoverIndex(0);
+      setCoverLoaded(false);
+    }, [track.urn, coverSources]);
+
+    useEffect(() => {
+      return () => {
+        if (previousCoverClearTimeoutRef.current !== null) {
+          window.clearTimeout(previousCoverClearTimeoutRef.current);
+        }
+      };
+    }, []);
+
+    const cover = coverSources[coverIndex] ?? null;
+    const handleCoverLoad = () => {
+      lastResolvedCoverRef.current = cover;
+      setCoverLoaded(true);
+      if (previousCover) {
+        requestAnimationFrameImmediate(() => {
+          setPreviousCoverVisible(false);
+        });
+        previousCoverClearTimeoutRef.current = window.setTimeout(() => {
+          setPreviousCover(null);
+          previousCoverClearTimeoutRef.current = null;
+        }, 420);
+      }
+    };
+    const handleCoverError = () => {
+      setCoverLoaded(false);
+      setCoverIndex((current) => (current + 1 < coverSources.length ? current + 1 : current));
+    };
 
     return (
       <div className="flex items-center gap-3 min-w-0">
-        <button
-          type="button"
-          onClick={togglePlay}
-          className="relative w-14 h-14 rounded-xl overflow-hidden shrink-0 ring-1 ring-white/[0.12] cursor-pointer group shadow-lg"
-        >
+        <div className="relative block w-14 h-14 rounded-xl overflow-hidden shrink-0 ring-1 ring-white/[0.12] shadow-lg">
+          <div className="absolute inset-0 bg-white/[0.04]" />
+          {previousCover ? (
+            <img
+              src={previousCover}
+              alt=""
+              className={`absolute inset-0 block w-full h-full object-cover transition-opacity duration-[420ms] ease-[var(--ease-apple)] ${
+                previousCoverVisible ? 'opacity-100' : 'opacity-0'
+              }`}
+              decoding="async"
+              draggable={false}
+            />
+          ) : null}
           {cover ? (
             <img
               src={cover}
               alt={track.title}
-              className="w-full h-full object-cover transition-transform duration-500 ease-[var(--ease-apple)] group-hover:scale-105"
+              onLoad={handleCoverLoad}
+              onError={handleCoverError}
+              className={`absolute inset-0 block w-full h-full object-cover transition-opacity duration-[420ms] ease-[var(--ease-apple)] ${
+                coverLoaded ? 'opacity-100' : 'opacity-0'
+              }`}
               decoding="async"
+              loading="eager"
+              draggable={false}
             />
           ) : (
-            <div className="w-full h-full bg-white/[0.04]" />
+            <div className="absolute inset-0 bg-white/[0.04]" />
           )}
           <span
             className={`absolute inset-0 flex items-center justify-center transition-all duration-200 ${
-              isThisPlaying ? 'bg-black/35' : 'bg-black/0 group-hover:bg-black/35'
+              isThisPlaying ? 'bg-black/35' : 'bg-black/0'
             }`}
           >
             <span
               className={`w-9 h-9 rounded-full bg-white flex items-center justify-center shadow-lg transition-transform duration-200 ${
-                isThisPlaying ? 'scale-100' : 'scale-0 group-hover:scale-100'
+                'scale-0 opacity-0'
               }`}
             >
-              {isThisPlaying ? pauseBlack14 : playBlack14}
+              {playBlack14}
             </span>
           </span>
-        </button>
+        </div>
 
         <div className="min-w-0 flex-1">
           <p

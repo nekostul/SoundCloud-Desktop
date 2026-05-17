@@ -1512,6 +1512,12 @@ interface SoundWaveState {
 
   init: () => Promise<void>;
   start: (preset: SoundWavePreset) => Promise<void>;
+  startFromQueue: (options: {
+    queue: Track[];
+    seedTracks?: Track[];
+    preserveCurrentTrack?: boolean;
+    preset?: SoundWavePreset | null;
+  }) => Promise<void>;
   stop: () => void;
   suspendForExternalPlayback: (queue: Track[], queueIndex: number) => void;
   resumeSuspendedPlayback: () => boolean;
@@ -1848,6 +1854,73 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       console.error('[SoundWave] Start failed', e);
       set({ isActive: false, startupVisible: false, startupProgress: 0, startupStage: 'idle' });
     }
+  },
+
+  startFromQueue: async ({ queue, seedTracks = [], preserveCurrentTrack = false, preset = null }) => {
+    const normalizedQueue = queue.filter((track) => !!track?.urn);
+    if (normalizedQueue.length === 0) return;
+
+    const { init, stop } = get();
+    const restartInPlace = preserveCurrentTrack && get().isActive;
+
+    if (startupProgressHideTimer) {
+      clearTimeout(startupProgressHideTimer);
+      startupProgressHideTimer = null;
+    }
+
+    if (!restartInPlace) {
+      stop();
+      set({ startupVisible: true, startupProgress: 8, startupStage: 'preset' });
+    }
+
+    await init();
+
+    const qdrant = get().qdrant;
+    const likedUrns = getLikedUrnsSnapshot();
+    const positiveIds: (number | number[])[] = [];
+
+    if (qdrant && seedTracks.length > 0) {
+      try {
+        await qdrant.upsert(
+          seedTracks.map((track) => ({
+            track,
+            features: audioAnalyser.getFeatures(track.urn),
+            isLiked: likedUrns.has(track.urn) || Boolean(track.user_favorite),
+          })),
+        );
+      } catch (error) {
+        console.error('[SoundWave] Failed to seed queue-start tracks', error);
+      }
+
+      for (const track of seedTracks) {
+        const id = qdrant.urnToId(track.urn);
+        if (id > 0) {
+          positiveIds.push(id);
+        }
+      }
+    }
+
+    set({
+      isActive: true,
+      isSuspended: false,
+      currentPreset: preset,
+      playedUrns: new Set(),
+      sessionPositive: positiveIds.slice(-30),
+      sessionNegative: [],
+      suspendedQueue: null,
+      suspendedQueueIndex: -1,
+      startupVisible: restartInPlace ? get().startupVisible : false,
+      startupProgress: restartInPlace ? get().startupProgress : 0,
+      startupStage: restartInPlace ? 'idle' : 'done',
+    });
+
+    const player = usePlayerStore.getState();
+    if (preserveCurrentTrack && player.currentTrack) {
+      player.replaceQueueKeepingCurrent(normalizedQueue, 'soundwave');
+      return;
+    }
+
+    player.play(normalizedQueue[0], normalizedQueue, 'soundwave');
   },
 
   stop: () => {

@@ -76,14 +76,6 @@ function LazyRender({
   );
 }
 
-function greetingKey() {
-  const h = new Date().getHours();
-  if (h < 6) return 'home.goodNight';
-  if (h < 12) return 'home.goodMorning';
-  if (h < 18) return 'home.goodAfternoon';
-  return 'home.goodEvening';
-}
-
 /* ── Section Header ───────────────────────────────────────── */
 
 function SectionHeader({
@@ -694,8 +686,6 @@ const FeedStream = React.memo(function FeedStream() {
 /* ── Home Page ────────────────────────────────────────────── */
 
 export function Home() {
-  const { t } = useTranslation();
-  const user = useAuthStore((s) => s.user);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const heavyContentReady = useMountFrameGate(isPlaying, 3);
 
@@ -704,15 +694,6 @@ export function Home() {
 
   return (
     <div className="p-6 pb-6 space-y-12">
-      {/* Hero Greeting */}
-      <section className="pt-2">
-        <h1 className="text-4xl font-bold tracking-tight greeting-gradient leading-[1.15] animate-fade-in-up">
-          {t(greetingKey())}
-          {user?.username ? `, ${user.username}` : ''}
-        </h1>
-        <div className="mt-5 h-px bg-gradient-to-r from-white/[0.08] via-white/[0.04] to-transparent w-full" />
-      </section>
-
       {heavyContentReady ? (
         <>
           <SoundWaveBlock />
