@@ -1188,6 +1188,57 @@ type RankedTrack = Track & {
   _heardRank: number;
 };
 
+const buildTrackFingerprint = (track: Track): Set<string> => {
+  const text = `${track.genre || ''} ${track.tag_list || ''} ${track.title || ''} ${track.user?.username || ''}`
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё\s-]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!text) return new Set();
+
+  return new Set(
+    text
+      .split(' ')
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3),
+  );
+};
+
+const computeTrackContinuityScore = (track: Track, anchors: Track[]): number => {
+  if (anchors.length === 0) return 0;
+
+  const trackArtist = track.user?.username?.toLowerCase().trim() || '';
+  const trackGenre = (track.genre || '').toLowerCase().trim();
+  const trackTokens = buildTrackFingerprint(track);
+  let score = 0;
+
+  for (let index = 0; index < anchors.length; index += 1) {
+    const anchor = anchors[index];
+    const weight = index === anchors.length - 1 ? 1.4 : 0.85;
+    const anchorArtist = anchor.user?.username?.toLowerCase().trim() || '';
+    const anchorGenre = (anchor.genre || '').toLowerCase().trim();
+    const anchorTokens = buildTrackFingerprint(anchor);
+
+    if (trackGenre && anchorGenre && trackGenre === anchorGenre) {
+      score += 2.3 * weight;
+    }
+
+    if (trackArtist && anchorArtist && trackArtist === anchorArtist) {
+      score += 1.1 * weight;
+    }
+
+    let overlap = 0;
+    for (const token of trackTokens) {
+      if (anchorTokens.has(token)) overlap += 1;
+    }
+
+    score += Math.min(4, overlap) * 0.38 * weight;
+  }
+
+  return score;
+};
+
 const normalizeTrackUrn = (value: string): string => {
   if (!value) return '';
   if (value.startsWith('soundcloud:tracks:')) return value;
@@ -1288,9 +1339,52 @@ const selectBalancedTracks = (
   return picked;
 };
 
+const orderTracksForContinuity = (
+  tracks: RankedTrack[],
+  anchors: Track[],
+  preset: SoundWavePreset | null,
+  limit: number,
+): RankedTrack[] => {
+  const remaining = [...tracks];
+  const recentAnchors = dedupeTracksByUrn(anchors).slice(-3);
+  const ordered: RankedTrack[] = [];
+
+  while (remaining.length > 0 && ordered.length < limit) {
+    let bestIndex = 0;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (let index = 0; index < remaining.length; index += 1) {
+      const track = remaining[index];
+      let score = track._swScore + computeTrackContinuityScore(track, recentAnchors);
+      const lastAnchor = recentAnchors[recentAnchors.length - 1];
+      const sameArtistAsLast =
+        lastAnchor?.user?.username &&
+        track.user?.username &&
+        lastAnchor.user.username.trim().toLowerCase() === track.user.username.trim().toLowerCase();
+
+      if (sameArtistAsLast) {
+        score -= preset?.mode === 'discover' ? 2.6 : 1.4;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    }
+
+    const [selected] = remaining.splice(bestIndex, 1);
+    ordered.push(selected);
+    recentAnchors.push(selected);
+    if (recentAnchors.length > 3) recentAnchors.shift();
+  }
+
+  return ordered;
+};
+
 const finalizeCandidates = async (
   candidates: RankedTrack[],
   preset: SoundWavePreset | null,
+  anchorTracks: Track[] = [],
   limit = 20,
 ): Promise<Track[]> => {
   if (candidates.length === 0) return [];
@@ -1307,7 +1401,10 @@ const finalizeCandidates = async (
     } as RankedTrack;
   });
 
-  return selectBalancedTracks(rescored, preset, limit).map((track) => track as Track);
+  const balanced = selectBalancedTracks(rescored, preset, Math.max(limit + 6, limit));
+  return orderTracksForContinuity(balanced, anchorTracks, preset, limit).map(
+    (track) => track as Track,
+  );
 };
 
 const SOUNDWAVE_BATCH_LIMIT = 20;
@@ -2587,6 +2684,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
             const finalTracks = await finalizeCandidates(
               candidatesForFinalize,
               currentPreset,
+              seedTracks,
               SOUNDWAVE_BATCH_LIMIT,
             );
             updateStartup(98, 'done');
@@ -2964,6 +3062,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       const selected = await finalizeCandidates(
         candidatesForFinalize,
         currentPreset,
+        seedTracks,
         SOUNDWAVE_BATCH_LIMIT,
       );
       updateStartup(98, 'done');
