@@ -1,10 +1,9 @@
-import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import {
+  fetchDirectSoundCloudMe,
   mapDirectUserToAuthUser,
-  type DirectSoundCloudUserInfo,
   startDirectOAuthFlow,
 } from '../lib/direct-soundcloud-api';
 import { Check, Disc3 } from '../lib/icons';
@@ -73,9 +72,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
         tokens.expiresIn ?? undefined,
       );
 
-      const userInfo = await invoke<DirectSoundCloudUserInfo>('fetch_soundcloud_me', {
-        accessToken: tokens.accessToken,
-      });
+      const userInfo = await fetchDirectSoundCloudMe(tokens.accessToken);
 
       if (latestAttemptRef.current !== attemptId) {
         return;

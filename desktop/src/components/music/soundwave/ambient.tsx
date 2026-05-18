@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo } from 'react';
 
 interface Props {
   /** Number of drifting accent particles. Fewer on smaller blocks. */
@@ -7,10 +7,6 @@ interface Props {
   blur?: number;
   /** Primary aurora opacity. */
   intensity?: number;
-  /** When true, the two aurora orbs pulse with the audio level — bass-heavy
-   *  bins drive scale + opacity through CSS variables (no React re-renders).
-   *  Falls back to the static `intensity` when no audio is playing. */
-  reactive?: boolean;
 }
 
 /**
@@ -28,11 +24,6 @@ export const AmbientLayer = React.memo(function AmbientLayer({
     [particleCount],
   );
 
-  // Refs to the two aurora orbs — we mutate inline opacity/transform every
-  // animation frame from a smoothed audio level, bypassing React re-renders.
-  const auroraARef = useRef<HTMLDivElement>(null);
-  const auroraBRef = useRef<HTMLDivElement>(null);
-
   return (
     <div
       className="absolute inset-0 pointer-events-none overflow-hidden"
@@ -45,52 +36,31 @@ export const AmbientLayer = React.memo(function AmbientLayer({
           Position mirrors the right orb (-top-1/4, off-edge by 12%, 50/160
           %) so both glow blobs are equally visible — previously left orb
           was centered well off-canvas and showed only its right half. */}
+      {/* Static aurora orbs without reactive pulse for better performance */}
       <div
-        className="absolute top-0 -left-[25%] w-[60%] h-full"
+        className="absolute -top-1/3 -left-1/4 w-[55%] h-[170%] rounded-full"
         style={{
+          background: 'radial-gradient(closest-side, var(--color-accent-glow), transparent 70%)',
+          filter: `blur(${blur}px)`,
+          opacity: intensity,
           animation: 'sw-aurora 32s linear infinite',
           willChange: 'transform',
+          contain: 'strict',
+          transform: 'translateZ(0)',
         }}
-      >
-        <div
-          ref={auroraARef}
-          className="absolute inset-0 rounded-full"
-          style={{
-            background: 'radial-gradient(closest-side, var(--color-accent-glow), transparent 70%)',
-            filter: `blur(${blur}px)`,
-            opacity: intensity,
-            transform: 'scale(var(--sw-pulse-scale, 1))',
-            transformOrigin: 'center',
-            transition: 'transform 60ms linear',
-            willChange: 'transform, opacity',
-          }}
-        />
-      </div>
-      {/* Right orb: previously bottom-right and white-7% — invisible at the
-          top of the block where the user looks. Moved to top-right and
-          re-tinted with the accent glow so the music-reactive pulse is
-          visible across the full width of the block, not just the left. */}
+      />
       <div
-        className="absolute top-0 -right-[25%] w-[60%] h-full"
+        className="absolute -bottom-1/2 right-[-12%] w-[50%] h-[160%] rounded-full"
         style={{
+          background: 'radial-gradient(closest-side, rgba(255,255,255,0.04), transparent 70%)',
+          filter: `blur(${blur + 3}px)`,
+          opacity: intensity * 0.6,
           animation: 'sw-aurora 44s linear reverse infinite',
           willChange: 'transform',
+          contain: 'strict',
+          transform: 'translateZ(0)',
         }}
-      >
-        <div
-          ref={auroraBRef}
-          className="absolute inset-0 rounded-full"
-          style={{
-            background: 'radial-gradient(closest-side, var(--color-accent-glow), transparent 70%)',
-            filter: `blur(${blur + 5}px)`,
-            opacity: intensity * 0.7,
-            transform: 'scale(var(--sw-pulse-scale, 1))',
-            transformOrigin: 'center',
-            transition: 'transform 60ms linear',
-            willChange: 'transform, opacity',
-          }}
-        />
-      </div>
+      />
 
       {particles.map((i) => {
         const size = 2 + (i % 3);

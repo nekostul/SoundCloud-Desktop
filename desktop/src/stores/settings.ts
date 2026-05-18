@@ -103,17 +103,9 @@ export type ApiMode = 'auto' | 'custom';
 
 export type AppIconVariant = 'default' | 'inverted' | 'upstream' | 'wave' | 'custom';
 
-export type AppFontMode = 'default' | 'system' | 'custom';
-
-/** Sensible default UI-font stack — Inter where available, then platform UI
- *  defaults. This matches the original `--font-sans` value in index.css and
- *  is what the app shows when the user hasn't picked anything. */
-export const DEFAULT_FONT_STACK =
-  '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
-
 export const APP_FONT_SIZE_MIN = 11;
 export const APP_FONT_SIZE_MAX = 20;
-export const APP_FONT_SIZE_DEFAULT = 14;
+export const APP_FONT_SIZE_DEFAULT = 17;
 
 export const APP_UI_SCALE_MIN = 0.85;
 export const APP_UI_SCALE_MAX = 1.2;
@@ -195,6 +187,20 @@ const normalizeThemePreset = (value: unknown): ThemePreset => {
   }
 };
 
+const normalizeAppFontSize = (value: unknown): number => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return APP_FONT_SIZE_DEFAULT;
+  const rounded = Math.round(numeric);
+  const normalized = rounded === 14 ? APP_FONT_SIZE_DEFAULT : rounded;
+  return Math.min(APP_FONT_SIZE_MAX, Math.max(APP_FONT_SIZE_MIN, normalized));
+};
+
+const normalizeAppUiScale = (value: unknown): number => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return APP_UI_SCALE_DEFAULT;
+  return Math.min(APP_UI_SCALE_MAX, Math.max(APP_UI_SCALE_MIN, Math.round(numeric * 100) / 100));
+};
+
 export interface SettingsState {
   accentColor: string;
   bgPrimary: string;
@@ -269,6 +275,7 @@ export interface SettingsState {
   hardwareAcceleration: boolean;
   classicPlaybar: boolean;
   experimentalRuAudioTextWarmup: boolean;
+  lyricsMiniPlayerControlsCollapsed: boolean;
   soundwavePresetKey: string;
   languageFilterEnabled: boolean;
   preferredLanguages: string[];
@@ -281,18 +288,6 @@ export interface SettingsState {
   /** Absolute path to the user-supplied PNG/ICO when `appIcon === 'custom'`.
    *  Stored separately so switching back to a built-in variant doesn't lose it. */
   customAppIconPath: string | null;
-  /** Which source the app font is pulled from. */
-  appFontMode: AppFontMode;
-  /** When `appFontMode === 'system'`, the picked CSS family name (must match
-   *  a name installed at the OS level so the webview can render it). */
-  appFontSystemFamily: string | null;
-  /** When `appFontMode === 'custom'`, absolute path to the TTF/OTF/WOFF in
-   *  `<appData>/fonts/`. The frontend reads it at startup, registers an
-   *  @font-face, and applies the family. */
-  appFontCustomPath: string | null;
-  /** Family name for the active custom font (parsed from the file once,
-   *  cached so we don't re-parse on every reload). */
-  appFontCustomFamily: string | null;
   appFontSize: number;
   appUiScale: number;
   setAccentColor: (color: string) => void;
@@ -368,6 +363,7 @@ export interface SettingsState {
   setHardwareAcceleration: (enabled: boolean) => void;
   setClassicPlaybar: (v: boolean) => void;
   setExperimentalRuAudioTextWarmup: (v: boolean) => void;
+  setLyricsMiniPlayerControlsCollapsed: (v: boolean) => void;
   setSoundwavePresetKey: (key: string) => void;
   setLanguageFilterEnabled: (v: boolean) => void;
   setPreferredLanguages: (langs: string[]) => void;
@@ -380,9 +376,6 @@ export interface SettingsState {
   setSoundwaveMode: (mode: 'similar' | 'diverse') => void;
   setAppIcon: (icon: AppIconVariant) => void;
   setCustomAppIconPath: (path: string | null) => void;
-  setAppFontMode: (mode: AppFontMode) => void;
-  setAppFontSystemFamily: (family: string | null) => void;
-  setAppFontCustom: (path: string | null, family: string | null) => void;
   setAppFontSize: (size: number) => void;
   setAppUiScale: (scale: number) => void;
   resetTheme: () => void;
@@ -488,6 +481,7 @@ const DEFAULTS = {
   hardwareAcceleration: true,
   classicPlaybar: false,
   experimentalRuAudioTextWarmup: false,
+  lyricsMiniPlayerControlsCollapsed: false,
   soundwavePresetKey: 'work',
   languageFilterEnabled: false,
   preferredLanguages: [],
@@ -498,10 +492,6 @@ const DEFAULTS = {
   soundwaveMode: 'similar' as const,
   appIcon: 'default' as AppIconVariant,
   customAppIconPath: null as string | null,
-  appFontMode: 'default' as AppFontMode,
-  appFontSystemFamily: null as string | null,
-  appFontCustomPath: null as string | null,
-  appFontCustomFamily: null as string | null,
   appFontSize: APP_FONT_SIZE_DEFAULT,
   appUiScale: APP_UI_SCALE_DEFAULT,
 };
@@ -668,6 +658,8 @@ export const useSettingsStore = create<SettingsState>()(
       setClassicPlaybar: (classicPlaybar) => set({ classicPlaybar }),
       setExperimentalRuAudioTextWarmup: (experimentalRuAudioTextWarmup) =>
         set({ experimentalRuAudioTextWarmup }),
+      setLyricsMiniPlayerControlsCollapsed: (lyricsMiniPlayerControlsCollapsed) =>
+        set({ lyricsMiniPlayerControlsCollapsed }),
       setSoundwavePresetKey: (soundwavePresetKey) => set({ soundwavePresetKey }),
       setLanguageFilterEnabled: (languageFilterEnabled) => set({ languageFilterEnabled }),
       setPreferredLanguages: (preferredLanguages) =>
@@ -698,10 +690,6 @@ export const useSettingsStore = create<SettingsState>()(
       setSoundwaveMode: (soundwaveMode) => set({ soundwaveMode }),
       setAppIcon: (appIcon) => set({ appIcon }),
       setCustomAppIconPath: (customAppIconPath) => set({ customAppIconPath }),
-      setAppFontMode: (appFontMode) => set({ appFontMode }),
-      setAppFontSystemFamily: (appFontSystemFamily) => set({ appFontSystemFamily }),
-      setAppFontCustom: (appFontCustomPath, appFontCustomFamily) =>
-        set({ appFontCustomPath, appFontCustomFamily }),
       setAppFontSize: (appFontSize) =>
         set({
           appFontSize: Math.min(
@@ -742,13 +730,17 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: 'sc-settings',
       storage: createJSONStorage(() => tauriStorage),
-      version: 14,
+      version: 15,
       migrate: (persistedState) => {
         const state = (
           persistedState && typeof persistedState === 'object' ? persistedState : {}
         ) as Partial<SettingsState> & {
           preferredLanguage?: unknown;
           preferredLanguages?: unknown;
+          appFontMode?: unknown;
+          appFontSystemFamily?: unknown;
+          appFontCustomPath?: unknown;
+          appFontCustomFamily?: unknown;
         };
         const decodedKey = decodeQdrantKeyFromStorage((state.qdrantKey as string) || '');
         const normalizedKey = decodedKey.trim();
@@ -766,6 +758,10 @@ export const useSettingsStore = create<SettingsState>()(
         const {
           preferredLanguage: _legacyPreferredLanguage,
           preferredLanguages: _preferredLanguages,
+          appFontMode: _legacyAppFontMode,
+          appFontSystemFamily: _legacyAppFontSystemFamily,
+          appFontCustomPath: _legacyAppFontCustomPath,
+          appFontCustomFamily: _legacyAppFontCustomFamily,
           ...restState
         } = state;
         return {
@@ -777,6 +773,8 @@ export const useSettingsStore = create<SettingsState>()(
           qdrantKey,
           pinnedPlaylists,
           preferredLanguages,
+          appFontSize: normalizeAppFontSize(state.appFontSize),
+          appUiScale: normalizeAppUiScale(state.appUiScale),
           targetFramerate: normalizeTargetFramerate(
             Number(state.targetFramerate ?? DEFAULTS.targetFramerate),
             DEFAULTS.targetFramerate,
@@ -790,6 +788,10 @@ export const useSettingsStore = create<SettingsState>()(
         ) as Partial<SettingsState> & {
           preferredLanguage?: unknown;
           preferredLanguages?: unknown;
+          appFontMode?: unknown;
+          appFontSystemFamily?: unknown;
+          appFontCustomPath?: unknown;
+          appFontCustomFamily?: unknown;
         };
         const decodedKey = decodeQdrantKeyFromStorage((state.qdrantKey as string) || '');
         const normalizedKey = decodedKey.trim();
@@ -807,6 +809,10 @@ export const useSettingsStore = create<SettingsState>()(
         const {
           preferredLanguage: _legacyPreferredLanguage,
           preferredLanguages: _preferredLanguages,
+          appFontMode: _legacyAppFontMode,
+          appFontSystemFamily: _legacyAppFontSystemFamily,
+          appFontCustomPath: _legacyAppFontCustomPath,
+          appFontCustomFamily: _legacyAppFontCustomFamily,
           ...restState
         } = state;
         return {
@@ -818,6 +824,8 @@ export const useSettingsStore = create<SettingsState>()(
           qdrantKey,
           pinnedPlaylists,
           preferredLanguages,
+          appFontSize: normalizeAppFontSize(state.appFontSize ?? currentState.appFontSize),
+          appUiScale: normalizeAppUiScale(state.appUiScale ?? currentState.appUiScale),
           targetFramerate: normalizeTargetFramerate(
             Number(state.targetFramerate ?? currentState.targetFramerate),
             currentState.targetFramerate,
@@ -882,6 +890,7 @@ export const useSettingsStore = create<SettingsState>()(
         hardwareAcceleration: s.hardwareAcceleration,
         classicPlaybar: s.classicPlaybar,
         experimentalRuAudioTextWarmup: s.experimentalRuAudioTextWarmup,
+        lyricsMiniPlayerControlsCollapsed: s.lyricsMiniPlayerControlsCollapsed,
         soundwavePresetKey: s.soundwavePresetKey,
         // Visualizer settings
         visualizerStyle: s.visualizerStyle,
@@ -908,10 +917,6 @@ export const useSettingsStore = create<SettingsState>()(
         soundwaveMode: s.soundwaveMode,
         appIcon: s.appIcon,
         customAppIconPath: s.customAppIconPath,
-        appFontMode: s.appFontMode,
-        appFontSystemFamily: s.appFontSystemFamily,
-        appFontCustomPath: s.appFontCustomPath,
-        appFontCustomFamily: s.appFontCustomFamily,
         appFontSize: s.appFontSize,
         appUiScale: s.appUiScale,
       }),

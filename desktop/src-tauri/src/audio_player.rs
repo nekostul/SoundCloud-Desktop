@@ -527,7 +527,21 @@ impl<S: Source<Item = f32>> Source for PitchSource<S> {
         self.source.total_duration()
     }
     fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
-        self.source.try_seek(pos)?;
+        let playback_rate = self
+            .params
+            .try_read()
+            .ok()
+            .map(|pitch| pitch.playback_rate)
+            .unwrap_or(self.current_playback_rate);
+        let normalized_rate = if playback_rate.is_finite() {
+            playback_rate.clamp(PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX)
+        } else {
+            1.0
+        };
+        let source_seek_pos =
+            Duration::from_secs_f64((pos.as_secs_f64() * normalized_rate as f64).max(0.0));
+
+        self.source.try_seek(source_seek_pos)?;
         self.reset_processing_state();
         self.current_semitones = f32::NAN;
         self.current_playback_rate = f32::NAN;
@@ -1902,93 +1916,6 @@ fn compute_range_seek_plan(
     })
 }
 
-fn create_player_from_live_stream_seek(
-    state: &AudioState,
-    target_secs: f64,
-    playback_speed: f32,
-    normalization_gain: f32,
-) -> Result<(Player, PositionAnchor), String> {
-    let live_stream_buffer = state
-        .live_stream_buffer
-        .try_lock()
-        .map_err(|_| "Seek busy: live stream buffer".to_string())?
-        .clone()
-        .ok_or_else(|| "Seek target is not buffered yet".to_string())?;
-
-    let stream_url = state
-        .stream_source_url
-        .try_lock()
-        .map_err(|_| "Seek busy: stream url".to_string())?
-        .clone()
-        .ok_or_else(|| "Seek target is not buffered yet".to_string())?;
-
-    let stream_content_type = state
-        .stream_content_type
-        .try_lock()
-        .map_err(|_| "Seek busy: stream content type".to_string())?
-        .clone();
-
-    let downloaded_bytes = state.stream_downloaded_bytes.load(Ordering::Relaxed);
-
-    if downloaded_bytes == 0 {
-        return Err("Seek target is not buffered yet".into());
-    }
-
-    let mixer = state
-        .mixer
-        .try_lock()
-        .map_err(|_| "Seek busy: mixer".to_string())?
-        .clone();
-
-    let vol = *state
-        .volume
-        .try_lock()
-        .map_err(|_| "Seek busy: volume".to_string())?;
-
-    let duration_ms = state.stream_duration_ms.load(Ordering::Relaxed);
-
-    let duration_secs = (duration_ms as f64 / 1000.0).max(1.0);
-
-    let seek_ratio = (target_secs / duration_secs).clamp(0.0, 1.0);
-
-    let seek_byte_offset = (downloaded_bytes as f64 * seek_ratio) as u64;
-
-    let clamped_seek_offset = seek_byte_offset.min(downloaded_bytes.saturating_sub(64 * 1024));
-
-    let reader = StreamingBufferReader::with_position(live_stream_buffer, clamped_seek_offset);
-
-    let (new_player, _) = create_player_from_stream_reader(
-        reader,
-        &stream_url,
-        stream_content_type.as_deref(),
-        &mixer,
-        vol,
-        playback_speed,
-        normalization_gain,
-        state.eq_params.clone(),
-        state.pitch_params.clone(),
-        state
-            .visualizer_tx
-            .try_lock()
-            .map_err(|_| "Seek busy: visualizer".to_string())?
-            .clone(),
-    )?;
-
-    let anchor = if target_secs > 0.015 {
-        PositionAnchor {
-            timeline_secs: target_secs.max(0.0),
-            output_secs: new_player.get_pos().as_secs_f64(),
-        }
-    } else {
-        PositionAnchor {
-            timeline_secs: 0.0,
-            output_secs: 0.0,
-        }
-    };
-
-    Ok((new_player, anchor))
-}
-
 fn replace_player_after_seek(
     state: &AudioState,
     new_player: Player,
@@ -3077,25 +3004,7 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
     };
 
     if !has_fallback_source {
-        if let Some(ref player) = *state.player.lock().unwrap() {
-            if player
-                .try_seek(Duration::from_secs_f64(target_secs))
-                .is_ok()
-            {
-                set_position_anchor(&state, target_secs, player.get_pos().as_secs_f64());
-
-                return Ok(());
-            }
-        }
-
-        if let Ok((new_player, anchor)) = create_player_from_live_stream_seek(
-            &state,
-            target_secs,
-            playback_speed,
-            normalization_gain,
-        ) {
-            return replace_player_after_seek(&state, new_player, anchor);
-        }
+        return Err("Seek target is not buffered yet".into());
     }
 
     // Final fallback: rebuild from cached/local bytes when we have a full enough source snapshot.

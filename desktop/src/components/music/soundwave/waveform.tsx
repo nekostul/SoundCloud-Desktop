@@ -1,14 +1,10 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import {
+  getCurrentTime,
   getDuration,
-  getSmoothCurrentTime,
   seek,
   subscribe,
 } from '../../../lib/audio';
-import {
-  cancelAnimationFrameImmediate,
-  requestAnimationFrameImmediate,
-} from '../../../lib/framerate';
 import { useTrackWaveform } from '../../../lib/waveform';
 import type { Track } from '../../../stores/player';
 
@@ -80,7 +76,7 @@ export const LiveWaveform = React.memo(
       }
 
       const paint = () => {
-        const t = getSmoothCurrentTime();
+        const t = getCurrentTime();
         const d = getDuration();
         const pct = d > 0 ? Math.min(100, Math.max(0, (t / d) * 100)) : 0;
         if (Math.abs(lastProgressPercentRef.current - pct) < 0.08) return;
@@ -93,16 +89,7 @@ export const LiveWaveform = React.memo(
       };
 
       paint();
-      let rafId = requestAnimationFrameImmediate(function loop() {
-        paint();
-        rafId = requestAnimationFrameImmediate(loop);
-      });
-      const unsub = subscribe(paint);
-
-      return () => {
-        cancelAnimationFrameImmediate(rafId);
-        unsub();
-      };
+      return subscribe(paint);
     }, [isCurrent]);
 
     const handleBarClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -116,47 +103,60 @@ export const LiveWaveform = React.memo(
     return (
       <div
         ref={rootRef}
-        className={`sw-bars relative w-full h-[96px] ${isCurrent ? 'cursor-pointer' : 'cursor-default'}`}
+        className={`sw-bars relative h-[96px] w-full overflow-hidden ${
+          isCurrent ? 'cursor-pointer' : 'cursor-default'
+        }`}
         onClick={handleBarClick}
+        style={{ contain: 'layout style paint', transform: 'translateZ(0)' }}
       >
-        <div className="sw-layer-muted absolute inset-0 flex items-center gap-[2px]">
+        <div className="sw-layer-muted absolute inset-0 flex items-center justify-between gap-px">
           {bars.map((v, i) => (
-            <div key={i} className="sw-bar flex-1" style={{ height: `${v * 100}%` }} />
+            <div
+              key={`muted-${i}`}
+              className="sw-bar shrink-0 rounded-full"
+              style={{
+                width: '7px',
+                height: `${Math.max(v * 100, 8)}%`,
+              }}
+            />
           ))}
         </div>
-        <div className="sw-layer-accent absolute inset-0 flex items-center gap-[2px]">
+
+        <div className="sw-layer-accent absolute inset-0 flex items-center justify-between gap-px">
           {bars.map((v, i) => (
-            <div key={i} className="sw-bar flex-1" style={{ height: `${v * 100}%` }} />
+            <div
+              key={`accent-${i}`}
+              className="sw-bar shrink-0 rounded-full"
+              style={{
+                width: '7px',
+                height: `${Math.max(v * 100, 8)}%`,
+              }}
+            />
           ))}
         </div>
+
         {isLoading && (
           <div
             className="absolute inset-0 pointer-events-none"
             aria-hidden
             style={{
               background:
-                'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%)',
+                'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 50%, transparent 100%)',
               backgroundSize: '200% 100%',
-              animation: 'shimmer 1.8s ease-in-out infinite',
+              animation: 'shimmer 2.2s linear infinite',
             }}
           />
         )}
+
         {isCurrent && (
           <div
             ref={hintRef}
-            className="absolute top-0 bottom-0 w-[2px] pointer-events-none rounded-full"
+            className="absolute top-0 bottom-0 w-[2px] pointer-events-none"
             style={{
               left: 0,
               transform: 'translateX(0px)',
-              // Plain white line — neutral against any accent / artwork
-              // gradient, doesn't compete with the colored bars below.
-              background: 'rgba(255, 255, 255, 0.75)',
-              boxShadow: '0 0 6px rgba(255, 255, 255, 0.35), 0 0 12px rgba(255, 255, 255, 0.18)',
+              background: 'rgba(255,255,255,0.72)',
               willChange: 'transform',
-              // Bars and line both update instantly on each audio tick now
-              // (CSS transition removed from .sw-layer-accent for the same
-              // reason — see index.css comment). They stay perfectly in
-              // sync without the previous 120ms lag accumulator.
             }}
           />
         )}

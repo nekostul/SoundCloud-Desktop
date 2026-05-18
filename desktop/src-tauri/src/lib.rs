@@ -614,6 +614,7 @@ pub fn run() {
             audio_player::audio_switch_device,
             audio_player::save_track_to_path,
             soundcloud_api::soundcloud_oauth_start,
+            soundcloud_api::soundcloud_oauth_refresh,
             soundcloud_api::get_cdn_stream_url,
             soundcloud_api::resolve_soundcloud_track_stream,
             soundcloud_api::fetch_soundcloud_me,

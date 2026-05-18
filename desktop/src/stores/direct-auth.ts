@@ -9,6 +9,7 @@ import { markDirectAuthHydrated } from '../lib/auth-hydration';
 import { tauriStorage } from '../lib/tauri-storage';
 import {
   clearDirectTokens,
+  storeDirectTokenSnapshot,
   storeDirectTokens,
   type DirectAuthUser,
 } from '../lib/direct-soundcloud-api';
@@ -26,8 +27,8 @@ interface DirectAuthState {
   clear: () => void;
 }
 
-function hasActiveDirectSession(accessToken: string | null, expiresAt: number | null) {
-  return !!accessToken && (!expiresAt || Date.now() < expiresAt);
+function hasActiveDirectSession(accessToken: string | null, refreshToken: string | null) {
+  return !!accessToken || !!refreshToken;
 }
 
 export const useDirectAuthStore = create<DirectAuthState>()(
@@ -45,27 +46,23 @@ export const useDirectAuthStore = create<DirectAuthState>()(
           accessToken,
           refreshToken: refreshToken || null,
           expiresAt,
-          isAuthenticated: true,
+          isAuthenticated: hasActiveDirectSession(accessToken, refreshToken || null),
         });
         storeDirectTokens(accessToken, refreshToken, expiresIn);
       },
 
       setUser: (user: DirectAuthState['user']) => {
-        const { accessToken, expiresAt } = get();
+        const { accessToken, refreshToken } = get();
         set({
           user,
-          isAuthenticated: hasActiveDirectSession(accessToken, expiresAt),
+          isAuthenticated: hasActiveDirectSession(accessToken, refreshToken),
         });
       },
 
       isTokenValid: () => {
         const state = get();
         if (!state.accessToken) return false;
-        if (state.expiresAt && Date.now() >= state.expiresAt) {
-          get().logout();
-          return false;
-        }
-        return true;
+        return !state.expiresAt || Date.now() < state.expiresAt;
       },
 
       logout: () => {
@@ -98,11 +95,8 @@ export const useDirectAuthStore = create<DirectAuthState>()(
           persistedState && typeof persistedState === 'object' ? persistedState : {}
         ) as Partial<DirectAuthState>;
         const accessToken = state.accessToken ?? currentState.accessToken;
-        const expiresAt = state.expiresAt ?? currentState.expiresAt;
-        
-        // Add 60s buffer to prevent using token that's about to expire
-        const bufferMs = 60000;
-        const isActive = !!accessToken && (!expiresAt || Date.now() + bufferMs < expiresAt);
+        const refreshToken = state.refreshToken ?? currentState.refreshToken;
+        const isActive = hasActiveDirectSession(accessToken, refreshToken);
 
         return {
           ...currentState,
@@ -117,24 +111,15 @@ export const useDirectAuthStore = create<DirectAuthState>()(
         user: state.user,
       }),
       onRehydrateStorage: () => (state) => {
-        if (!state?.accessToken) {
+        if (!state?.accessToken && !state?.refreshToken) {
           clearDirectTokens();
           markDirectAuthHydrated();
           return;
         }
 
-        if (state.expiresAt && Date.now() >= state.expiresAt) {
-          state.clear();
-          markDirectAuthHydrated();
-          return;
+        if (state.accessToken) {
+          storeDirectTokenSnapshot(state.accessToken, state.refreshToken, state.expiresAt);
         }
-
-        const expiresIn =
-          state.expiresAt != null
-            ? Math.max(0, Math.floor((state.expiresAt - Date.now()) / 1000))
-            : undefined;
-
-        storeDirectTokens(state.accessToken, state.refreshToken, expiresIn);
         state.setUser(state.user ?? null);
         markDirectAuthHydrated();
       },

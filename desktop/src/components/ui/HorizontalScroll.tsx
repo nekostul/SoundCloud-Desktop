@@ -48,7 +48,13 @@ export function HorizontalScroll({
 
       <div
         ref={ref}
-        className={`flex gap-4 overflow-x-auto scroll-smooth scrollbar-hide pb-2 ${className}`}
+        className={`flex gap-4 overflow-x-hidden scroll-smooth scrollbar-hide pb-2 ${className}`}
+        style={{
+          contentVisibility: 'auto',
+          contain: 'layout paint style',
+          containIntrinsicSize: '240px',
+          touchAction: 'pan-y',
+        }}
       >
         {children}
       </div>

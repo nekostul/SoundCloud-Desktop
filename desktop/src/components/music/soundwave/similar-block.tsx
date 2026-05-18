@@ -72,7 +72,7 @@ export const SoundWaveSimilarBlock = React.memo(function SoundWaveSimilarBlock({
         borderColor: 'rgba(255,255,255,0.08)',
       }}
     >
-      <AmbientLayer particleCount={6} blur={30} intensity={0.35} reactive />
+      <AmbientLayer particleCount={6} blur={30} intensity={0.35} />
 
       <div
         className="absolute inset-0 pointer-events-none"

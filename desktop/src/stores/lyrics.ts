@@ -63,6 +63,8 @@ export const useFullscreenPanelStore = create<FullscreenPanelState>()((set) => (
     useLyricsStore.setState({ open: false });
     set({ transitionDirection: 'none', closeAnimation: 'toMiniPlayer' });
     fullscreenCloseTimer = setTimeout(() => {
+      useArtworkStore.setState({ open: false });
+      useLyricsStore.setState({ open: false });
       set({
         mode: 'none',
         transitionDirection: 'none',

@@ -3,7 +3,13 @@ import { listen } from '@tauri-apps/api/event';
 import { getEffectivePitchSemitones, type Track, usePlayerStore } from '../stores/player';
 import { useSettingsStore } from '../stores/settings';
 import { useSoundWaveStore } from '../stores/soundwave';
-import { api, getSessionId, resolveTrackFromStreaming, getTrackStreamSource } from './api';
+import {
+  api,
+  getBackendProgressiveTrackStreamSource,
+  getSessionId,
+  resolveTrackFromStreaming,
+  getTrackStreamSource,
+} from './api';
 import { audioAnalyser } from './audio-analyser';
 import {
   fetchAndCacheTrack,
@@ -77,16 +83,17 @@ const SEEK_RECOVERY_COALESCE_MS = 180;
 const SEEK_MAX_NO_SOURCE_RETRIES = 8;
 const SEEK_MAX_RECOVERY_RETRIES = 2;
 const SEEK_IGNORE_DELTA_SEC = 0.12;
+const SEEK_TICK_SETTLE_EPSILON_SEC = 0.75;
 const DIRECT_SEEK_RELOAD_FORWARD_TOLERANCE_SEC = 0.35;
 const DIRECT_SEEK_RELOAD_BACKWARD_TOLERANCE_SEC = 0.9;
 const STARTUP_RECOVERY_MAX_RETRIES = 2;
 const STARTUP_RECOVERY_ACTIVITY_TIMEOUT_MS = 4_500;
 const STARTUP_RECOVERY_NO_TICK_TIMEOUT_MS = 9_000;
 const STARTUP_RECOVERY_WINDOW_MS = 20_000;
-const LARGE_CACHE_SEEK_UNSAFE_BYTES = 12 * 1024 * 1024;
 
 type PlaybackBufferPhase = 'idle' | 'loading' | 'buffering' | 'ready';
 type AudioTickPayload = number | { gen?: number; position?: number | null };
+type PlaybackSourceKind = 'none' | 'network' | 'cache-file';
 
 type PlaybackBufferSnapshot = {
   phase: PlaybackBufferPhase;
@@ -124,6 +131,7 @@ let bufferLoadStartedAt = 0;
 let lastDownloadProgressAt = 0;
 let activeRangedSeekLoad = false;
 let estimatedStreamTotalBytes: number | null = null;
+let currentPlaybackSource: PlaybackSourceKind = 'none';
 const MAX_SMOOTH_TIME_EXTRAPOLATION_SECS = 5;
 
 let lastNotifyTime = 0;
@@ -252,6 +260,19 @@ export function getSmoothCurrentTime(): number {
     return cachedTime;
   }
   const now = Date.now();
+  const hasQueuedSeek =
+    queuedSeekTarget >= 0 && queuedSeekTrackUrn === usePlayerStore.getState().currentTrack?.urn;
+  if (
+    nativeSeekPausedForBuffering ||
+    nativeSeekInFlight ||
+    waitingForStartupProgress ||
+    waitForReadyBuffer ||
+    (seekTargetTime >= 0 && seekPendingUntil > now) ||
+    hasQueuedSeek
+  ) {
+    lastSmoothTime = cachedTime;
+    return cachedTime;
+  }
   if (lastTickAt === 0 || now < lastTickAt) return cachedTime;
   const elapsed = (now - lastTickAt) / 1000;
   const raw = Math.min(cachedTime + elapsed, cachedTime + MAX_SMOOTH_TIME_EXTRAPOLATION_SECS);
@@ -266,6 +287,49 @@ export function getSmoothCurrentTime(): number {
 
 export function getDuration(): number {
   return cachedDuration;
+}
+
+function isCurrentPlaybackSourceSeekSafe(): boolean {
+  return currentPlaybackSource === 'cache-file';
+}
+
+function hasActiveSeekTransition(trackUrn?: string | null) {
+  const activeTrackUrn = trackUrn ?? usePlayerStore.getState().currentTrack?.urn ?? null;
+  const hasQueuedSeek = queuedSeekTarget >= 0 && queuedSeekTrackUrn === activeTrackUrn;
+  return (
+    nativeSeekPausedForBuffering ||
+    nativeSeekInFlight ||
+    activeRangedSeekLoad ||
+    hasQueuedSeek ||
+    (seekTargetTime >= 0 && seekPendingUntil > Date.now())
+  );
+}
+
+
+function isCrossfadeOffMode(mode: 'off' | 'smart' | 'manual') {
+  return mode === 'off';
+}
+
+function getManualCrossfadeDuration(settings: ReturnType<typeof useSettingsStore.getState>) {
+  return Math.max(1, Math.min(15, Math.round(settings.crossfadeDuration || 0)));
+}
+
+function getSmartCrossfadeDuration(durationSecs: number, positionSecs: number) {
+  if (!Number.isFinite(durationSecs) || durationSecs <= 0) return 4;
+  const remaining = Math.max(0, durationSecs - Math.max(0, positionSecs));
+  const introAware = durationSecs < 90 ? 2 : durationSecs < 180 ? 4 : durationSecs < 360 ? 6 : 8;
+  const outroAware = remaining < 8 ? 2 : remaining < 14 ? 4 : remaining < 22 ? 6 : introAware;
+  return Math.max(2, Math.min(10, Math.round(Math.min(introAware, outroAware))));
+}
+
+function resolveCrossfadeDurationForLoad(
+  settings: ReturnType<typeof useSettingsStore.getState>,
+  durationSecs: number,
+  positionSecs = 0,
+) {
+  if (isCrossfadeOffMode(settings.crossfadeMode)) return null;
+  if (settings.crossfadeMode === 'manual') return getManualCrossfadeDuration(settings);
+  return getSmartCrossfadeDuration(durationSecs, positionSecs);
 }
 
 function clampStrategyThreshold(durationSecs: number, thresholdSecs: number, multiplier = 0.94) {
@@ -745,22 +809,6 @@ function keepSeekGuardAlive(target: number, ms: number) {
   suppressStallDetection(Math.max(ms + 800, 1800));
 }
 
-async function shouldBypassFullCachePlayback(track: Track): Promise<boolean> {
-  if (!isTauriRuntime()) return false;
-
-  try {
-    const entry = await getCacheEntryInfo(track.urn);
-    if (!entry?.complete) {
-      return false;
-    }
-
-    const cachedBytes = entry.downloaded_bytes ?? 0;
-    return cachedBytes > LARGE_CACHE_SEEK_UNSAFE_BYTES;
-  } catch {
-    return false;
-  }
-}
-
 async function syncPlaybackBufferFromCompleteCache(
   trackUrn: string,
   expectedGen?: number,
@@ -770,6 +818,9 @@ async function syncPlaybackBufferFromCompleteCache(
     return false;
   }
   if (expectedGen != null && expectedGen !== loadGen) {
+    return false;
+  }
+  if (hasActiveSeekTransition(trackUrn)) {
     return false;
   }
 
@@ -785,6 +836,20 @@ async function syncPlaybackBufferFromCompleteCache(
       return false;
     }
 
+    if (currentPlaybackSource !== 'cache-file') {
+      const track = usePlayerStore.getState().currentTrack;
+      if (!track || track.urn !== trackUrn) {
+        return false;
+      }
+
+      const position = Math.max(cachedTime, getSmoothCurrentTime());
+      const requestId = latestSeekRequestId;
+      const promoted = await loadTrackFromFullCacheAtSeekTarget(track, position, requestId);
+      if (!promoted) {
+        return false;
+      }
+    }
+
     waitForReadyBuffer = false;
     waitingForStartupProgress = false;
     startupProgressDeadline = 0;
@@ -798,11 +863,11 @@ async function syncPlaybackBufferFromCompleteCache(
   }
 }
 
-function shouldUseDirectSeekReload(target: number): boolean {
+function shouldUseDirectSeekReload(target: number, allowWhileSeekLocked = false): boolean {
   if (
     !isTauriRuntime() ||
     playbackBufferSnapshot.fullyCached ||
-    !playbackBufferSnapshot.seekUnlocked
+    (!playbackBufferSnapshot.seekUnlocked && !allowWhileSeekLocked)
   ) {
     return false;
   }
@@ -1046,18 +1111,19 @@ export function seek(seconds: number, allowRecovery = true, force = false) {
   if (!force && isPlaybackInteractionLocked()) return;
   const requestId = ++latestSeekRequestId;
 
+  isCrossfadingOut = false;
+  crossfadeInProgress = false;
+
   const duration = getDuration();
   const maxSeek = duration > 0 ? Math.max(0, duration - 0.15) : Number.POSITIVE_INFINITY;
   const seekableLimit = force ? maxSeek : Math.min(getBufferedSeekWindowEnd(), maxSeek);
   const unclampedTarget = Math.max(0, Math.min(seconds, maxSeek));
   const currentPositionBeforeSeek = Math.max(cachedTime, getSmoothCurrentTime());
+  const exactSourceRequired = isTauriRuntime() && !isCurrentPlaybackSourceSeekSafe();
   const hardReloadAtTrackStart =
-    !force &&
-    isTauriRuntime() &&
-    unclampedTarget <= 0.05 &&
-    currentPositionBeforeSeek > 1;
+    isTauriRuntime() && unclampedTarget <= 0.05 && currentPositionBeforeSeek > 1;
   const directSeekReload =
-    hardReloadAtTrackStart || (!force && shouldUseDirectSeekReload(unclampedTarget));
+    exactSourceRequired || hardReloadAtTrackStart || shouldUseDirectSeekReload(unclampedTarget, force);
   const target = directSeekReload
     ? unclampedTarget
     : force
@@ -1080,6 +1146,11 @@ export function seek(seconds: number, allowRecovery = true, force = false) {
     setTimeout(() => updateMediaPosition(), 150);
     void reloadTrackAtSeekTarget(track, target, requestId).then((reloaded) => {
       if (reloaded || !isActiveSeekRequest(track.urn, requestId)) {
+        return;
+      }
+
+      if (exactSourceRequired) {
+        void resyncFromNativePosition();
         return;
       }
 
@@ -1125,6 +1196,7 @@ function stopTrack() {
     invoke('audio_stop').catch(console.error);
   }
   hasTrack = false;
+  currentPlaybackSource = 'none';
   waitingForStartupProgress = false;
   startupProgressDeadline = 0;
   waitForReadyBuffer = false;
@@ -1303,85 +1375,23 @@ async function loadTrackAtImmediateSeekTarget(
     return false;
   }
 
-  const loadedFromFullCache = await loadTrackFromFullCacheAtSeekTarget(track, target, requestId);
-  if (loadedFromFullCache) {
-    return true;
-  }
-
-  suppressStallDetection(5000);
-  const gen = ++loadGen;
-  currentUrn = track.urn;
-  fallbackDuration = track.duration / 1000;
-  if (fallbackDuration > 0) {
-    cachedDuration = fallbackDuration;
-  }
-  cachedTime = target;
-  lastSmoothTime = target;
-  waitingForStartupProgress = true;
-  startupProgressDeadline = Date.now() + 8000;
-  seekTargetTime = target;
-  seekPendingUntil = Math.max(seekPendingUntil, Date.now() + 5200);
-  clearBufferedSeekPauseState();
-  waitForReadyBuffer = true;
-  readyBufferPromise = null;
-  readyBufferResolver = null;
-  beginPlaybackBufferTracking(fallbackDuration, true);
-  usePlayerStore.setState({ downloadProgress: 0 });
-  flushNotifyImmediate();
-
-  setupTauriBindings();
-  syncNativeAudioRuntime();
-
+  keepSeekGuardAlive(target, 12_000);
+  pauseNativeForBufferedSeek();
   try {
-    const streamSource = await getTrackStreamSource(track.urn);
-    updateEstimatedStreamTotalBytes(fallbackDuration, streamSource.format);
-    await invoke('audio_begin_stream_reload');
-    const result = await invoke<AudioLoadInvokeResult>('audio_load_url', {
-      progressToken: gen,
-      url: streamSource.url,
-      sessionId: getSessionId(),
-      streamContentTypeHint: streamSource.mimeType,
-      cachePath: null,
-      cacheKey: null,
-      crossfadeSecs: null,
-      expectedDurationSecs: track.duration > 0 ? track.duration / 1000 : null,
-      rangeSeekTargetSecs: target,
-    });
-
-    if (gen !== loadGen || !isActiveSeekRequest(track.urn, requestId)) {
-      return false;
-    }
-
-    const resolvedQuality =
-      result.stream_quality === 'hq' || result.stream_quality === 'lq'
-        ? result.stream_quality
-        : streamSource.quality;
-    const resolvedCodec =
-      inferCodecFromContentType(result.stream_content_type) ||
-      inferCodecFromContentType(streamSource.mimeType) ||
-      inferCodecFromFormat(streamSource.format) ||
-      'MP3';
-
-    usePlayerStore.getState().setCurrentTrackStreamQuality(resolvedQuality);
-    usePlayerStore.getState().setCurrentTrackStreamCodec(resolvedCodec);
-    hasTrack = true;
-    lastTickAt = Date.now();
-
-    if (!usePlayerStore.getState().isPlaying) {
-      invoke('audio_pause').catch(console.error);
-    }
-
-    updatePlaybackState(usePlayerStore.getState().isPlaying);
-    updateMediaPosition();
-    return true;
+    await fetchAndCacheTrack(track.urn);
   } catch (error) {
-    if (gen === loadGen) {
-      waitingForStartupProgress = false;
-      startupProgressDeadline = 0;
+    if (isActiveSeekRequest(track.urn, requestId)) {
+      console.warn('[Audio] Exact seek cache fill failed', error);
     }
-    console.warn('[Audio] Immediate ranged seek reload failed', error);
     return false;
   }
+
+  if (!isActiveSeekRequest(track.urn, requestId)) {
+    return false;
+  }
+
+  keepSeekGuardAlive(target, 5200);
+  return loadTrackFromFullCacheAtSeekTarget(track, target, requestId);
 }
 
 async function loadTrackFromFullCacheAtSeekTarget(
@@ -1390,10 +1400,6 @@ async function loadTrackFromFullCacheAtSeekTarget(
   requestId: number,
 ): Promise<boolean> {
   if (!isTauriRuntime() || !isActiveSeekRequest(track.urn, requestId)) {
-    return false;
-  }
-
-  if (await shouldBypassFullCachePlayback(track)) {
     return false;
   }
 
@@ -1453,6 +1459,7 @@ async function loadTrackFromFullCacheAtSeekTarget(
 
     usePlayerStore.getState().setCurrentTrackStreamQuality(resolvedQuality);
     usePlayerStore.getState().setCurrentTrackStreamCodec(resolvedCodec);
+    currentPlaybackSource = 'cache-file';
     waitForReadyBuffer = false;
     waitingForStartupProgress = false;
     startupProgressDeadline = 0;
@@ -1470,9 +1477,8 @@ async function loadTrackFromFullCacheAtSeekTarget(
     updateMediaPosition();
     return true;
   } catch (error) {
-    if (gen === loadGen) {
-      waitingForStartupProgress = false;
-      startupProgressDeadline = 0;
+    if (gen === loadGen && isActiveSeekRequest(track.urn, requestId)) {
+      await removeCachedTrack(track.urn).catch(() => {});
     }
     console.warn('[Audio] Full cache seek reload failed', error);
     return false;
@@ -1493,10 +1499,9 @@ async function loadTrack(track: Track, skipStop = false) {
   primeStartupRecoveryWindow(track.urn);
   const gen = ++loadGen;
   if (!skipStop) stopTrack();
+  isCrossfadingOut = false;
   currentUrn = track.urn;
   const urn = track.urn;
-
-  void hydrateTrackMetadata(track, gen);
 
   fallbackDuration = track.duration / 1000;
   cachedDuration = fallbackDuration;
@@ -1518,6 +1523,7 @@ async function loadTrack(track: Track, skipStop = false) {
   flushNotifyImmediate();
 
   if (!isTauriRuntime()) {
+    void hydrateTrackMetadata(track, gen);
     hasTrack = false;
     if (typeof window !== 'undefined') {
       window.setTimeout(() => {
@@ -1532,21 +1538,28 @@ async function loadTrack(track: Track, skipStop = false) {
   setupTauriBindings();
   syncNativeAudioRuntime();
 
-  const bypassFullCachePlayback = await shouldBypassFullCachePlayback(track);
-  const cachedPath = bypassFullCachePlayback ? null : await getCacheFilePath(urn);
+  const cachedPath = await getCacheFilePath(urn);
   if (gen !== loadGen) return;
+  if (!cachedPath) {
+    void hydrateTrackMetadata(track, gen);
+  }
 
   const settings = useSettingsStore.getState();
-  const crossfadeSecs = settings.crossfadeEnabled ? settings.crossfadeDuration : null;
+  const crossfadeSecs = resolveCrossfadeDurationForLoad(settings, track.duration / 1000, 0);
   const cacheTargetPath = await getCacheTargetPath(urn);
   if (gen !== loadGen) return;
   const loadFromNetworkWithFallback = async () => {
     usePlayerStore.setState({ downloadProgress: 0 });
 
-    const streamSource = await getTrackStreamSource(urn);
+    const directStreamSource = await getTrackStreamSource(urn);
+    const backendProgressiveSource =
+      directStreamSource.protocol === 'progressive'
+        ? null
+        : await getBackendProgressiveTrackStreamSource(urn);
+    const streamSource = backendProgressiveSource ?? directStreamSource;
     updateEstimatedStreamTotalBytes(fallbackDuration, streamSource.format);
     console.log(
-      `[Audio] Loading direct stream: ${urn} (${streamSource.protocol}/${streamSource.format})`,
+      `[Audio] Loading ${backendProgressiveSource ? 'backend progressive' : 'direct'} stream: ${urn} (${streamSource.protocol}/${streamSource.format})`,
     );
     try {
       const result = await invoke<AudioLoadInvokeResult>('audio_load_url', {
@@ -1605,13 +1618,16 @@ async function loadTrack(track: Track, skipStop = false) {
           crossfadeSecs,
         });
         loadedFromCache = true;
+        currentPlaybackSource = 'cache-file';
       } catch (cacheError) {
         console.warn('[Audio] Cached file failed to decode, retrying from network...', cacheError);
         await removeCachedTrack(urn);
         result = await loadFromNetworkWithFallback();
+        currentPlaybackSource = 'network';
       }
     } else {
       result = await loadFromNetworkWithFallback();
+      currentPlaybackSource = 'network';
     }
 
     const resolvedQuality =
@@ -1901,7 +1917,7 @@ function setupTauriBindings() {
       queuedSeekTarget >= 0 && queuedSeekTrackUrn === usePlayerStore.getState().currentTrack?.urn;
     if ((seekPendingUntil > now || hasQueuedSeek) && seekTargetTime >= 0) {
       const drift = Math.abs(tickPos - seekTargetTime);
-      if (drift > 2.0) {
+      if (drift > SEEK_TICK_SETTLE_EPSILON_SEC) {
         // Stale tick from pre-seek position — ignore it
         return;
       }
@@ -1935,9 +1951,17 @@ function setupTauriBindings() {
     notify();
 
     const settings = useSettingsStore.getState();
-    if (settings.crossfadeEnabled && cachedDuration > 0) {
+    if (
+      !hasActiveSeekTransition(usePlayerStore.getState().currentTrack?.urn) &&
+      !isCrossfadeOffMode(settings.crossfadeMode) &&
+      cachedDuration > 0
+    ) {
+      const transitionDuration =
+        settings.crossfadeMode === 'manual'
+          ? getManualCrossfadeDuration(settings)
+          : getSmartCrossfadeDuration(cachedDuration, cachedTime);
       const remaining = cachedDuration - cachedTime;
-      if (remaining <= settings.crossfadeDuration && remaining > 0 && !isCrossfadingOut) {
+      if (remaining <= transitionDuration && remaining > 0 && !isCrossfadingOut) {
         isCrossfadingOut = true;
         crossfadeInProgress = true;
         handleTrackEnd();

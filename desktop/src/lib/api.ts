@@ -6,7 +6,6 @@ import { useAppStatusStore } from '../stores/app-status';
 import { waitForAuthHydration } from './auth-hydration';
 import { buildApiUrl } from './constants';
 import { useAuthStore } from '../stores/auth';
-import { useDirectAuthStore } from '../stores/direct-auth';
 import { isTauriRuntime } from './runtime';
 
 let sessionId: string | null = null;
@@ -1223,20 +1222,6 @@ function buildDirectApiUrl(path: string): string {
   return path.startsWith('http://') || path.startsWith('https://')
     ? path
     : `${SOUNDCLOUD_DIRECT_API_BASE}${path}`;
-}
-
-function getDirectStoreAccessToken() {
-  const state = useDirectAuthStore.getState();
-  if (!state.accessToken) {
-    return null;
-  }
-
-  if (state.expiresAt && Date.now() >= state.expiresAt) {
-    state.clear();
-    return null;
-  }
-
-  return state.accessToken;
 }
 
 function createTimedSignal(sourceSignal: AbortSignal | null | undefined, timeoutMs: number) {
@@ -2474,9 +2459,14 @@ export async function api<T = unknown>(
   }
 
   const requestPromise = (async () => {
-    const { getDirectAccessToken, hasValidDirectToken } = await import('./direct-soundcloud-api');
-    const directAccessToken =
-      (hasValidDirectToken() ? getDirectAccessToken() : null) ?? getDirectStoreAccessToken();
+    const {
+      ensureDirectAccessToken,
+      isDirectSoundCloudAuthError,
+    } = await import('./direct-soundcloud-api');
+    const directAccessToken = await ensureDirectAccessToken({
+      reason: `api:${path}`,
+      allowExpiredTokenFallback: true,
+    });
     const isArtistInsightsRequest = path.includes('/artist-insights');
 
     if (isArtistInsightsRequest) {
@@ -2502,6 +2492,29 @@ export async function api<T = unknown>(
         }
         return result;
       } catch (error) {
+        if (isDirectSoundCloudAuthError(error)) {
+          const refreshedToken = await ensureDirectAccessToken({
+            forceRefresh: true,
+            reason: `api:${path}:retry`,
+            allowExpiredTokenFallback: false,
+          });
+
+          if (refreshedToken) {
+            const retried = await performStandaloneRequest<T>(
+              path,
+              requestOptions,
+              { accessToken: refreshedToken, timeoutMs },
+            );
+            if (isArtistInsightsRequest) {
+              console.log('[artist-insights][api][direct-retried-result]', {
+                path,
+                result: retried,
+              });
+            }
+            return retried;
+          }
+        }
+
         console.warn(`[api] Direct SoundCloud request failed for ${path}:`, error);
         if (isArtistInsightsRequest) {
           console.log('[artist-insights][api][direct-error]', {
@@ -2678,17 +2691,10 @@ export interface DirectTrackStreamSource {
 export async function getTrackStreamSource(trackUrn: string): Promise<DirectTrackStreamSource> {
   const trackId = extractTrackId(trackUrn);
 
-  const { getDirectAccessToken, hasValidDirectToken, resolveDirectTrackStream } = await import(
+  const { resolveDirectTrackStream } = await import(
     './direct-soundcloud-api'
   );
-  const directAccessToken =
-    (hasValidDirectToken() ? getDirectAccessToken() : null) ?? getDirectStoreAccessToken();
-
-  if (!directAccessToken) {
-    throw new Error('Direct SoundCloud OAuth is required for playback');
-  }
-
-  return resolveDirectTrackStream(trackId, directAccessToken);
+  return resolveDirectTrackStream(trackId);
 }
 
 /**
@@ -2697,6 +2703,56 @@ export async function getTrackStreamSource(trackUrn: string): Promise<DirectTrac
 export async function getCdnStreamUrl(trackUrn: string): Promise<string> {
   const stream = await getTrackStreamSource(trackUrn);
   return stream.url;
+}
+
+export async function getBackendProgressiveTrackStreamSource(
+  trackUrn: string,
+): Promise<DirectTrackStreamSource | null> {
+  await waitForAuthHydration();
+
+  const effectiveSessionId = sessionId ?? useAuthStore.getState().sessionId;
+  if (!effectiveSessionId) {
+    return null;
+  }
+
+  const trackId = extractTrackId(trackUrn);
+  const headers = new Headers({
+    'x-session-id': effectiveSessionId,
+  });
+
+  try {
+    const response = await requestWithFallback(
+      buildApiUrl(`/tracks/${encodeURIComponent(trackId)}/stream-url`),
+      {
+        method: 'GET',
+        headers,
+      },
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as {
+      url?: string;
+      contentType?: string;
+      quality?: 'hq' | 'lq';
+    };
+
+    if (!payload.url) {
+      return null;
+    }
+
+    return {
+      url: payload.url,
+      format: 'http_mp3_128',
+      protocol: 'progressive',
+      mimeType: payload.contentType || 'audio/mpeg',
+      quality: payload.quality === 'hq' ? 'hq' : 'lq',
+    };
+  } catch {
+    return null;
+  }
 }
 
 export type ResolvedStreamingTrack = Partial<import('../stores/player').Track> & {

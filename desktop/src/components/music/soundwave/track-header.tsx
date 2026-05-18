@@ -1,15 +1,11 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  getCurrentTime,
   getDuration,
-  getSmoothCurrentTime,
   subscribe,
 } from '../../../lib/audio';
 import { art, dur } from '../../../lib/formatters';
-import {
-  cancelAnimationFrameImmediate,
-  requestAnimationFrameImmediate,
-} from '../../../lib/framerate';
 import { playBlack14 } from '../../../lib/icons';
 import { usePlayerStore } from '../../../stores/player';
 import type { Track } from '../../../stores/player';
@@ -46,10 +42,8 @@ const CurrentTimeDisplay = React.memo(function CurrentTimeDisplay() {
   const lastDurationSecondRef = useRef<number | null>(null);
 
   useEffect(() => {
-    let rafId: number;
-
     const paint = () => {
-      const currentSecond = Math.floor(getSmoothCurrentTime());
+      const currentSecond = Math.floor(getCurrentTime());
       const durationSecond = Math.floor(getDuration());
       if (tRef.current && lastCurrentSecondRef.current !== currentSecond) {
         lastCurrentSecondRef.current = currentSecond;
@@ -62,16 +56,7 @@ const CurrentTimeDisplay = React.memo(function CurrentTimeDisplay() {
     };
 
     paint();
-    rafId = requestAnimationFrameImmediate(function loop() {
-      paint();
-      rafId = requestAnimationFrameImmediate(loop);
-    });
-
-    const unsub = subscribe(paint);
-    return () => {
-      cancelAnimationFrameImmediate(rafId);
-      unsub();
-    };
+    return subscribe(paint);
   }, []);
 
   return (
@@ -136,7 +121,7 @@ export const WaveTrackHeader = React.memo(
       lastResolvedCoverRef.current = cover;
       setCoverLoaded(true);
       if (previousCover) {
-        requestAnimationFrameImmediate(() => {
+        requestAnimationFrame(() => {
           setPreviousCoverVisible(false);
         });
         previousCoverClearTimeoutRef.current = window.setTimeout(() => {

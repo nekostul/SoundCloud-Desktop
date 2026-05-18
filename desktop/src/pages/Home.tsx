@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { LikeButton } from '../components/music/LikeButton';
@@ -44,37 +44,6 @@ import type { Track } from '../stores/player';
 import { usePlayerStore } from '../stores/player';
 
 /* ── Helpers ──────────────────────────────────────────────── */
-
-function LazyRender({
-  children,
-  minHeight = 100,
-}: {
-  children: React.ReactNode;
-  minHeight?: number;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [isVisible, setIsVisible] = useState(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), {
-      root: el.closest('main'),
-      rootMargin: '1200px 0px',
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  return (
-    <div
-      ref={ref}
-      style={{ minHeight: isVisible ? undefined : minHeight, contentVisibility: 'auto' }}
-    >
-      {isVisible ? children : null}
-    </div>
-  );
-}
 
 /* ── Section Header ───────────────────────────────────────── */
 
@@ -423,11 +392,17 @@ const FallbackShelf = React.memo(function FallbackShelf() {
         {fallbackLoading ? (
           <ShelfSkeleton count={3} />
         ) : (
-          fallbackTracks.map((track) => (
-            <div key={track.urn} className="w-[180px] shrink-0">
-              <TrackCard track={track} queue={fallbackTracks} />
-            </div>
-          ))
+            fallbackTracks.map((track) => (
+              <div key={track.urn} className="w-[180px] shrink-0">
+                <TrackCard
+                  track={track}
+                  queue={fallbackTracks}
+                  variant="shelf"
+                  disableTilt
+                  disableHoverPreload
+                />
+              </div>
+            ))
         )}
       </HorizontalScroll>
     </section>
@@ -458,11 +433,17 @@ const LikedShelf = React.memo(function LikedShelf({
         {isLoading ? (
           <ShelfSkeleton />
         ) : (
-          displayTracks.map((track) => (
-            <div key={track.urn} className="w-[180px] shrink-0">
-              <TrackCard track={track} queue={likedTracks} />
-            </div>
-          ))
+            displayTracks.map((track) => (
+              <div key={track.urn} className="w-[180px] shrink-0">
+                <TrackCard
+                  track={track}
+                  queue={likedTracks}
+                  variant="shelf"
+                  disableTilt
+                  disableHoverPreload
+                />
+              </div>
+            ))
         )}
       </HorizontalScroll>
     </section>
@@ -486,11 +467,17 @@ const FollowingShelf = React.memo(function FollowingShelf() {
         {isLoading ? (
           <ShelfSkeleton />
         ) : (
-          followingTracks.map((track) => (
-            <div key={track.urn} className="w-[180px] shrink-0">
-              <TrackCard track={track} queue={followingTracks} />
-            </div>
-          ))
+            followingTracks.map((track) => (
+              <div key={track.urn} className="w-[180px] shrink-0">
+                <TrackCard
+                  track={track}
+                  queue={followingTracks}
+                  variant="shelf"
+                  disableTilt
+                  disableHoverPreload
+                />
+              </div>
+            ))
         )}
       </HorizontalScroll>
     </section>
@@ -581,7 +568,13 @@ const DiscoverSection = React.memo(function DiscoverSection({
             ) : (
               recommendedTracks.map((track) => (
                 <div key={track.urn} className="w-[180px] shrink-0">
-                  <TrackCard track={track} queue={recommendedTracks} />
+                  <TrackCard
+                    track={track}
+                    queue={recommendedTracks}
+                    variant="shelf"
+                    disableTilt
+                    disableHoverPreload
+                  />
                 </div>
               ))
             )}
@@ -618,7 +611,13 @@ const DiscoverSection = React.memo(function DiscoverSection({
             ) : (
               genreTracks.map((track) => (
                 <div key={track.urn} className="w-[180px] shrink-0">
-                  <TrackCard track={track} queue={genreTracks} />
+                  <TrackCard
+                    track={track}
+                    queue={genreTracks}
+                    variant="shelf"
+                    disableTilt
+                    disableHoverPreload
+                  />
                 </div>
               ))
             )}
@@ -655,17 +654,24 @@ const FeedStream = React.memo(function FeedStream() {
       {isLoading ? (
         <FeedSkeleton />
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(380px,1fr))] gap-2.5">
-          {streamItems.map((item) => (
-            <LazyRender key={item.origin.urn} minHeight={100}>
-              {item.type.includes('track') ? (
-                <FeedTrackCard item={item} queue={feedTrackQueue} />
-              ) : (
-                <FeedPlaylistCard item={item} />
-              )}
-            </LazyRender>
-          ))}
-        </div>
+          <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(380px,1fr))] gap-2.5">
+            {streamItems.map((item) => (
+              <div
+                key={item.origin.urn}
+                style={{
+                  contentVisibility: 'auto',
+                  contain: 'layout paint style',
+                  containIntrinsicSize: '380px 110px',
+                }}
+              >
+                {item.type.includes('track') ? (
+                  <FeedTrackCard item={item} queue={feedTrackQueue} />
+                ) : (
+                  <FeedPlaylistCard item={item} />
+                )}
+              </div>
+            ))}
+          </div>
       )}
 
       {/* Sentinel for infinite scroll */}

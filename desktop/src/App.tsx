@@ -8,11 +8,12 @@ import { AppShell } from './components/layout/AppShell';
 import { ThemeProvider } from './components/ThemeProvider';
 import { UpdateChecker } from './components/UpdateChecker';
 import { setSessionExpiredHandler, setSessionId, setUnauthorizedHandler } from './lib/api';
-import { applyAppFont } from './lib/app-font';
+import { applyAppFont, FORCED_APP_TEXT_SIZE, FORCED_APP_UI_SCALE } from './lib/app-font';
 import { hasAuthHydrated } from './lib/auth-hydration';
 import {
+  fetchDirectSoundCloudMe,
+  isDirectAuthRequiredError,
   mapDirectUserToAuthUser,
-  type DirectSoundCloudUserInfo,
 } from './lib/direct-soundcloud-api';
 import { Home } from './pages/Home';
 import { Library } from './pages/Library';
@@ -32,8 +33,7 @@ type AppErrorBoundaryState = {
 };
 
 function isDirectAuthFailure(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /\b401\b|\b403\b|unauthoriz|invalid token|expired token/i.test(message);
+  return isDirectAuthRequiredError(error);
 }
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
@@ -86,12 +86,9 @@ function AppInner() {
   const [checking, setChecking] = useState(true);
   const [authHydrated, setAuthHydrated] = useState(() => useAuthStore.persist.hasHydrated());
   const [directHydrated, setDirectHydrated] = useState(() => useDirectAuthStore.persist.hasHydrated());
-  const directAccessToken = useDirectAuthStore((s) => s.accessToken);
-  const directExpiresAt = useDirectAuthStore((s) => s.expiresAt);
+  const directAuthenticated = useDirectAuthStore((s) => s.isAuthenticated);
   const directUser = useDirectAuthStore((s) => s.user);
   const directSetUser = useDirectAuthStore((s) => s.setUser);
-  const directAuthenticated =
-    !!directAccessToken && (!directExpiresAt || Date.now() < directExpiresAt);
   const effectiveAuthenticated = isAuthenticated || directAuthenticated;
 
   // Re-apply persisted app icon choice on each app start. Tauri uses the
@@ -113,22 +110,12 @@ function AppInner() {
   // Re-apply the chosen font on every relevant settings change. Subscribing
   // to a slice (not the whole store) keeps this effect quiet when unrelated
   // settings update.
-  const fontMode = useSettingsStore((s) => s.appFontMode);
-  const fontSystemFamily = useSettingsStore((s) => s.appFontSystemFamily);
-  const fontCustomPath = useSettingsStore((s) => s.appFontCustomPath);
-  const fontCustomFamily = useSettingsStore((s) => s.appFontCustomFamily);
-  const fontSize = useSettingsStore((s) => s.appFontSize);
-  const uiScale = useSettingsStore((s) => s.appUiScale);
   useEffect(() => {
     void applyAppFont({
-      mode: fontMode,
-      systemFamily: fontSystemFamily,
-      customPath: fontCustomPath,
-      customFamily: fontCustomFamily,
-      textSize: fontSize,
-      uiScale,
+      textSize: FORCED_APP_TEXT_SIZE,
+      uiScale: FORCED_APP_UI_SCALE,
     });
-  }, [fontMode, fontSystemFamily, fontCustomPath, fontCustomFamily, fontSize, uiScale]);
+  }, []);
 
   useEffect(() => {
     const syncOnline = () => {
@@ -231,9 +218,7 @@ function AppInner() {
         return;
       }
 
-      invokeTauri<DirectSoundCloudUserInfo>('fetch_soundcloud_me', {
-        accessToken: directAccessToken,
-      })
+      fetchDirectSoundCloudMe()
         .then((userInfo) => {
           const mapped = mapDirectUserToAuthUser(userInfo);
           directSetUser(mapped);
@@ -289,7 +274,6 @@ function AppInner() {
     setChecking(false);
   }, [
     authHydrated,
-    directAccessToken,
     directAuthenticated,
     directHydrated,
     directSetUser,

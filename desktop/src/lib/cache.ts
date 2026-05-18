@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { appCacheDir, join } from '@tauri-apps/api/path';
 import { exists, mkdir, readDir, remove, stat, writeFile } from '@tauri-apps/plugin-fs';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-import { getSessionId, getTrackStreamSource } from './api';
+import { getBackendProgressiveTrackStreamSource, getSessionId, getTrackStreamSource } from './api';
 import { getStaticPort } from './constants';
 import { isTauriRuntime } from './runtime';
 
@@ -133,14 +133,22 @@ export async function fetchAndCacheTrack(urn: string, signal?: AbortSignal): Pro
       }
 
       // Resolve a direct standalone SoundCloud stream source.
-      const streamSource = await getTrackStreamSource(urn);
-      console.log(`💾 [Cache] Got CDN URL for ${urn}`);
+      const backendProgressiveSource = await getBackendProgressiveTrackStreamSource(urn);
+      const directStreamSource = await getTrackStreamSource(urn);
+      const streamSource = backendProgressiveSource ?? directStreamSource;
+      const fallbackUrls =
+        backendProgressiveSource && backendProgressiveSource.url !== directStreamSource.url
+          ? [backendProgressiveSource.url, directStreamSource.url]
+          : [streamSource.url];
+      console.log(
+        `💾 [Cache] Got ${backendProgressiveSource ? 'backend progressive' : 'direct'} stream for ${urn}`,
+      );
 
       if (isTauriRuntime()) {
         // Use native Rust handler for caching the resolved direct stream.
         await invoke<NativeTrackCacheEntry>('track_ensure_cached', {
           urn,
-          urls: [streamSource.url],
+          urls: fallbackUrls,
           sessionId: getSessionId(),
         });
         return new ArrayBuffer(0);

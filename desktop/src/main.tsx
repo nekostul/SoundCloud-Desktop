@@ -9,6 +9,7 @@ import { ApiError } from './lib/api';
 import './lib/app-visibility';
 import { installGlobalFrameLimiter, setGlobalFrameLimiterConfig } from './lib/framerate';
 import { setServerPorts } from './lib/constants';
+import { installEmbeddedFont } from './lib/embedded-font';
 import { isTauriRuntime } from './lib/runtime';
 import './lib/audio';
 import './index.css';
@@ -16,6 +17,7 @@ import { getEffectivePitchSemitones, usePlayerStore } from './stores/player';
 import { useSettingsStore } from './stores/settings';
 
 installGlobalFrameLimiter();
+installEmbeddedFont();
 
 function syncGlobalFramerateLimiter(
   state = useSettingsStore.getState(),

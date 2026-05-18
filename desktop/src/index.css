@@ -16,7 +16,7 @@
   --color-accent-selection: rgba(255, 85, 0, 0.3);
   --color-accent-contrast: #ffffff;
 
-  --font-sans: "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-sans: "Inter";
   --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -414,7 +414,11 @@ body,
 @keyframes lyricsMiniPlayerIn {
   from {
     opacity: 0;
-    transform: translate3d(0, 18px, 0) scale(0.965);
+    transform: translate3d(0, 26px, 0) scale(0.94);
+  }
+  58% {
+    opacity: 1;
+    transform: translate3d(0, -2px, 0) scale(1.015);
   }
   to {
     opacity: 1;
@@ -429,18 +433,73 @@ body,
   }
   to {
     opacity: 0;
-    transform: translate3d(0, 20px, 0) scale(0.975);
+    transform: translate3d(0, 18px, 0) scale(0.965);
   }
 }
 
-.animate-lyrics-mini-player-in {
-  animation: lyricsMiniPlayerIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+@keyframes lyricsMiniPlayerSectionIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.lyrics-mini-player-dock {
+  transform-origin: left bottom;
+}
+
+.lyrics-mini-player-shell {
   will-change: transform, opacity;
 }
 
-.animate-lyrics-mini-player-out {
+.animate-lyrics-mini-player-in .lyrics-mini-player-shell {
+  animation: lyricsMiniPlayerIn 0.68s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-lyrics-mini-player-out .lyrics-mini-player-shell {
   animation: lyricsMiniPlayerOut 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
-  will-change: transform, opacity;
+}
+
+.animate-lyrics-mini-player-in .lyrics-mini-player-header,
+.animate-lyrics-mini-player-in .lyrics-mini-player-transport,
+.animate-lyrics-mini-player-in .lyrics-mini-player-volume {
+  opacity: 0;
+  animation: lyricsMiniPlayerSectionIn 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-lyrics-mini-player-in .lyrics-mini-player-header {
+  animation-delay: 0.08s;
+}
+
+.animate-lyrics-mini-player-in .lyrics-mini-player-transport {
+  animation-delay: 0.14s;
+}
+
+.animate-lyrics-mini-player-in .lyrics-mini-player-volume {
+  animation-delay: 0.2s;
+}
+
+::view-transition-group(lyrics-fullscreen-artwork) {
+  animation-duration: 0.72s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(lyrics-fullscreen-artwork),
+::view-transition-new(lyrics-fullscreen-artwork) {
+  animation-duration: 0.72s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  border-radius: 24px;
+  mix-blend-mode: normal;
+  overflow: clip;
+}
+
+::view-transition-old(lyrics-fullscreen-artwork),
+::view-transition-new(lyrics-fullscreen-artwork) {
+  height: 100%;
 }
 
 @keyframes noteGradientFlow {

@@ -63,7 +63,7 @@ export const PlaybackSpeedPresets = React.memo(function PlaybackSpeedPresets({
               key={preset}
               type="button"
               onClick={() => setPlaybackSpeedPreset(preset)}
-              className={`flex flex-col items-center justify-center rounded-2xl border px-3 py-2.5 text-center transition-all duration-200 ${
+              className={`flex flex-col items-center justify-center rounded-2xl border w-[90px] py-2.5 text-center transition-all duration-200 ${
                 active
                   ? 'border-accent/35 bg-accent/18 text-white shadow-[0_0_24px_var(--color-accent-glow)]'
                   : 'border-white/[0.08] bg-white/[0.03] text-white/55 hover:border-white/[0.14] hover:bg-white/[0.06] hover:text-white/82'

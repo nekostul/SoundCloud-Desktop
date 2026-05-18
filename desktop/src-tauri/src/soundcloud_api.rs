@@ -266,6 +266,39 @@ impl DirectSoundCloudApi {
             .map_err(|error| format!("Failed to parse token response: {error}"))
     }
 
+    async fn refresh_token(
+        refresh_token: &str,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<SoundCloudToken, String> {
+        let response = Client::new()
+            .post(SOUNDCLOUD_TOKEN_URL)
+            .header("accept", "application/json; charset=utf-8")
+            .form(&[
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+            ])
+            .send()
+            .await
+            .map_err(|error| format!("Token refresh request failed: {error}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(format!("Token refresh failed with {status}: {body}"));
+        }
+
+        response
+            .json::<SoundCloudToken>()
+            .await
+            .map_err(|error| format!("Failed to parse refresh response: {error}"))
+    }
+
     pub async fn get_track_stream(
         &self,
         track_id: &str,
@@ -1059,6 +1092,15 @@ pub async fn soundcloud_oauth_start(
     app: AppHandle,
 ) -> Result<SoundCloudToken, String> {
     DirectSoundCloudApi::start_oauth(client_id, client_secret, app).await
+}
+
+#[tauri::command]
+pub async fn soundcloud_oauth_refresh(
+    client_id: String,
+    client_secret: String,
+    refresh_token: String,
+) -> Result<SoundCloudToken, String> {
+    DirectSoundCloudApi::refresh_token(&refresh_token, &client_id, &client_secret).await
 }
 
 #[tauri::command]

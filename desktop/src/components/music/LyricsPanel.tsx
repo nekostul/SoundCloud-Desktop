@@ -1,8 +1,8 @@
 import * as Slider from '@radix-ui/react-slider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Volume, Volume2, VolumeX } from 'lucide-react';
-import { createPortal } from 'react-dom';
+import { ChevronDown, ChevronUp, Volume, Volume2, VolumeX } from 'lucide-react';
+import { createPortal, flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../lib/api';
 import { isAppBackgrounded } from '../../lib/app-visibility';
@@ -55,6 +55,7 @@ import {
 import { useSettingsStore } from '../../stores/settings';
 import { useSoundWaveStore } from '../../stores/soundwave';
 import { ProgressSlider, ProgressTime } from '../layout/NowPlayingBar';
+import { AdaptiveTrackTitle } from '../ui/AdaptiveTrackTitle';
 import { AddToPlaylistDialog } from './AddToPlaylistDialog';
 import { PlaybackSpeedPresets } from './PlaybackSpeedPresets';
 import { StreamQualityBadge } from './StreamQualityBadge';
@@ -79,6 +80,40 @@ function uniqueArtworkSources(values: Array<string | null | undefined>): string[
   );
 }
 
+const LYRICS_SHARED_ARTWORK_TRANSITION_NAME = 'lyrics-fullscreen-artwork';
+
+type ViewTransitionHandle = {
+  finished: Promise<void>;
+  ready: Promise<void>;
+  updateCallbackDone: Promise<void>;
+  skipTransition: () => void;
+};
+
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (callback: () => void) => ViewTransitionHandle;
+};
+
+function runDocumentViewTransition(update: () => void) {
+  if (typeof document === 'undefined') {
+    update();
+    return;
+  }
+
+  const prefersReducedMotion =
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const doc = document as ViewTransitionDocument;
+
+  if (!doc.startViewTransition || prefersReducedMotion) {
+    update();
+    return;
+  }
+
+  doc.startViewTransition(() => {
+    flushSync(update);
+  });
+}
+
 function getTrackArtworkSources(track: Track | null | undefined, size: string): string[] {
   if (!track) return [];
 
@@ -87,8 +122,8 @@ function getTrackArtworkSources(track: Track | null | undefined, size: string): 
 
 function getTrackBackgroundArtworkSources(track: Track | null | undefined): string[] {
   return uniqueArtworkSources([
-    ...getTrackArtworkSources(track, 't500x500'),
-    ...getTrackArtworkSources(track, 't200x200'),
+      ...getTrackArtworkSources(track, 't200x200'),
+      ...getTrackArtworkSources(track, 't500x500'),
   ]);
 }
 
@@ -656,7 +691,7 @@ const Controls = React.memo(({ track }: { track: Track }) => {
       <button
         type="button"
         onClick={togglePlay}
-        className="w-14 h-14 rounded-full bg-white flex items-center justify-center hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer shadow-lg outline-none mx-1"
+        className="w-14 h-14 rounded-full bg-white flex items-center justify-center hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer shadow-lg outline-none mx-2"
       >
         {isPlaying
           ? pauseBlack18
@@ -826,6 +861,10 @@ const columnMaxWidthClass = `w-full max-w-[320px]`;
   const columnWidthTransitionStyle = {
     transition: 'max-width 500ms cubic-bezier(0.22, 1, 0.36, 1)',
   } satisfies React.CSSProperties;
+  const artworkTransitionStyle = {
+    ...columnWidthTransitionStyle,
+    viewTransitionName: LYRICS_SHARED_ARTWORK_TRANSITION_NAME,
+  } satisfies React.CSSProperties;
   const fullArtModal =
     showFullArt && fullscreenArtSrc && typeof document !== 'undefined'
       ? createPortal(
@@ -880,7 +919,7 @@ const columnMaxWidthClass = `w-full max-w-[320px]`;
     <div className="relative z-10 flex h-full min-h-0 w-full flex-col items-center justify-center gap-[clamp(10px,1.6vh,28px)] overflow-y-auto px-12 py-6">
       <div
         className={`${artMaxWidthClass} aspect-square rounded-2xl overflow-hidden shadow-2xl shadow-black/60 ring-1 ring-white/[0.08] relative group/art`}
-        style={columnWidthTransitionStyle}
+        style={artworkTransitionStyle}
       >
         {hasArtwork ? (
           <>
@@ -2780,7 +2819,6 @@ const splitDraggingRef = useRef(false);
 );
     const {
       data: lyrics,
-      isLoading,
       generatedFromPlain,
       } = useResolvedLyrics(
         interactiveVisible,
@@ -3168,94 +3206,6 @@ export const lyricsPanelApi = {
   },
 };
 
-const CompactLyricsPlayer = ({ track }: { track: Track }) => {
-  return (
-    <div className="scale-[0.75] origin-top-left">
-      <div className="max-w-[420px] flex items-start gap-7">
-        <img
-          src={track.artwork_url ?? ''}
-          alt=""
-          className="w-71 h-71 object-cover shadow-2xl"
-        />
-
-        <div className="flex-1 flex flex-col pt-2">
-          <div className="mb-5 text-center">
-            <div className="text-white font-bold text-[28px] leading-tight">
-              {track.title}
-            </div>
-
-            <div className="mt-1 text-white/45 text-[18px]">
-              {track.user.username}
-            </div>
-          </div>
-
-          <div className="mb-6">
-            <div className="h-1 rounded-full bg-white/10 overflow-hidden">
-              <div className="h-full w-[35%] bg-white rounded-full" />
-            </div>
-
-            <div className="mt-2 text-[14px] text-white/40">
-              1:24 / 3:52
-            </div>
-          </div>
-
-          <div className="mb-6 flex items-center gap-5">
-            <button className="text-white/35 text-[17px] transition hover:text-white">
-              ☰
-            </button>
-
-            <button className="text-white/60 text-[18px] transition hover:text-white">
-              ♡
-            </button>
-
-            <button className="text-white/40 text-[15px] transition hover:text-white">
-              ⤮
-            </button>
-
-            <button className="text-white/70 text-[20px] transition hover:text-white">
-              ⏮
-            </button>
-
-            <button className="flex h-16 w-16 items-center justify-center rounded-full bg-white text-[24px] text-black transition hover:scale-[1.04]">
-              ⏸
-            </button>
-
-            <button className="text-white/70 text-[20px] transition hover:text-white">
-              ⏭
-            </button>
-
-            <button className="text-white/40 text-[15px] transition hover:text-white">
-              ⤭
-            </button>
-
-            <button className="text-white/30 text-[16px] transition hover:text-white">
-              ⊘
-            </button>
-
-            <button className="text-white/35 text-[16px] transition hover:text-white">
-              ↗
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button className="text-white/55 text-[15px] transition hover:text-white">
-              🔊
-            </button>
-
-            <div className="relative h-[3px] flex-1 overflow-hidden rounded-full bg-white/10">
-              <div className="absolute inset-y-0 left-0 w-[100%] rounded-full bg-white/75" />
-            </div>
-
-            <div className="min-w-[42px] text-right text-[13px] text-white/45">
-              100%
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const togglePlay = usePlayerStore((s) => s.togglePlay);
@@ -3271,6 +3221,10 @@ const toggleRepeat = usePlayerStore((s) => s.toggleRepeat);
 
   const compactCtrl =
     'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97] disabled:cursor-default disabled:text-white/28';
+  const compactAccentCtrl = (active: boolean) =>
+    active
+      ? `${compactCtrl} theme-accent-soft text-white/96 hover:text-white/96`
+      : compactCtrl;
 
   const onNext = useCallback(() => {
     if (nextLocked) return;
@@ -3295,7 +3249,7 @@ const toggleRepeat = usePlayerStore((s) => s.toggleRepeat);
   }, [track]);
 
 return (
-  <div className="flex items-center gap-2 pl-2">
+  <div className="flex items-center gap-2 pl-2.5">
     <AddToPlaylistDialog trackUrn={track.urn}>
       <button type="button" className={compactCtrl}>
         <ListPlus size={16} />
@@ -3307,11 +3261,7 @@ return (
     <button
       type="button"
       onClick={toggleShuffle}
-      className={`${compactCtrl} ${
-        shuffle
-          ? 'text-accent'
-          : 'text-white/58'
-      }`}
+      className={compactAccentCtrl(shuffle)}
     >
       {shuffleIcon16}
     </button>
@@ -3345,11 +3295,7 @@ return (
     <button
       type="button"
       onClick={toggleRepeat}
-      className={`${compactCtrl} ${
-        repeat !== 'off'
-          ? 'text-accent'
-          : 'text-white/58'
-      }`}
+      className={compactAccentCtrl(repeat !== 'off')}
     >
       {repeat === 'one'
         ? repeat1Icon16
@@ -3380,17 +3326,9 @@ const LyricsMiniPlayerDock = ({
   openAnimation: 'default' | 'fromMiniPlayer';
   closeAnimation: 'none' | 'toMiniPlayer';
 }) => {
-  const artworkSources = useMemo(
-    () => [
-      ...getTrackArtworkSources(track, 't500x500'),
-      ...getTrackArtworkSources(track, 't200x200'),
-    ],
-    [track],
-  );
-  const { currentSrc, handleError } = useFallbackImageSource(
-    artworkSources,
-    `${track.urn}:lyrics-mini-player`,
-  );
+  const { t } = useTranslation();
+  const controlsCollapsed = useSettingsStore((s) => s.lyricsMiniPlayerControlsCollapsed);
+  const setControlsCollapsed = useSettingsStore((s) => s.setLyricsMiniPlayerControlsCollapsed);
   const [r, g, b] = color;
   const dockAnimationClass =
     closeAnimation === 'toMiniPlayer'
@@ -3400,9 +3338,12 @@ const LyricsMiniPlayerDock = ({
         : 'animate-lyrics-mini-player-in';
 
   return (
-    <div className={dockAnimationClass} style={{ width: 'min(420px, calc(100vw - 32px))' }}>
+    <div
+      className={`lyrics-mini-player-dock ${dockAnimationClass}`}
+      style={{ width: 'min(420px, calc(100vw - 32px))' }}
+    >
       <div
-        className="relative overflow-hidden rounded-[30px] border border-white/[0.12] bg-black/[0.28] p-4 text-white shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_0_1px_rgba(255,255,255,0.03)_inset]"
+        className="lyrics-mini-player-shell group/lyrics-mini-player relative overflow-hidden rounded-[30px] border border-white/[0.12] bg-black/[0.28] p-4 text-white shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_0_1px_rgba(255,255,255,0.03)_inset]"
         style={{ backdropFilter: 'blur(30px) saturate(1.38)' }}
       >
         <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0.035)_18%,rgba(255,255,255,0.015)_100%)]" />
@@ -3416,32 +3357,36 @@ const LyricsMiniPlayerDock = ({
           }}
         />
         <div className="pointer-events-none absolute inset-px rounded-[29px] border border-white/[0.06]" />
+        <button
+          type="button"
+          onClick={() => setControlsCollapsed(!controlsCollapsed)}
+          title={
+            controlsCollapsed
+              ? t('track.showMiniPlayerControls', 'Show controls')
+              : t('track.hideMiniPlayerControls', 'Hide controls')
+          }
+          aria-label={
+            controlsCollapsed
+              ? t('track.showMiniPlayerControls', 'Show controls')
+              : t('track.hideMiniPlayerControls', 'Hide controls')
+          }
+          className="absolute right-3 top-3 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-black/[0.24] text-white/54 opacity-0 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-md transition-all duration-200 ease-[var(--ease-apple)] hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white/88 focus-visible:opacity-100 focus-visible:outline-none group-hover/lyrics-mini-player:opacity-100"
+        >
+          {controlsCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
 
-        <div className="relative">
-          <div className="flex items-start gap-4">
-            <div className="relative h-[88px] w-[88px] shrink-0 overflow-hidden rounded-[24px] ring-1 ring-white/[0.1] shadow-[0_16px_36px_rgba(0,0,0,0.35)]">
-              {currentSrc ? (
-                <img
-                  src={currentSrc}
-                  alt={track.title}
-                  className="h-full w-full object-cover"
-                  loading="eager"
-                  decoding="async"
-                  fetchPriority="high"
-                  onError={handleError}
-                />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center bg-white/[0.06]">
-                  <MicVocal size={28} className="text-white/18" />
-                </div>
-              )}
-              <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0)_45%,rgba(0,0,0,0.14)_100%)]" />
-            </div>
+        <div className="lyrics-mini-player-content relative">
+          <div className="lyrics-mini-player-header flex items-start gap-4">
+            <LyricsMiniPlayerArtwork track={track} controlsCollapsed={controlsCollapsed} />
 
             <div className="min-w-0 flex-1 pt-1">
-              <p className="truncate text-[18px] font-semibold leading-tight text-white/92">
-                {track.title}
-              </p>
+              <AdaptiveTrackTitle
+                text={track.title}
+                baseSize={18}
+                minSize={14}
+                step={0.1}
+                className="truncate text-[18px] font-semibold leading-tight text-white/92"
+              />
               <p className="mt-1 truncate text-[13px] font-medium text-white/46">
                 {track.user.username}
               </p>
@@ -3456,18 +3401,142 @@ const LyricsMiniPlayerDock = ({
             </div>
           </div>
 
-          <div className="mt-4 flex items-center justify-between gap-3">
-            <CompactLyricsDockTransport track={track} />
-          </div>
+          <div
+            className={`overflow-hidden transition-[max-height,opacity,transform,margin] duration-300 ease-[var(--ease-apple)] ${
+              controlsCollapsed
+                ? 'mt-0 max-h-0 translate-y-2 opacity-0 pointer-events-none'
+                : 'mt-4 max-h-[180px] translate-y-0 opacity-100'
+            }`}
+          >
+            <div className="lyrics-mini-player-transport flex items-center justify-between gap-3">
+              <CompactLyricsDockTransport track={track} />
+            </div>
 
-          <div className="mt-4 rounded-[20px] border border-white/[0.06] bg-black/[0.16] px-6.5 py-2.5">
-            <FullscreenVolumeSlider />
+            <div className="lyrics-mini-player-volume mt-4 rounded-[20px] border border-white/[0.06] bg-black/[0.16] px-6.5 py-2.5">
+              <FullscreenVolumeSlider />
+            </div>
           </div>
         </div>
       </div>
     </div>
   );
 };
+
+const LyricsMiniPlayerArtwork = React.memo(
+  ({ track, controlsCollapsed }: { track: Track; controlsCollapsed: boolean }) => {
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const togglePlay = usePlayerStore((s) => s.togglePlay);
+  const previewArtSources = useMemo(
+    () =>
+      uniqueArtworkSources([
+        ...getTrackArtworkSources(track, 't200x200'),
+        ...getTrackArtworkSources(track, 't500x500'),
+      ]),
+    [track.artwork_url, track.user.avatar_url],
+  );
+  const displayArtSources = useMemo(
+    () =>
+      uniqueArtworkSources([
+        ...getTrackArtworkSources(track, 't500x500'),
+        ...getTrackArtworkSources(track, 't200x200'),
+      ]),
+    [track.artwork_url, track.user.avatar_url],
+  );
+  const previewArtSourcesKey = previewArtSources.join('|');
+  const displayArtSourcesKey = displayArtSources.join('|');
+  const { currentSrc: previewArtSrc, handleError: handlePreviewArtError } = useFallbackImageSource(
+    previewArtSources,
+    `${track.urn}:lyrics-mini-preview`,
+  );
+  const { currentSrc: displayArtSrc, handleError: handleDisplayArtError } = useFallbackImageSource(
+    displayArtSources,
+    `${track.urn}:lyrics-mini-display`,
+  );
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    setLoaded(false);
+  }, [track.urn, previewArtSourcesKey, displayArtSourcesKey]);
+
+  useEffect(() => {
+    const urls = displayArtSources.slice(0, 2);
+    const preloadedImages: HTMLImageElement[] = [];
+
+    for (const [index, url] of urls.entries()) {
+      const img = new window.Image();
+      img.decoding = 'async';
+      img.loading = 'eager';
+      img.fetchPriority = index === 0 ? 'high' : 'auto';
+      img.src = url;
+      preloadedImages.push(img);
+    }
+
+    return () => {
+      for (const img of preloadedImages) {
+        img.src = '';
+      }
+    };
+  }, [displayArtSourcesKey, track.urn]);
+
+  const hasArtwork = Boolean(previewArtSrc || displayArtSrc);
+
+  return (
+    <div
+      className="relative h-[88px] w-[88px] shrink-0 overflow-hidden rounded-[24px] ring-1 ring-white/[0.1] shadow-[0_16px_36px_rgba(0,0,0,0.35)]"
+      style={{ viewTransitionName: LYRICS_SHARED_ARTWORK_TRANSITION_NAME }}
+    >
+      {hasArtwork ? (
+        <>
+          <img
+            key={`${track.urn}-lyrics-mini-preview-${previewArtSrc ?? displayArtSrc ?? 'fallback'}`}
+            src={previewArtSrc || displayArtSrc || ''}
+            alt=""
+            className={`absolute inset-0 h-full w-full object-cover scale-105 transition-opacity duration-500 ease-[var(--ease-apple)] ${
+              loaded ? 'opacity-0' : 'opacity-100'
+            }`}
+            loading="eager"
+            decoding="async"
+            fetchPriority="high"
+            onError={handlePreviewArtError}
+          />
+          <img
+            key={`${track.urn}-lyrics-mini-display-${displayArtSrc ?? previewArtSrc ?? 'fallback'}`}
+            src={displayArtSrc || previewArtSrc || ''}
+            alt={track.title}
+            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ease-[var(--ease-apple)] ${
+              loaded ? 'opacity-100' : 'opacity-0'
+            }`}
+            loading="eager"
+            decoding="async"
+            fetchPriority="high"
+            onLoad={() => setLoaded(true)}
+            onError={() => {
+              setLoaded(false);
+              handleDisplayArtError();
+            }}
+          />
+        </>
+      ) : (
+        <div className="flex h-full w-full items-center justify-center bg-white/[0.06]">
+          <MicVocal size={28} className="text-white/18" />
+        </div>
+      )}
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0)_45%,rgba(0,0,0,0.14)_100%)]" />
+      {controlsCollapsed && (
+        <button
+          type="button"
+          onClick={togglePlay}
+          aria-label={isPlaying ? 'Pause' : 'Play'}
+          className="absolute inset-0 z-10 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-player:bg-black/[0.18] group-hover/lyrics-mini-player:opacity-100 focus-visible:bg-black/[0.18] focus-visible:opacity-100 focus-visible:outline-none"
+        >
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/92 text-black shadow-[0_12px_28px_rgba(0,0,0,0.24)] transition-transform duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-player:scale-100 scale-[0.92]">
+            {isPlaying ? pauseBlack18 : playBlack18}
+          </span>
+        </button>
+      )}
+    </div>
+  );
+});
 
 const FullscreenLyricsMiniPlayerOverlay = React.memo(
   ({
@@ -3482,9 +3551,11 @@ const FullscreenLyricsMiniPlayerOverlay = React.memo(
     closeAnimation: 'none' | 'toMiniPlayer';
   }) => {
     if (typeof document === 'undefined') return null;
+    const overlayAnimationClass =
+      closeAnimation === 'toMiniPlayer' ? 'animate-fullscreen-to-player' : '';
 
     return createPortal(
-      <div className="pointer-events-none fixed inset-0 z-[68]">
+      <div className={`pointer-events-none fixed inset-0 z-[68] ${overlayAnimationClass}`.trim()}>
         <div
           className="pointer-events-auto absolute"
           style={{
@@ -3492,15 +3563,6 @@ const FullscreenLyricsMiniPlayerOverlay = React.memo(
             bottom: 'clamp(20px, 3vh, 40px)',
           }}
         >
-          {/* Blur backdrop */}
-          <div
-            className="absolute rounded-[30px] pointer-events-none"
-            style={{
-              inset: '0px',
-              backdropFilter: 'blur(20px)',
-              backgroundColor: 'rgba(0, 0, 0, 0.15)',
-            }}
-          />
           <LyricsMiniPlayerDock
             track={track}
             color={color}
@@ -3593,6 +3655,7 @@ const FullscreenPanels = React.memo(() => {
   const pendingLyricsActionAfterLoadRef = useRef(false);
   const pendingManualSearchResolveRef = useRef(false);
   const pendingTrackAutoOpenRef = useRef(false);
+  const skipNextArtworkToLyricsSharedTransitionRef = useRef(false);
   const handledMiniPlayerRequestRef = useRef(0);
   const prevTrackUrnRef = useRef<string | null>(null);
   const trackUrn = track?.urn ?? null;
@@ -3664,14 +3727,27 @@ const FullscreenPanels = React.memo(() => {
   }, [clearNotFoundHint]);
 
   const openLyricsMode = useCallback(() => {
-    clearNotFoundHint();
-    setLyricsSessionRequested(true);
-    setIsTrackLyricsPending(false);
-    pendingTrackAutoOpenRef.current = false;
-    setIsSearchModalOpen(false);
-    useArtworkStore.setState({ open: false });
-    useFullscreenPanelStore.getState().setMode('lyrics');
-    useLyricsStore.setState({ open: true });
+    const applyModeChange = () => {
+      clearNotFoundHint();
+      setLyricsSessionRequested(true);
+      setIsTrackLyricsPending(false);
+      pendingTrackAutoOpenRef.current = false;
+      setIsSearchModalOpen(false);
+      useArtworkStore.setState({ open: false });
+      useFullscreenPanelStore.getState().setMode('lyrics');
+      useLyricsStore.setState({ open: true });
+    };
+
+    const fullscreenState = useFullscreenPanelStore.getState();
+    const skipArtworkSharedTransition = skipNextArtworkToLyricsSharedTransitionRef.current;
+    skipNextArtworkToLyricsSharedTransitionRef.current = false;
+
+    if (fullscreenState.mode === 'artwork' && !skipArtworkSharedTransition) {
+      runDocumentViewTransition(applyModeChange);
+      return;
+    }
+
+    applyModeChange();
   }, [clearNotFoundHint]);
 
   const openSearchModal = useCallback(() => {
@@ -3680,16 +3756,20 @@ const FullscreenPanels = React.memo(() => {
   }, [clearNotFoundHint]);
 
   const closeLyricsModeManually = useCallback(() => {
-    clearNotFoundHint();
-    setLyricsSessionRequested(false);
-    setIsTrackLyricsPending(false);
-    setIsSearchModalOpen(false);
-    pendingLyricsActionAfterLoadRef.current = false;
-    pendingManualSearchResolveRef.current = false;
-    pendingTrackAutoOpenRef.current = false;
-    useLyricsStore.setState({ open: false });
-    useFullscreenPanelStore.getState().setMode('artwork');
-    useArtworkStore.setState({ open: true });
+    const applyModeChange = () => {
+      clearNotFoundHint();
+      setLyricsSessionRequested(false);
+      setIsTrackLyricsPending(false);
+      setIsSearchModalOpen(false);
+      pendingLyricsActionAfterLoadRef.current = false;
+      pendingManualSearchResolveRef.current = false;
+      pendingTrackAutoOpenRef.current = false;
+      useLyricsStore.setState({ open: false });
+      useFullscreenPanelStore.getState().setMode('artwork');
+      useArtworkStore.setState({ open: true });
+    };
+
+    runDocumentViewTransition(applyModeChange);
   }, [clearNotFoundHint]);
 
   const handleManualSearch = useCallback((artist: string, title: string) => {
@@ -3705,16 +3785,22 @@ const FullscreenPanels = React.memo(() => {
     setLyricsSessionRequested(true);
     if (suppressLyricsFallback) {
       pendingLyricsActionAfterLoadRef.current = true;
+      setIsTrackLyricsPending(true);
       return;
     }
     if (hasLyrics) {
+      pendingLyricsActionAfterLoadRef.current = false;
+      setIsTrackLyricsPending(false);
       openLyricsMode();
       return;
     }
     if (isLoading) {
       pendingLyricsActionAfterLoadRef.current = true;
+      setIsTrackLyricsPending(true);
       return;
     }
+    pendingLyricsActionAfterLoadRef.current = false;
+    setIsTrackLyricsPending(false);
     showNotFoundBubble();
   }, [
     clearNotFoundHint,
@@ -3737,6 +3823,7 @@ const FullscreenPanels = React.memo(() => {
     pendingLyricsActionAfterLoadRef.current = false;
     pendingManualSearchResolveRef.current = false;
     pendingTrackAutoOpenRef.current = false;
+    skipNextArtworkToLyricsSharedTransitionRef.current = false;
   }, [mode, clearNotFoundHint]);
 
   useEffect(() => {
@@ -3751,6 +3838,7 @@ const FullscreenPanels = React.memo(() => {
     pendingLyricsActionAfterLoadRef.current = false;
     pendingManualSearchResolveRef.current = false;
     pendingTrackAutoOpenRef.current = false;
+    skipNextArtworkToLyricsSharedTransitionRef.current = false;
   }, [clearNotFoundHint, closeAnimation]);
 
   useEffect(() => {
@@ -3769,6 +3857,7 @@ const FullscreenPanels = React.memo(() => {
       clearNotFoundHint();
       pendingLyricsActionAfterLoadRef.current = false;
       pendingManualSearchResolveRef.current = false;
+      skipNextArtworkToLyricsSharedTransitionRef.current = false;
       
       const cachedLyricsForNewTrack = manualLyricsRef.current.get(nextUrn);
       const hasImmediateLyrics = Boolean(cachedLyricsForNewTrack);
@@ -3808,16 +3897,52 @@ const FullscreenPanels = React.memo(() => {
   }, [track?.urn, isLoading]);
 
   useEffect(() => {
-    if (mode !== 'lyrics' || !lyricsSessionRequested || isLoading || !hasLyrics) return;
+    if (mode === 'none' || closeAnimation !== 'none') return;
+    if (!pendingLyricsActionAfterLoadRef.current) return;
+    if (isLoading || isTrackSwitchingFrame) return;
+
+    pendingLyricsActionAfterLoadRef.current = false;
+    setIsTrackLyricsPending(false);
+
+    if (hasLyrics) {
+      openLyricsMode();
+      return;
+    }
+
+    if (lyricsSessionRequested) {
+      showNotFoundBubble();
+    }
+  }, [
+    closeAnimation,
+    hasLyrics,
+    isLoading,
+    isTrackSwitchingFrame,
+    lyricsSessionRequested,
+    mode,
+    openLyricsMode,
+    showNotFoundBubble,
+  ]);
+
+  useEffect(() => {
+    if (
+      mode !== 'lyrics' ||
+      closeAnimation !== 'none' ||
+      !lyricsSessionRequested ||
+      isLoading ||
+      !hasLyrics
+    ) {
+      return;
+    }
     if (!open) {
       useLyricsStore.setState({ open: true });
     }
-  }, [hasLyrics, isLoading, mode, open, lyricsSessionRequested]);
+  }, [closeAnimation, hasLyrics, isLoading, mode, open, lyricsSessionRequested]);
 
   useEffect(() => {
     if (mode !== 'artwork' || openAnimation !== 'fromMiniPlayer') return;
     if (handledMiniPlayerRequestRef.current === pendingMiniPlayerLyricsActionId) return;
     handledMiniPlayerRequestRef.current = pendingMiniPlayerLyricsActionId;
+    skipNextArtworkToLyricsSharedTransitionRef.current = true;
     handleLyricsAction();
   }, [handleLyricsAction, mode, openAnimation]);
 
@@ -3825,10 +3950,10 @@ const FullscreenPanels = React.memo(() => {
 
   const backgroundArtSources = getTrackBackgroundArtworkSources(track);
   const animClass =
-    openAnimation === 'fromMiniPlayer'
-      ? 'animate-fullscreen-from-player'
-      : closeAnimation === 'toMiniPlayer'
-        ? 'animate-fullscreen-to-player'
+    closeAnimation === 'toMiniPlayer'
+      ? 'animate-fullscreen-to-player'
+      : openAnimation === 'fromMiniPlayer'
+        ? 'animate-fullscreen-from-player'
         : 'animate-fade-in-up';
 
   return (

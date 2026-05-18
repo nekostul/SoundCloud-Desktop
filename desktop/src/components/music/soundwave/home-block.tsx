@@ -55,7 +55,6 @@ async function fetchWaveTail(
   return hideLiked ? tracks.filter((t) => !t.user_favorite && !isUrnLiked(t.urn)) : tracks;
 }
 
-const HOME_WAVE_COLLAPSE_MS = 520;
 const HOME_WAVE_QUEUE_TARGET = 24;
 const HOME_WAVE_BASE_FETCH_LIMIT = 14;
 const HOME_WAVE_REFINEMENT_FETCH_LIMIT = 10;
@@ -293,7 +292,6 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const queueSource = usePlayerStore((s) => s.queueSource);
   const isWaveActive = useSoundWaveStore((s) => s.isActive);
-  const isWaveSuspended = useSoundWaveStore((s) => s.isSuspended);
   const startFromQueue = useSoundWaveStore((s) => s.startFromQueue);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -456,8 +454,6 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
   const spinning = isRefreshing || isFetching;
   const showCold = !isSearchMode && !isLoading && recTracks.length === 0;
   const showSearchEmpty = isSearchMode && !searchBusy && searchTracks.length === 0;
-  const isDetailsCollapsed = isWaveActive && !isWaveSuspended && queueSource === 'soundwave';
-  const isRefreshHidden = isWaveActive && !isWaveSuspended && queueSource === 'soundwave';
 
   if (!isAuthenticated) return null;
 
@@ -468,9 +464,11 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
         boxShadow:
           '0 0 0 1px rgba(255,255,255,0.04) inset, 0 10px 60px rgba(0,0,0,0.45), 0 0 60px var(--color-accent-glow)',
         borderColor: 'rgba(255,255,255,0.08)',
+        contain: 'layout style paint',
+        transform: 'translateZ(0)',
       }}
     >
-      <AmbientLayer particleCount={10} blur={35} intensity={0.5} reactive />
+      <AmbientLayer particleCount={6} blur={25} intensity={0.35} />
 
       <div
         className="absolute inset-0 pointer-events-none"
@@ -523,25 +521,15 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
             <ModeToggle />
             <LanguageFilter selected={selectedLanguages} onChange={setSelectedLanguages} />
             <div
-              aria-hidden={isRefreshHidden}
               style={{
                 overflow: 'hidden',
-                maxWidth: isRefreshHidden ? 0 : 32,
-                width: isRefreshHidden ? 0 : 32,
-                opacity: isRefreshHidden ? 0 : 1,
-                transform: isRefreshHidden ? 'translateX(10px) scale(0.88)' : 'translateX(0) scale(1)',
-                marginLeft: isRefreshHidden ? -4 : 0,
-                marginRight: isRefreshHidden ? -4 : 0,
-                pointerEvents: isRefreshHidden ? 'none' : 'auto',
-                transition: [
-                  'max-width 420ms cubic-bezier(0.22, 1, 0.36, 1)',
-                  'width 420ms cubic-bezier(0.22, 1, 0.36, 1)',
-                  'opacity 280ms cubic-bezier(0.22, 1, 0.36, 1)',
-                  'transform 420ms cubic-bezier(0.22, 1, 0.36, 1)',
-                  'margin-left 420ms cubic-bezier(0.22, 1, 0.36, 1)',
-                  'margin-right 420ms cubic-bezier(0.22, 1, 0.36, 1)',
-                ].join(', '),
-                willChange: 'max-width, width, opacity, transform, margin-left, margin-right',
+                maxWidth: 32,
+                width: 32,
+                opacity: 1,
+                transform: 'translateX(0) scale(1)',
+                marginLeft: 0,
+                marginRight: 0,
+                pointerEvents: 'auto',
               }}
             >
               <button
@@ -604,24 +592,15 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
         </div>
 
         <div
-          aria-hidden={isDetailsCollapsed}
           style={{
             overflow: 'hidden',
-            maxHeight: isDetailsCollapsed ? 0 : 560,
-            opacity: isDetailsCollapsed ? 0 : 1,
-            transform: isDetailsCollapsed ? 'translateY(-18px) scaleY(0.96)' : 'translateY(0) scaleY(1)',
-            filter: isDetailsCollapsed ? 'blur(10px)' : 'blur(0px)',
-            marginTop: isDetailsCollapsed ? -8 : 0,
-            pointerEvents: isDetailsCollapsed ? 'none' : 'auto',
+            maxHeight: 'none',
+            opacity: 1,
+            transform: 'translateY(0) scaleY(1) translateZ(0)',
+            marginTop: 0,
+            pointerEvents: 'auto',
             transformOrigin: 'top center',
-            transition: [
-              `max-height ${HOME_WAVE_COLLAPSE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
-              'opacity 380ms cubic-bezier(0.22, 1, 0.36, 1)',
-              'transform 520ms cubic-bezier(0.22, 1, 0.36, 1)',
-              'filter 420ms cubic-bezier(0.22, 1, 0.36, 1)',
-              'margin-top 520ms cubic-bezier(0.22, 1, 0.36, 1)',
-            ].join(', '),
-            willChange: 'max-height, opacity, transform, filter, margin-top',
+            contain: 'layout style paint',
           }}
         >
           <div className="flex flex-col gap-5 pt-0.5">

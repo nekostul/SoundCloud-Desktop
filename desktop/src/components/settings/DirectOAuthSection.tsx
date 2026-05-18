@@ -3,30 +3,34 @@
  * Allows users to authenticate without backend via Tauri
  */
 
-import { invoke } from '@tauri-apps/api/core';
 import { LogIn, LogOut } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import {
-  hasValidDirectToken,
+  fetchDirectSoundCloudMe,
   mapDirectUserToAuthUser,
   startDirectOAuthFlow,
-  type DirectSoundCloudUserInfo,
 } from '../../lib/direct-soundcloud-api';
 import { useDirectAuthStore } from '../../stores/direct-auth';
+import { useSettingsStore } from '../../stores/settings';
 
 export function DirectOAuthSection() {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const { user, isAuthenticated, setTokens, setUser, logout } = useDirectAuthStore();
+  const setSoundcloudClientId = useSettingsStore((s) => s.setSoundcloudClientId);
+  const setSoundcloudClientSecret = useSettingsStore((s) => s.setSoundcloudClientSecret);
 
   const handleDirectOAuth = useCallback(async () => {
-    const clientId = prompt(t('settings.directOAuthPromptClientId'));
+    const clientId = prompt(t('settings.directOAuthPromptClientId'))?.trim();
     if (!clientId) return;
 
-    const clientSecret = prompt(t('settings.directOAuthPromptClientSecret'));
+    const clientSecret = prompt(t('settings.directOAuthPromptClientSecret'))?.trim();
     if (!clientSecret) return;
+
+    setSoundcloudClientId(clientId);
+    setSoundcloudClientSecret(clientSecret);
 
     setLoading(true);
     try {
@@ -39,9 +43,7 @@ export function DirectOAuthSection() {
 
       try {
         console.log('[DirectOAuth] Fetching user info...');
-        const userInfo = await invoke<DirectSoundCloudUserInfo>('fetch_soundcloud_me', {
-          accessToken: token,
-        });
+        const userInfo = await fetchDirectSoundCloudMe(token);
         console.log('[DirectOAuth] User info received:', userInfo);
         setUser(mapDirectUserToAuthUser(userInfo));
       } catch (err) {
@@ -56,7 +58,7 @@ export function DirectOAuthSection() {
     } finally {
       setLoading(false);
     }
-  }, [setTokens, setUser, t]);
+  }, [setSoundcloudClientId, setSoundcloudClientSecret, setTokens, setUser, t]);
 
   const handleLogout = useCallback(() => {
     logout();
@@ -74,7 +76,7 @@ export function DirectOAuthSection() {
         </p>
       </div>
 
-      {isAuthenticated && hasValidDirectToken() ? (
+      {isAuthenticated ? (
         <div className="space-y-4">
           <div className="rounded-xl bg-white/[0.05] border border-white/[0.08] p-4">
             <p className="text-[13px] text-white/70">

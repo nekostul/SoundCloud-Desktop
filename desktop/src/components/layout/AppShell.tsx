@@ -18,7 +18,6 @@ import {
 } from '../../lib/audio';
 import { isAppBackgrounded } from '../../lib/app-visibility';
 import { getWallpaperUrl } from '../../lib/cache';
-import { art } from '../../lib/formatters';
 import { useIsMobile } from '../../lib/hooks/useIsMobile';
 import { ARTWORK_CROSSFADE_MS, useCrossfadeBackground } from '../../lib/useCrossfadeBackground';
 import { toggleWindowFullscreen } from '../../lib/window';
@@ -163,23 +162,6 @@ const CustomBackground = React.memo(() => {
       style={{
         backgroundImage: `url(${bgUrl})`,
         opacity: bgOpacity,
-      }}
-    />
-  );
-});
-
-const AmbientGlow = React.memo(() => {
-  const artwork = usePlayerStore((s) => art(s.currentTrack?.artwork_url, 't500x500'));
-  if (!artwork) return null;
-  return (
-    <div
-      className="absolute bottom-0 left-0 right-0 h-[400px] opacity-[0.03] blur-[30px] pointer-events-none transition-all duration-[2s] ease-out"
-      style={{
-        backgroundImage: `url(${artwork})`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-        contain: 'strict',
-        transform: 'translateZ(0)',
       }}
     />
   );
@@ -439,7 +421,6 @@ export const AppShell = React.memo(() => {
               />
             ) : null}
             <CustomBackground />
-            <AmbientGlow />
           </div>
 
           <div className="h-full overflow-y-auto overflow-x-hidden relative z-10">

@@ -14,27 +14,41 @@ interface TrackCardProps {
   track: Track;
   queue?: Track[];
   variant?: 'default' | 'shelf';
+  disableTilt?: boolean;
+  disableHoverPreload?: boolean;
 }
 
 export const TrackCard = React.memo(
-  function TrackCard({ track, queue, variant = 'default' }: TrackCardProps) {
+  function TrackCard({
+    track,
+    queue,
+    variant = 'default',
+    disableTilt = false,
+    disableHoverPreload = false,
+  }: TrackCardProps) {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const { isThisPlaying, togglePlay } = useTrackPlay(track, queue);
     const artwork = art(track.artwork_url, 't300x300');
     const isShelf = variant === 'shelf';
+    const shouldTilt = !disableTilt && !isShelf;
 
     const { ref, onMouseEnter, onMouseLeave } = useTilt();
 
     return (
       <div
-        ref={isShelf ? undefined : ref}
+        ref={shouldTilt ? ref : undefined}
         className="group relative"
         onMouseEnter={() => {
-          if (!isShelf) onMouseEnter();
-          preloadTrack(track.urn);
+          if (shouldTilt) onMouseEnter();
+          if (!disableHoverPreload) preloadTrack(track.urn);
         }}
-        onMouseLeave={isShelf ? undefined : onMouseLeave}
+        onMouseLeave={shouldTilt ? onMouseLeave : undefined}
+        style={{
+          contentVisibility: 'auto',
+          contain: 'layout paint style',
+          containIntrinsicSize: '180px 260px',
+        }}
       >
         <div
           className={`relative aspect-square rounded-2xl overflow-hidden isolate bg-white/[0.03] cursor-pointer ring-1 ring-white/[0.06] ${
@@ -153,5 +167,7 @@ export const TrackCard = React.memo(
     prev.track.urn === next.track.urn &&
     Boolean(prev.track.user_favorite) === Boolean(next.track.user_favorite) &&
     prev.queue === next.queue &&
-    prev.variant === next.variant,
+    prev.variant === next.variant &&
+    prev.disableTilt === next.disableTilt &&
+    prev.disableHoverPreload === next.disableHoverPreload,
 );

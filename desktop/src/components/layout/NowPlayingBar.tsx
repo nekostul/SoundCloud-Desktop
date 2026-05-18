@@ -34,7 +34,7 @@ import {
 } from '../../lib/audio';
 import { updateDiscordLyric } from '../../lib/discord';
 import { art, formatTime } from '../../lib/formatters';
-import { cancelAnimationFrameImmediate, requestAnimationFrameImmediate } from '../../lib/framerate';
+// Use regular requestAnimationFrame instead of Immediate to avoid competing with scroll handler
 import { invalidateAllLikesCache } from '../../lib/hooks';
 import { useIsMobile } from '../../lib/hooks/useIsMobile';
 import { ARTWORK_CROSSFADE_MS, useCrossfadeBackground } from '../../lib/useCrossfadeBackground';
@@ -60,6 +60,7 @@ import { useArtworkStore, useFullscreenPanelStore, useLyricsStore } from '../../
 import { type Track, usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
 import { type MoodLabel, useSoundWaveStore } from '../../stores/soundwave';
+import { AdaptiveTrackTitle } from '../ui/AdaptiveTrackTitle';
 import { EqualizerPanel } from '../music/EqualizerPanel';
 import { PlaybackSpeedPresets } from '../music/PlaybackSpeedPresets';
 import { StreamQualityBadge } from '../music/StreamQualityBadge';
@@ -146,7 +147,7 @@ export const ProgressSlider = React.memo(() => {
     let rafId: number;
 
     const loop = () => {
-      rafId = requestAnimationFrameImmediate(loop);
+      rafId = requestAnimationFrame(loop);
       if (draggingRef.current || isAppBackgrounded()) {
         return;
       }
@@ -159,7 +160,7 @@ export const ProgressSlider = React.memo(() => {
       }
     };
 
-    rafId = requestAnimationFrameImmediate(loop);
+    rafId = requestAnimationFrame(loop);
     const unsub = subscribe(() => {
       if (!draggingRef.current) {
         const nextValue = getCurrentTime();
@@ -171,7 +172,7 @@ export const ProgressSlider = React.memo(() => {
     });
 
     return () => {
-      cancelAnimationFrameImmediate(rafId);
+      cancelAnimationFrame(rafId);
       unsub();
     };
   }, [isPlaying, paintProgressFill, sliderValue]);
@@ -446,7 +447,7 @@ export const ProgressSlider = React.memo(() => {
               className="absolute inset-y-0 left-0 rounded-full bg-white/[0.14] will-change-transform"
               style={{
                 width: '100%',
-                transform: `scaleX(${bufferedRatio})`,
+                transform: `scaleX(${bufferedRatio}) translateZ(0)`,
                 transformOrigin: 'left center',
               }}
             />
@@ -461,7 +462,7 @@ export const ProgressSlider = React.memo(() => {
             }`}
             style={{
               width: '100%',
-              transform: 'scaleX(0)',
+              transform: 'scaleX(0) translateZ(0)',
               transformOrigin: 'left center',
             }}
           />
@@ -644,11 +645,11 @@ export const ProgressTime = React.memo(() => {
 
     paint();
     if (isPlaying) {
-      rafId = requestAnimationFrameImmediate(function loop() {
+      rafId = requestAnimationFrame(function loop() {
         if (!isAppBackgrounded()) {
           paint();
         }
-        rafId = requestAnimationFrameImmediate(loop);
+        rafId = requestAnimationFrame(loop);
       });
     }
 
@@ -658,7 +659,7 @@ export const ProgressTime = React.memo(() => {
 
     return () => {
       if (rafId) {
-        cancelAnimationFrameImmediate(rafId);
+        cancelAnimationFrame(rafId);
       }
       unsub();
     };
@@ -1340,12 +1341,15 @@ const TrackInfo = React.memo(() => {
           />
         </div>
         <div className="flex items-center gap-1.5 min-w-0">
-          <p
+          <AdaptiveTrackTitle
+            text={currentTrack.title}
+            baseSize={13}
+            minSize={11.2}
+            maxAdaptiveCharacters={26}
+            step={1.15}
             className="text-[13px] text-white/90 truncate font-medium cursor-pointer hover:text-white leading-tight transition-colors"
             onClick={() => navigate(`/track/${encodeURIComponent(currentTrack.urn)}`)}
-          >
-            {currentTrack.title}
-          </p>
+          />
           {currentTrack.access === 'preview' && (
             <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide bg-amber-500/20 text-amber-400/90 px-1.5 py-px rounded">
               {t('track.preview')}
@@ -1359,7 +1363,7 @@ const TrackInfo = React.memo(() => {
           {currentTrack.user.username}
         </p>
       </div>
-      <div className="flex items-center -mr-2">
+      <div className="ml-2 flex shrink-0 items-center">
         <LikeButton trackUrn={currentTrack.urn} />
         <DislikeButton trackUrn={currentTrack.urn} />
         <MoodCorrectionButton track={currentTrack} />
@@ -1367,6 +1371,13 @@ const TrackInfo = React.memo(() => {
     </div>
   );
 });
+
+function getDockTrackInfoMaxWidth(title?: string | null) {
+  const chars = Array.from((title ?? '').trim()).length;
+  const clampedChars = Math.max(8, Math.min(26, chars || 8));
+  const progress = (clampedChars - 8) / 18;
+  return Math.round(292 + progress * 148);
+}
 
 /* ── Background glow ─────────────────────────────────────────── */
 
@@ -1460,6 +1471,7 @@ export const NowPlayingBar = React.memo(
     const isMobile = useIsMobile();
     const isPlaying = usePlayerStore((s) => s.isPlaying);
     const togglePlay = usePlayerStore((s) => s.togglePlay);
+    const currentTrack = usePlayerStore((s) => s.currentTrack);
     const currentArtworkUrl = usePlayerStore((s) => s.currentTrack?.artwork_url ?? null);
     const lyricsOpen = useLyricsStore((s) => s.open);
     const artworkOpen = useArtworkStore((s) => s.open);
@@ -1485,6 +1497,15 @@ export const NowPlayingBar = React.memo(
         marginLeft: `${desktopBarOffset}px`,
       };
     }, [isMobile, desktopBarOffset]);
+    const desktopTrackInfoStyle = useMemo(
+      () =>
+        isMobile
+          ? undefined
+          : {
+              maxWidth: `${getDockTrackInfoMaxWidth(currentTrack?.title)}px`,
+            },
+      [currentTrack?.title, isMobile],
+    );
 
     return (
       <div
@@ -1536,7 +1557,7 @@ export const NowPlayingBar = React.memo(
               {!isMobile && <ProgressSlider />}
             </div>
             {/* Left: track info */}
-            <div className="w-full min-w-0 max-w-[320px]">
+            <div className="w-full min-w-0" style={desktopTrackInfoStyle}>
               <TrackInfo />
             </div>
 
