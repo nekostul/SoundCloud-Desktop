@@ -138,11 +138,7 @@ function useResolvedLyrics(
   manualLyricsRef: React.MutableRefObject<Map<string, LyricsResult>>,
 ) {
   const trackUrn = track?.urn;
-  const lastTrackUrnRef = useRef<string | null>(null);
-
-useEffect(() => {
-  lastTrackUrnRef.current = trackUrn ?? null;
-}, [trackUrn]);
+  const cachedLyrics = trackUrn ? (manualLyricsRef.current.get(trackUrn) ?? null) : null;
   const lyricsQuery = useQuery({
     queryKey: ['lyrics', LYRICS_SEARCH_QUERY_VERSION, trackUrn, reqArtist, reqTitle],
     queryFn: () =>
@@ -152,8 +148,11 @@ useEffect(() => {
         reqTitle,
         getLyricsSearchOptions(track, reqArtist, reqTitle, trackDurationMs),
       ),
-    enabled: visible && !!trackUrn,
+    enabled: visible && !!trackUrn && !cachedLyrics,
     staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
     retry: 1,
   });
 
@@ -177,27 +176,26 @@ useEffect(() => {
         reqArtist,
         reqTitle,
       ),
-enabled:
-  visible &&
-  Boolean(lyricsQuery.data?.plain && !lyricsQuery.data?.synced),
+    enabled:
+      visible &&
+      !cachedLyrics &&
+      Boolean(lyricsQuery.data?.plain && !lyricsQuery.data?.synced),
     staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
     retry: 1,
   });
-
-const manualLyrics =
-  trackUrn ? manualLyricsRef.current.get(trackUrn) ?? null : null;
 
 const autoLyrics =
   resolvedQuery.data ?? lyricsQuery.data ?? null;
 
-if (trackUrn && autoLyrics && !manualLyrics) {
+if (trackUrn && autoLyrics && !cachedLyrics) {
   manualLyricsRef.current.set(trackUrn, autoLyrics);
 }
 
 const data =
-  lastTrackUrnRef.current === trackUrn
-    ? manualLyrics ?? autoLyrics
-    : null;
+  cachedLyrics ?? autoLyrics;
 
   const generatedFromPlain = Boolean(
     lyricsQuery.data?.plain && !lyricsQuery.data?.synced && data?.synced,
@@ -215,8 +213,7 @@ const data =
     loadingPlain: lyricsQuery.data?.plain ?? null,
     loadingSource: lyricsQuery.data?.source ?? null,
     isLoading:
-      lyricsQuery.isLoading ||
-      resolvedQuery.isLoading,
+      !cachedLyrics && (lyricsQuery.isLoading || resolvedQuery.isLoading),
     pseudoSynced,
     generatedFromPlain,
   };
@@ -2995,11 +2992,6 @@ useEffect(() => {
                   </button>
                 </div>
               </div>
-            ) : interactiveVisible && isLoading ? (
-              <div className="flex-1 flex flex-col items-center justify-center gap-3">
-                <Loader2 size={24} className="animate-spin text-white/15" />
-                <p className="text-[13px] text-white/25">{t('track.lyricsLoading')}</p>
-              </div>
             ) : shouldRenderSyncedLyrics(lyrics) ? (
               <>
                 <LyricsSourceBadge
@@ -3525,13 +3517,11 @@ const FullscreenLyricsMiniPlayerOverlay = React.memo(
 const FullscreenLyricsColumn = React.memo(
   ({
     lyrics,
-    isLoading,
     warmupEnabled,
     suppressFallback,
     onOpenSearch,
   }: {
     lyrics: ResolvedLyricsData;
-    isLoading: boolean;
     warmupEnabled: boolean;
     motionHints: ReturnType<typeof getLyricMotionHintsForTrack>;
     pseudoSynced: boolean;
@@ -3539,7 +3529,6 @@ const FullscreenLyricsColumn = React.memo(
     suppressFallback: boolean;
     onOpenSearch: () => void;
   }) => {
-    const { t } = useTranslation();
     const hasSourceBadge = shouldRenderSyncedLyrics(lyrics) || shouldRenderPlainLyrics(lyrics);
 
     return (
@@ -3555,11 +3544,6 @@ const FullscreenLyricsColumn = React.memo(
         <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
           {suppressFallback ? (
             <div className="flex-1" />
-          ) : isLoading ? (
-            <div className="flex-1 flex flex-col items-center justify-center gap-3">
-              <Loader2 size={24} className="animate-spin text-white/15" />
-              <p className="text-[13px] text-white/25">{t('track.lyricsLoading')}</p>
-            </div>
           ) : shouldRenderSyncedLyrics(lyrics) ? (
             <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
               {warmupEnabled ? (
@@ -3577,16 +3561,7 @@ const FullscreenLyricsColumn = React.memo(
               <StaticSyncedLyrics lines={lyrics.synced} />
             </div>
           ) : (
-            <div className="flex-1 flex items-center justify-center px-8">
-              <button
-                type="button"
-                onClick={onOpenSearch}
-                className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.05] px-4 py-2 text-[13px] font-semibold text-white/48 transition-all duration-200 hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white/76 cursor-pointer"
-              >
-                <Search size={14} />
-                <span>{t('track.manualSearch', 'Manual Search')}</span>
-              </button>
-            </div>
+            <div className="flex-1" />
           )}
         </div>
       </div>
@@ -3623,7 +3598,6 @@ const FullscreenPanels = React.memo(() => {
   const trackUrn = track?.urn ?? null;
   const isTrackSwitchingFrame =
     prevTrackUrnRef.current !== null && prevTrackUrnRef.current !== trackUrn;
-  const lyricsStageActive = isLyrics;
 
   const reqArtist = manualQuery ? manualQuery.artist : (track?.user?.username ?? '');
   const reqTitle = manualQuery ? manualQuery.title : (track?.title ?? '');
@@ -3654,6 +3628,7 @@ const FullscreenPanels = React.memo(() => {
     lyrics,
   );
   const hasLyrics = hasRenderableLyrics(lyrics);
+  const lyricsStageActive = isLyrics && hasLyrics;
   const searchPrefill = useMemo(
     () => getLyricsSearchPrefill(track, manualQuery),
     [track, manualQuery],
@@ -3796,15 +3771,11 @@ const FullscreenPanels = React.memo(() => {
       pendingManualSearchResolveRef.current = false;
       
       const cachedLyricsForNewTrack = manualLyricsRef.current.get(nextUrn);
-      const hasImmediateLyrics = (hasLyrics && !isLoading) || Boolean(cachedLyricsForNewTrack);
+      const hasImmediateLyrics = Boolean(cachedLyricsForNewTrack);
 
       if (lyricsSessionRequested) {
         if (hasImmediateLyrics) {
           openLyricsMode();
-        } else if (!isLoading) {
-          useLyricsStore.setState({ open: false });
-          useFullscreenPanelStore.getState().setMode('artwork');
-          useArtworkStore.setState({ open: true });
         }
         pendingTrackAutoOpenRef.current = false;
         setIsTrackLyricsPending(false);
@@ -3837,26 +3808,9 @@ const FullscreenPanels = React.memo(() => {
   }, [track?.urn, isLoading]);
 
   useEffect(() => {
-    // Простая логика: если режим текстов активен, управляем панелью в зависимости от наличия текстов
-    if (mode === 'lyrics' && lyricsSessionRequested) {
-      if (isLoading) {
-        // Загрузка идет - не меняем состояние, ждем
-        return;
-      }
-      
-      if (hasLyrics) {
-        // Текста есть - открываем панель
-        if (!open) {
-          useLyricsStore.setState({ open: true });
-        }
-      } else {
-        // Текстов нет - закрываем панель
-        if (open) {
-          useLyricsStore.setState({ open: false });
-          useFullscreenPanelStore.getState().setMode('artwork');
-          useArtworkStore.setState({ open: true });
-        }
-      }
+    if (mode !== 'lyrics' || !lyricsSessionRequested || isLoading || !hasLyrics) return;
+    if (!open) {
+      useLyricsStore.setState({ open: true });
     }
   }, [hasLyrics, isLoading, mode, open, lyricsSessionRequested]);
 
@@ -3971,7 +3925,6 @@ const FullscreenPanels = React.memo(() => {
               {/* gaps + fullscreen header. If still not enough, the column */}
               <FullscreenLyricsColumn
                 lyrics={lyrics}
-                isLoading={isLoading}
                 warmupEnabled={warmupEnabled}
                 motionHints={warmupEnabled ? motionHints : []}
                 pseudoSynced={pseudoSynced}
