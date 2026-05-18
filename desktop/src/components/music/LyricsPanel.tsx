@@ -299,7 +299,7 @@ const openExternal = async (url: string) => {
 
 const LyricsSourceBadge = React.memo(
   ({ source, onSearch }: { source: LyricsSource; onSearch?: () => void }) => (
-    <div className="flex items-center justify-between px-12 pt-3 pb-0">
+    <div className="mx-auto flex w-full max-w-[880px] items-center justify-between gap-3 px-[clamp(8px,1.4vw,18px)] pt-3 pb-0">
       <span className="text-[10px] font-semibold text-white/20 bg-white/[0.04] px-2 py-0.5 rounded-full border border-white/[0.06]">
         {SOURCE_LABELS[source]}
       </span>
@@ -403,7 +403,7 @@ const FullscreenVisualizer = React.memo(() => {
 
 /* ── Shared: like button (for fullscreen panels) ──────────── */
 
-const FullscreenLikeButton = React.memo(({ track }: { track: Track }) => {
+const FullscreenLikeButton = React.memo(({ track, compact }: { track: Track; compact?: boolean }) => {
   const likedFromStore = useLiked(track.urn);
   const qc = useQueryClient();
   const { data: trackData } = useQuery({
@@ -440,22 +440,26 @@ const FullscreenLikeButton = React.memo(({ track }: { track: Track }) => {
     }
   };
 
+  const buttonClass = compact
+    ? 'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
+    : 'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none';
+
   return (
     <button
       type="button"
       onClick={toggle}
-      className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none ${
+      className={`${buttonClass} ${
         isLiked ? 'text-accent' : 'text-white/30 hover:text-white/60'
       }`}
     >
-      <Heart size={20} fill={isLiked ? 'currentColor' : 'none'} />
+      <Heart size={compact ? 16 : 20} fill={isLiked ? 'currentColor' : 'none'} />
     </button>
   );
 });
 
 /* ── Shared: dislike button (for fullscreen panels) ────────── */
 
-const FullscreenDislikeButton = React.memo(({ track }: { track: Track }) => {
+const FullscreenDislikeButton = React.memo(({ track, compact }: { track: Track; compact?: boolean }) => {
   const trackUrn = track.urn;
   const isDisliked = useDislikesStore((s) => s.dislikedTrackUrns.includes(trackUrn));
   const toggle = useDislikesStore((s) => s.toggleDislike);
@@ -472,15 +476,19 @@ const FullscreenDislikeButton = React.memo(({ track }: { track: Track }) => {
     }
   };
 
+  const buttonClass = compact
+    ? 'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
+    : 'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none';
+
   return (
     <button
       type="button"
       onClick={handleToggle}
-      className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none ${
+      className={`${buttonClass} ${
         isDisliked ? 'text-red-500' : 'text-white/30 hover:text-white/60'
       }`}
     >
-      <Ban size={18} />
+      <Ban size={compact ? 16 : 18} />
     </button>
   );
 });
@@ -537,8 +545,8 @@ return (
         <Slider.Thumb className="block w-2.5 h-2.5 rounded-full bg-white transition-all duration-150 outline-none scale-0 opacity-0 group-hover/vol:scale-100 group-hover/vol:opacity-100" />
       </Slider.Root>
     </div>
-    <span
-  className={`w-[36px] text-right text-[11px] tabular-nums ${
+<span
+  className={`w-[36px] text-right text-[11px] tabular-nums translate-x-0.1 ${
     volume > 100 ? 'text-amber-400/70' : 'text-white/35'
   }`}
 >
@@ -816,8 +824,8 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
   // Artwork can grow large with viewport height (driven by maxArt prop).
   // Title/slider/controls/volume-panel keep a tighter readable width — wide
   // sliders and centered text on a 640px column look unbalanced.
-  const artMaxWidthClass = `w-full ${maxArt ?? 'max-w-[360px]'}`;
-  const columnMaxWidthClass = `w-full max-w-[420px]`;
+const artMaxWidthClass = `w-full ${maxArt ?? 'max-w-[280px]'}`;
+const columnMaxWidthClass = `w-full max-w-[320px]`;
   const columnWidthTransitionStyle = {
     transition: 'max-width 500ms cubic-bezier(0.22, 1, 0.36, 1)',
   } satisfies React.CSSProperties;
@@ -887,7 +895,7 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
               decoding="async"
               fetchPriority="high"
               onError={handlePreviewArtError}
-              className={`absolute inset-0 w-full h-full object-cover scale-110 transition-all duration-700 ease-[var(--ease-apple)] ${
+              className={`absolute inset-0 w-full h-full object-cover scale-110 transition-[transform,opacity,filter] duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ease-[var(--ease-apple)] ${
                 isSwitching ? 'blur-2xl scale-125' : ''
               } ${loaded ? 'opacity-0' : 'opacity-100'}`}
             />
@@ -1406,7 +1414,7 @@ const SyncedLyricsWithPlaceholders = React.memo(({ lines }: { lines: LyricLine[]
 
 function getCenteredLyricScrollTop(container: HTMLElement, el: HTMLElement) {
   return (
-    el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2 + container.clientHeight * 0.028
+    el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2 + container.clientHeight * 0.05
   );
 }
 
@@ -1420,6 +1428,7 @@ const ReleaseSyncedLyricsWithProgress = React.memo(
     const [activeIndex, setActiveIndex] = useState(-1);
     const [timeUntilLyrics, setTimeUntilLyrics] = useState(999);
     const [, setIntroExitProgress] = useState(0);
+    const [firstLineOpacity, setFirstLineOpacity] = useState(1);
     const firstLineTime = lines[0]?.time ?? 0;
 
     const containerRef = useRef<HTMLDivElement>(null);
@@ -1590,8 +1599,18 @@ const ReleaseSyncedLyricsWithProgress = React.memo(
         scheduleUserScrollReset();
       };
 
+      const updateFirstLineOpacity = () => {
+        // Fade out first line as user scrolls down (200px fade distance)
+        const scrollY = container.scrollTop;
+        const fadeDistance = 200;
+        const opacity = Math.max(0, 1 - scrollY / fadeDistance);
+        setFirstLineOpacity(opacity);
+      };
+
       container.addEventListener('wheel', markManualScroll, { passive: true });
       container.addEventListener('touchmove', markManualScroll, { passive: true });
+      container.addEventListener('scroll', updateFirstLineOpacity, { passive: true });
+      updateFirstLineOpacity();
 
       activeRef.current = -1;
       manualScrollDetachedRef.current = false;
@@ -1697,9 +1716,9 @@ return (
   <div
     ref={containerRef}
     data-user-scrolling={isUserScrolling ? 'true' : 'false'}
-    className="flex-1 overflow-y-auto scrollbar-hide px-12 py-16"
+    className="flex-1 overflow-y-auto scrollbar-hide px-2 py-16 pl-[14vw] pr-[8vw]"
   >
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2 max-w-[1100px] mx-auto">
       {activeIndex < 0 && (
         <div className="flex w-full justify-center py-10 pointer-events-none">
           <div className="flex items-end gap-2">
@@ -1742,7 +1761,7 @@ const displayText =
             return (
               <div
                 key={`${line.time}-${i}-${isPlaceholder ? 'ph' : 'lyric'}`}
-                className={`lyric-line group relative ${activeIndex < 0? 'blur-[3px] opacity-40': ''} origin-left will-change-transform py-3 text-[38px] font-bold tracking-tight antialiased text-white/55 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ${isPauseDisplay ? 'flex w-full justify-center px-0 pr-0 opacity-55 scale-[0.995] translate-x-0 blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.03] data-[state=active]:translate-x-0 data-[state=active]:blur-0 data-[state=past-near]:opacity-78 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-0 data-[state=past]:opacity-42 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-74 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-0 data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]' : 'cursor-pointer pr-12 opacity-55 scale-[0.985] translate-x-0 blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.08] data-[state=active]:translate-x-0 data-[state=active]:blur-0 data-[state=active]:[text-shadow:0_0_32px_rgba(255,255,255,0.22)] data-[state=past-near]:opacity-78 data-[state=past-near]:scale-[0.985] data-[state=past-near]:-translate-x-1 data-[state=past-near]:blur-[2px] data-[state=past]:opacity-38 data-[state=past]:scale-[0.94] data-[state=past]:-translate-x-2 data-[state=past]:blur-[3px] data-[state=next-near]:opacity-72 data-[state=next-near]:scale-[0.985] data-[state=next-near]:translate-x-1 data-[state=next-near]:blur-[2px] data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:translate-x-3 data-[state=next]:blur-[4px]'}`}
+                className={`lyric-line group relative ${activeIndex < 0? 'blur-[3px] opacity-40': ''} origin-center will-change-transform py-3 text-[38px] font-bold tracking-tight antialiased text-white/55 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ${isPauseDisplay ? 'flex w-full justify-center px-0 pr-0 opacity-55 scale-[0.995] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.12] data-[state=active]:blur-0 data-[state=past-near]:opacity-40 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-0 data-[state=past]:opacity-30 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-74 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-0 data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]' : 'cursor-pointer pr-12 opacity-55 scale-[0.985] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.15] data-[state=active]:blur-0 data-[state=active]:[text-shadow:0_0_32px_rgba(255,255,255,0.22)] data-[state=past-near]:opacity-40 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-[2px] data-[state=past]:opacity-30 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-72 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-[2px] data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]'}`}
                 style={{
                   textRendering: 'optimizeLegibility',
                   ['--lyric-progress' as string]: '0%',
@@ -1769,7 +1788,7 @@ const displayText =
                   className={
                     isPauseDisplay
                       ? 'flex w-28 flex-col items-center'
-                      : 'flex w-full flex-col items-start'
+                      : 'flex w-full flex-col items-center'
                   }
                 >
                   {isPauseDisplay ? (
@@ -1784,8 +1803,10 @@ const displayText =
                     </span>
                 ) : (
                     <span
-                      className="block whitespace-pre-wrap text-left transition-[filter] duration-500"
+                      className="block whitespace-pre-wrap text-center transition-[filter] duration-500"
                       style={{
+                        opacity: i < activeIndex && !isUserScrolling ? firstLineOpacity : 1,
+                        transition: 'opacity 0.3s ease-out',
                         filter: isUserScrolling
                           ? 'none'
                           : 'drop-shadow(0 0 10px rgba(255,255,255,0.14))',
@@ -2347,9 +2368,9 @@ return (
     <div
       ref={containerRef}
       data-user-scrolling={isUserScrolling ? 'true' : 'false'}
-      className="h-full overflow-y-auto scrollbar-hide px-12 py-24 relative"
+      className="relative h-full overflow-y-auto px-[clamp(20px,4vw,56px)] py-[clamp(88px,14vh,156px)] scrollbar-hide"
     >
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col items-center gap-3">
         {lines.map((line, i) => {
           const nextLine = lines[i + 1];
           const gap = nextLine ? nextLine.time - line.time : 0;
@@ -2376,10 +2397,10 @@ return (
           return (
             <div
               key={`${line.time}-${i}-${isPlaceholder ? 'ph' : 'lyric'}`}
-              className={`lyric-line group relative origin-left transition-all duration-700 ease-[var(--ease-apple)] will-change-transform py-2.5 text-[38px] font-bold tracking-tight antialiased text-white/22 ${
+              className={`lyric-line group relative flex w-full max-w-[min(100%,880px)] justify-center py-2.5 text-center text-[clamp(28px,3.8vw,48px)] font-bold tracking-tight antialiased text-white/22 transition-all duration-700 ease-[var(--ease-apple)] will-change-transform ${
                 isPauseDisplay
-                  ? 'flex w-full justify-center px-0 pr-0 opacity-55 scale-[0.99] translate-x-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.01] data-[state=active]:translate-x-0 data-[state=past-near]:opacity-72 data-[state=past-near]:scale-[0.99] data-[state=past-near]:translate-x-0 data-[state=past]:opacity-46 data-[state=past]:scale-[0.985] data-[state=past]:translate-x-0 data-[state=next-near]:opacity-62 data-[state=next-near]:scale-[0.99] data-[state=next-near]:translate-x-0 data-[state=next]:opacity-26 data-[state=next]:scale-[0.98] data-[state=next]:translate-x-0'
-                  : 'cursor-pointer pr-12 opacity-40 scale-[0.972] translate-x-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.065] data-[state=active]:translate-x-0 data-[state=past-near]:opacity-78 data-[state=past-near]:scale-[0.992] data-[state=past-near]:-translate-x-1 data-[state=past]:opacity-48 data-[state=past]:scale-[0.98] data-[state=past]:-translate-x-2 data-[state=next-near]:opacity-66 data-[state=next-near]:scale-[0.988] data-[state=next-near]:translate-x-1.5 data-[state=next]:opacity-28 data-[state=next]:scale-[0.968] data-[state=next]:translate-x-3'
+                  ? 'opacity-55 scale-[0.99] data-[state=active]:opacity-100 data-[state=active]:scale-[1.01] data-[state=past-near]:opacity-72 data-[state=past-near]:scale-[0.992] data-[state=past]:opacity-46 data-[state=past]:scale-[0.985] data-[state=next-near]:opacity-62 data-[state=next-near]:scale-[0.99] data-[state=next]:opacity-26 data-[state=next]:scale-[0.98]'
+                  : 'cursor-pointer px-4 opacity-38 scale-[0.974] data-[state=active]:opacity-100 data-[state=active]:scale-[1.055] data-[state=past-near]:opacity-78 data-[state=past-near]:scale-[0.992] data-[state=past]:opacity-48 data-[state=past]:scale-[0.982] data-[state=next-near]:opacity-66 data-[state=next-near]:scale-[0.99] data-[state=next]:opacity-28 data-[state=next]:scale-[0.972]'
               }`}
               style={{
                 textRendering: 'optimizeLegibility',
@@ -2433,7 +2454,7 @@ return (
                 className={
                   isPauseDisplay
                     ? 'flex w-28 flex-col items-center'
-                    : 'flex w-full flex-col items-start'
+                    : 'flex w-full flex-col items-center'
                 }
               >
                 {isPauseDisplay ? (
@@ -2453,7 +2474,7 @@ return (
                   </span>
                 ) : (
                   <span
-                    className="relative block text-left transition-[filter] duration-500"
+                    className="relative block text-center transition-[filter] duration-500"
                     style={{
                       filter: isUserScrolling
                         ? 'none'
@@ -2498,7 +2519,7 @@ return (
             );
           })}
         </div>
-        <div className="h-[55vh]" />
+        <div className="h-[48vh]" />
       </div>
     </div>
 );
@@ -2516,8 +2537,8 @@ export const SyncedLyrics = React.memo(({ lines }: { lines: LyricLine[] }) => (
 /* ── Plain Lyrics ─────────────────────────────────────────── */
 
 const PlainLyrics = React.memo(({ text }: { text: string }) => (
-  <div className="flex-1 overflow-y-auto scrollbar-hide px-12 py-16">
-    <div className="text-[18px] text-white/60 font-medium whitespace-pre-wrap leading-loose">
+  <div className="flex-1 overflow-y-auto px-[clamp(20px,4vw,56px)] py-[clamp(88px,14vh,156px)] scrollbar-hide">
+    <div className="mx-auto max-w-[880px] whitespace-pre-wrap text-center text-[clamp(20px,2.2vw,30px)] font-semibold leading-[1.8] text-white/64">
       {text}
     </div>
   </div>
@@ -2529,8 +2550,8 @@ const StaticSyncedLyrics = React.memo(({ lines }: { lines: LyricLine[] }) => {
   const noteGradientDurationSec = getPauseNoteAnimationDurationSec(playbackRate);
 
   return (
-    <div className="flex-1 overflow-y-auto scrollbar-hide px-12 py-16">
-      <div className="flex flex-col gap-2">
+    <div className="flex-1 overflow-y-auto px-[clamp(20px,4vw,56px)] py-[clamp(88px,14vh,156px)] scrollbar-hide">
+      <div className="flex flex-col items-center gap-3">
         {displayLines.map((line, i) => {
           const displayText = line.text.trim().length === 0 ? PAUSE_MARKER : line.text;
           const isPauseDisplay = displayText === PAUSE_MARKER;
@@ -2539,7 +2560,11 @@ const StaticSyncedLyrics = React.memo(({ lines }: { lines: LyricLine[] }) => {
           return (
             <div
               key={`${line.time}-${i}-static`}
-              className={isPauseDisplay ? 'flex w-full justify-center py-4 opacity-75' : 'py-2.5'}
+              className={
+                isPauseDisplay
+                  ? 'flex w-full justify-center py-4 opacity-75'
+                  : 'flex w-full max-w-[min(100%,880px)] justify-center py-2.5 text-center'
+              }
             >
               {isPauseDisplay ? (
                 <div className="flex w-28 flex-col items-center">
@@ -2555,7 +2580,7 @@ const StaticSyncedLyrics = React.memo(({ lines }: { lines: LyricLine[] }) => {
                   <div className="mt-3 h-[3px] w-28 rounded-full bg-white/[0.12]" />
                 </div>
               ) : (
-                <span className="block text-[28px] font-bold tracking-tight text-white/58">
+                <span className="block text-[clamp(26px,3.2vw,42px)] font-bold tracking-tight text-white/58">
                   {displayText}
                 </span>
               )}
@@ -2563,7 +2588,7 @@ const StaticSyncedLyrics = React.memo(({ lines }: { lines: LyricLine[] }) => {
           );
         })}
       </div>
-      <div className="h-[50vh]" />
+      <div className="h-[46vh]" />
     </div>
   );
 });
@@ -2880,27 +2905,35 @@ useEffect(() => {
         {/* 50/50 */}
         <div
           ref={splitLayoutRef}
-          className={`relative z-10 grid flex-1 min-h-0 ${isResizingSplit ? 'select-none' : ''}`}
+          className={`relative z-10 grid flex-1 min-h-0 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${isResizingSplit ? 'select-none' : ''} ${
+            forceOpen ? 'lyrics-fullscreen-layout' : ''
+          }`}
           style={{
             isolation: 'isolate',
-            gridTemplateColumns: '30% 70%',
+            gridTemplateColumns: forceOpen ? '0% 1fr' : '30% 70%',
           }}
         >
-          <div className="min-w-0 min-h-0">
+          <div className={`min-w-0 min-h-0 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+            forceOpen ? 'player-column-compact' : ''
+          }`}>
             <TrackColumn key={track.urn} track={track} />
           </div>
 
           {/* Divider */}
             <div
-              className={`absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 transition-colors duration-150 ${
+              className={`absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                forceOpen ? 'opacity-0 pointer-events-none' : `transition-colors duration-150 ${
                 isResizingSplit ? 'bg-white/20' : 'bg-white/[0.04] group-hover/splitter:bg-white/10'
+              }`
               }`}
             />
             <div
-              className={`absolute left-1/2 top-1/2 flex h-14 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border transition-all duration-150 ${
+              className={`absolute left-1/2 top-1/2 flex h-14 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                forceOpen ? 'opacity-0 pointer-events-none' : `duration-150 ${
                 isResizingSplit
                   ? 'border-white/18 bg-white/[0.12] shadow-[0_0_20px_rgba(255,255,255,0.08)]'
                   : 'border-white/[0.08] bg-white/[0.04] group-hover/splitter:border-white/14 group-hover/splitter:bg-white/[0.08]'
+              }`
               }`}
             >
               <div className="flex flex-col gap-1.5">
@@ -2912,7 +2945,9 @@ useEffect(() => {
           </div>
 
           {/* Right: lyrics */}
-          <div className="min-w-0 min-h-0 flex flex-col relative">
+          <div className={`min-w-0 min-h-0 flex flex-col relative transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+            forceOpen ? 'lyrics-fullscreen-active' : ''
+          }`}>
             {isEditing ? (
               <div className="flex-1 flex flex-col items-center justify-center gap-4 px-12 animate-fade-in-up">
                 <h3 className="text-white/80 font-bold mb-2">
@@ -3116,7 +3151,7 @@ export const ArtworkPanel = React.memo(
           className="relative z-10 flex-1 flex items-center justify-center min-h-0"
           style={{ isolation: 'isolate' }}
         >
-          <TrackColumn key={track.urn} track={track} maxArt="max-w-[420px]" />
+          <TrackColumn key={track.urn} track={track} maxArt="max-w-[600px]" />
         </div>
 
         {live && visualizerFullscreen && <FullscreenVisualizer />}
@@ -3141,6 +3176,352 @@ export const lyricsPanelApi = {
   },
 };
 
+const CompactLyricsPlayer = ({ track }: { track: Track }) => {
+  return (
+    <div className="scale-[0.75] origin-top-left">
+      <div className="max-w-[420px] flex items-start gap-7">
+        <img
+          src={track.artwork_url ?? ''}
+          alt=""
+          className="w-71 h-71 object-cover shadow-2xl"
+        />
+
+        <div className="flex-1 flex flex-col pt-2">
+          <div className="mb-5 text-center">
+            <div className="text-white font-bold text-[28px] leading-tight">
+              {track.title}
+            </div>
+
+            <div className="mt-1 text-white/45 text-[18px]">
+              {track.user.username}
+            </div>
+          </div>
+
+          <div className="mb-6">
+            <div className="h-1 rounded-full bg-white/10 overflow-hidden">
+              <div className="h-full w-[35%] bg-white rounded-full" />
+            </div>
+
+            <div className="mt-2 text-[14px] text-white/40">
+              1:24 / 3:52
+            </div>
+          </div>
+
+          <div className="mb-6 flex items-center gap-5">
+            <button className="text-white/35 text-[17px] transition hover:text-white">
+              ☰
+            </button>
+
+            <button className="text-white/60 text-[18px] transition hover:text-white">
+              ♡
+            </button>
+
+            <button className="text-white/40 text-[15px] transition hover:text-white">
+              ⤮
+            </button>
+
+            <button className="text-white/70 text-[20px] transition hover:text-white">
+              ⏮
+            </button>
+
+            <button className="flex h-16 w-16 items-center justify-center rounded-full bg-white text-[24px] text-black transition hover:scale-[1.04]">
+              ⏸
+            </button>
+
+            <button className="text-white/70 text-[20px] transition hover:text-white">
+              ⏭
+            </button>
+
+            <button className="text-white/40 text-[15px] transition hover:text-white">
+              ⤭
+            </button>
+
+            <button className="text-white/30 text-[16px] transition hover:text-white">
+              ⊘
+            </button>
+
+            <button className="text-white/35 text-[16px] transition hover:text-white">
+              ↗
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button className="text-white/55 text-[15px] transition hover:text-white">
+              🔊
+            </button>
+
+            <div className="relative h-[3px] flex-1 overflow-hidden rounded-full bg-white/10">
+              <div className="absolute inset-y-0 left-0 w-[100%] rounded-full bg-white/75" />
+            </div>
+
+            <div className="min-w-[42px] text-right text-[13px] text-white/45">
+              100%
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const togglePlay = usePlayerStore((s) => s.togglePlay);
+  const next = usePlayerStore((s) => s.next);
+  const prevTrack = usePlayerStore((s) => s.prev);
+  const shuffle = usePlayerStore((s) => s.shuffle);
+const toggleShuffle = usePlayerStore((s) => s.toggleShuffle);
+
+const repeat = usePlayerStore((s) => s.repeat);
+const toggleRepeat = usePlayerStore((s) => s.toggleRepeat);
+  const [nextLocked, setNextLocked] = useState(false);
+  const [prevLocked, setPrevLocked] = useState(false);
+
+  const compactCtrl =
+    'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97] disabled:cursor-default disabled:text-white/28';
+
+  const onNext = useCallback(() => {
+    if (nextLocked) return;
+    setNextLocked(true);
+    next();
+    window.setTimeout(() => setNextLocked(false), 1000);
+  }, [next, nextLocked]);
+
+  const onPrev = useCallback(() => {
+    if (prevLocked) return;
+    setPrevLocked(true);
+    prevTrack();
+    window.setTimeout(() => setPrevLocked(false), 1000);
+  }, [prevLocked, prevTrack]);
+
+  const handleOpenInSoundCloud = useCallback(() => {
+    void (async () => {
+      const permalink = await resolveTrackPermalink(track);
+      if (!permalink) return;
+      await openExternal(permalink);
+    })();
+  }, [track]);
+
+return (
+  <div className="flex items-center gap-2 pl-2">
+    <AddToPlaylistDialog trackUrn={track.urn}>
+      <button type="button" className={compactCtrl}>
+        <ListPlus size={16} />
+      </button>
+    </AddToPlaylistDialog>
+
+    <FullscreenLikeButton track={track} compact />
+
+    <button
+      type="button"
+      onClick={toggleShuffle}
+      className={`${compactCtrl} ${
+        shuffle
+          ? 'text-accent'
+          : 'text-white/58'
+      }`}
+    >
+      {shuffleIcon16}
+    </button>
+
+    <button
+      type="button"
+      onClick={onPrev}
+      disabled={prevLocked}
+      className={compactCtrl}
+    >
+      <SkipBack size={18} fill="currentColor" />
+    </button>
+
+    <button
+      type="button"
+      onClick={togglePlay}
+      className="flex h-12 w-12 items-center justify-center rounded-full bg-white text-black shadow-[0_14px_32px_rgba(255,255,255,0.16)] transition-all duration-200 hover:scale-[1.03] active:scale-[0.97] outline-none"
+    >
+      {isPlaying ? pauseBlack18 : playBlack18}
+    </button>
+
+    <button
+      type="button"
+      onClick={onNext}
+      disabled={nextLocked}
+      className={compactCtrl}
+    >
+      <SkipForward size={18} fill="currentColor" />
+    </button>
+
+    <button
+      type="button"
+      onClick={toggleRepeat}
+      className={`${compactCtrl} ${
+        repeat !== 'off'
+          ? 'text-accent'
+          : 'text-white/58'
+      }`}
+    >
+      {repeat === 'one'
+        ? repeat1Icon16
+        : repeatIcon16}
+    </button>
+
+    <FullscreenDislikeButton track={track} compact />
+
+    <button
+      type="button"
+      onClick={handleOpenInSoundCloud}
+      className={compactCtrl}
+    >
+      <ExternalLink size={16} />
+    </button>
+  </div>
+);
+});
+
+const LyricsMiniPlayerDock = ({
+  track,
+  color,
+  openAnimation,
+  closeAnimation,
+}: {
+  track: Track;
+  color: [number, number, number];
+  openAnimation: 'default' | 'fromMiniPlayer';
+  closeAnimation: 'none' | 'toMiniPlayer';
+}) => {
+  const artworkSources = useMemo(
+    () => [
+      ...getTrackArtworkSources(track, 't500x500'),
+      ...getTrackArtworkSources(track, 't200x200'),
+    ],
+    [track],
+  );
+  const { currentSrc, handleError } = useFallbackImageSource(
+    artworkSources,
+    `${track.urn}:lyrics-mini-player`,
+  );
+  const [r, g, b] = color;
+  const dockAnimationClass =
+    closeAnimation === 'toMiniPlayer'
+      ? 'animate-lyrics-mini-player-out'
+      : openAnimation === 'fromMiniPlayer'
+        ? 'animate-lyrics-mini-player-in'
+        : 'animate-lyrics-mini-player-in';
+
+  return (
+    <div className={dockAnimationClass} style={{ width: 'min(420px, calc(100vw - 32px))' }}>
+      <div
+        className="relative overflow-hidden rounded-[30px] border border-white/[0.12] bg-black/[0.28] p-4 text-white shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_0_1px_rgba(255,255,255,0.03)_inset]"
+        style={{ backdropFilter: 'blur(30px) saturate(1.38)' }}
+      >
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0.035)_18%,rgba(255,255,255,0.015)_100%)]" />
+        <div
+          className="pointer-events-none absolute inset-0 opacity-85"
+          style={{
+            background: `
+              radial-gradient(circle at 12% 88%, rgba(${r}, ${g}, ${b}, 0.24) 0%, transparent 46%),
+              radial-gradient(circle at 82% 14%, rgba(255,255,255,0.08) 0%, transparent 38%)
+            `,
+          }}
+        />
+        <div className="pointer-events-none absolute inset-px rounded-[29px] border border-white/[0.06]" />
+
+        <div className="relative">
+          <div className="flex items-start gap-4">
+            <div className="relative h-[88px] w-[88px] shrink-0 overflow-hidden rounded-[24px] ring-1 ring-white/[0.1] shadow-[0_16px_36px_rgba(0,0,0,0.35)]">
+              {currentSrc ? (
+                <img
+                  src={currentSrc}
+                  alt={track.title}
+                  className="h-full w-full object-cover"
+                  loading="eager"
+                  decoding="async"
+                  fetchPriority="high"
+                  onError={handleError}
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center bg-white/[0.06]">
+                  <MicVocal size={28} className="text-white/18" />
+                </div>
+              )}
+              <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0)_45%,rgba(0,0,0,0.14)_100%)]" />
+            </div>
+
+            <div className="min-w-0 flex-1 pt-1">
+              <p className="truncate text-[18px] font-semibold leading-tight text-white/92">
+                {track.title}
+              </p>
+              <p className="mt-1 truncate text-[13px] font-medium text-white/46">
+                {track.user.username}
+              </p>
+
+              <div className="mb-1 flex justify-end">
+                <ProgressTime />
+              </div>
+
+              <div className="-mt-1">
+                <ProgressSlider />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <CompactLyricsDockTransport track={track} />
+          </div>
+
+          <div className="mt-4 rounded-[20px] border border-white/[0.06] bg-black/[0.16] px-6.5 py-2.5">
+            <FullscreenVolumeSlider />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const FullscreenLyricsMiniPlayerOverlay = React.memo(
+  ({
+    track,
+    color,
+    openAnimation,
+    closeAnimation,
+  }: {
+    track: Track;
+    color: [number, number, number];
+    openAnimation: 'default' | 'fromMiniPlayer';
+    closeAnimation: 'none' | 'toMiniPlayer';
+  }) => {
+    if (typeof document === 'undefined') return null;
+
+    return createPortal(
+      <div className="pointer-events-none fixed inset-0 z-[68]">
+        <div
+          className="pointer-events-auto absolute"
+          style={{
+            left: 'clamp(20px, 3vw, 40px)',
+            bottom: 'clamp(20px, 3vh, 40px)',
+          }}
+        >
+          {/* Blur backdrop */}
+          <div
+            className="absolute rounded-[30px] pointer-events-none"
+            style={{
+              inset: '0px',
+              backdropFilter: 'blur(20px)',
+              backgroundColor: 'rgba(0, 0, 0, 0.15)',
+            }}
+          />
+          <LyricsMiniPlayerDock
+            track={track}
+            color={color}
+            openAnimation={openAnimation}
+            closeAnimation={closeAnimation}
+          />
+        </div>
+      </div>,
+      document.body,
+    );
+  },
+);
+
 const FullscreenLyricsColumn = React.memo(
   ({
     lyrics,
@@ -3159,10 +3540,19 @@ const FullscreenLyricsColumn = React.memo(
     onOpenSearch: () => void;
   }) => {
     const { t } = useTranslation();
+    const hasSourceBadge = shouldRenderSyncedLyrics(lyrics) || shouldRenderPlainLyrics(lyrics);
 
     return (
-      <div className="h-full flex flex-col overflow-hidden relative">
-        <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+      <div className="relative mx-auto flex h-full w-full max-w-[960px] flex-col overflow-hidden">
+        {hasSourceBadge ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10">
+            <div className="pointer-events-auto">
+              <LyricsSourceBadge source={lyrics.source} onSearch={onOpenSearch} />
+            </div>
+          </div>
+        ) : null}
+
+        <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
           {suppressFallback ? (
             <div className="flex-1" />
           ) : isLoading ? (
@@ -3171,10 +3561,7 @@ const FullscreenLyricsColumn = React.memo(
               <p className="text-[13px] text-white/25">{t('track.lyricsLoading')}</p>
             </div>
           ) : shouldRenderSyncedLyrics(lyrics) ? (
-            <div className="flex-1 min-h-0 flex flex-col overflow-hidden pr-2">
-              <div className="flex items-center justify-end gap-2 px-3 pt-2 pb-1 shrink-0">
-                <LyricsSourceBadge source={lyrics.source} onSearch={onOpenSearch} />
-              </div>
+            <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
               {warmupEnabled ? (
                 <StaticSyncedLyrics lines={lyrics.synced} />
               ) : (
@@ -3182,14 +3569,11 @@ const FullscreenLyricsColumn = React.memo(
               )}
             </div>
           ) : shouldRenderPlainLyrics(lyrics) ? (
-            <div className="flex-1 min-h-0 flex flex-col overflow-hidden pr-2">
-              <div className="flex items-center justify-end gap-2 px-3 pt-2 pb-1 shrink-0">
-                <LyricsSourceBadge source={lyrics.source} onSearch={onOpenSearch} />
-              </div>
+            <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
               <PlainLyrics text={lyrics.plain} />
             </div>
           ) : lyrics?.synced ? (
-            <div className="flex-1 min-h-0 flex flex-col overflow-hidden pr-2">
+            <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
               <StaticSyncedLyrics lines={lyrics.synced} />
             </div>
           ) : (
@@ -3214,14 +3598,13 @@ const FullscreenPanels = React.memo(() => {
   const mode = useFullscreenPanelStore((s) => s.mode);
   const closeAnimation = useFullscreenPanelStore((s) => s.closeAnimation);
   const openAnimation = useFullscreenPanelStore((s) => s.openAnimation);
-  const lyricsSplitRatio = useFullscreenPanelStore((s) => s.lyricsSplitRatio);
+  const open = useLyricsStore((s) => s.open);
   const track = usePlayerStore((s) => s.currentTrack);
   const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
   const artworkColor = useArtworkColor(track?.artwork_url ?? null);
   const { t } = useTranslation();
   const isLyrics = mode === 'lyrics';
   const closingToMiniPlayer = closeAnimation === 'toMiniPlayer';
-  const splitRef = useRef<HTMLDivElement>(null);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [manualQuery, setManualQuery] = useState<{ artist: string; title: string } | null>(null);
   const [submittedSearchQuery, setSubmittedSearchQuery] = useState<{
@@ -3240,7 +3623,7 @@ const FullscreenPanels = React.memo(() => {
   const trackUrn = track?.urn ?? null;
   const isTrackSwitchingFrame =
     prevTrackUrnRef.current !== null && prevTrackUrnRef.current !== trackUrn;
-  const lyricsPaneVisible = isLyrics && !isTrackSwitchingFrame;
+  const lyricsStageActive = isLyrics;
 
   const reqArtist = manualQuery ? manualQuery.artist : (track?.user?.username ?? '');
   const reqTitle = manualQuery ? manualQuery.title : (track?.title ?? '');
@@ -3285,23 +3668,7 @@ const FullscreenPanels = React.memo(() => {
           : 'not_found';
   const suppressLyricsFallback =
     lyricsSessionRequested && (isTrackLyricsPending || isTrackSwitchingFrame) && !hasLyrics;
-
-  const splitPercent = 42;
-  const lyricsPanePercent = 100 - splitPercent;
-  const lyricsTrackScale = lyricsPaneVisible
-    ? 0.82 + ((Math.max(0.2, Math.min(0.8, lyricsSplitRatio)) - 0.2) / 0.6) * 0.18
-    : 1;
-  const fullscreenTransitionEase = 'cubic-bezier(0.22, 1, 0.36, 1)';
-  const fullscreenTransitionDurationMs = 500;
-  const layoutTransition = false
-    ? 'none'
-    : `${fullscreenTransitionDurationMs}ms ${fullscreenTransitionEase}`;
-  const trackStageTranslateX = lyricsPaneVisible
-    ? `${((splitPercent - 100) / 2).toFixed(3)}%`
-    : '0%';
-  const trackStageClipPath = lyricsPaneVisible
-    ? `inset(0 ${lyricsPanePercent}% 0 0)`
-    : 'inset(0 0 0 0)';
+  const suppressLyricsStage = suppressLyricsFallback || isTrackSwitchingFrame;
 
 
   const clearNotFoundHint = useCallback(() => {
@@ -3427,19 +3794,20 @@ const FullscreenPanels = React.memo(() => {
       clearNotFoundHint();
       pendingLyricsActionAfterLoadRef.current = false;
       pendingManualSearchResolveRef.current = false;
-      const hasImmediateLyrics = hasLyrics && !isLoading;
+      
+      const cachedLyricsForNewTrack = manualLyricsRef.current.get(nextUrn);
+      const hasImmediateLyrics = (hasLyrics && !isLoading) || Boolean(cachedLyricsForNewTrack);
 
       if (lyricsSessionRequested) {
-        pendingTrackAutoOpenRef.current = !hasImmediateLyrics;
-        setIsTrackLyricsPending(!hasImmediateLyrics);
-
         if (hasImmediateLyrics) {
           openLyricsMode();
-        } else if (mode === 'lyrics') {
+        } else if (!isLoading) {
           useLyricsStore.setState({ open: false });
           useFullscreenPanelStore.getState().setMode('artwork');
           useArtworkStore.setState({ open: true });
         }
+        pendingTrackAutoOpenRef.current = false;
+        setIsTrackLyricsPending(false);
       } else {
         pendingTrackAutoOpenRef.current = false;
         setIsTrackLyricsPending(false);
@@ -3469,32 +3837,28 @@ const FullscreenPanels = React.memo(() => {
   }, [track?.urn, isLoading]);
 
   useEffect(() => {
-    if (isLoading) return;
-
-    if (pendingTrackAutoOpenRef.current) {
-      pendingTrackAutoOpenRef.current = false;
-      if (hasLyrics) {
-        openLyricsMode();
+    // Простая логика: если режим текстов активен, управляем панелью в зависимости от наличия текстов
+    if (mode === 'lyrics' && lyricsSessionRequested) {
+      if (isLoading) {
+        // Загрузка идет - не меняем состояние, ждем
+        return;
       }
-    }
-
-    if (pendingManualSearchResolveRef.current) {
-      pendingManualSearchResolveRef.current = false;
+      
       if (hasLyrics) {
-        setIsSearchModalOpen(false);
-        openLyricsMode();
-      }
-    }
-
-    if (pendingLyricsActionAfterLoadRef.current) {
-      pendingLyricsActionAfterLoadRef.current = false;
-      if (hasLyrics) {
-        openLyricsMode();
+        // Текста есть - открываем панель
+        if (!open) {
+          useLyricsStore.setState({ open: true });
+        }
       } else {
-        showNotFoundBubble();
+        // Текстов нет - закрываем панель
+        if (open) {
+          useLyricsStore.setState({ open: false });
+          useFullscreenPanelStore.getState().setMode('artwork');
+          useArtworkStore.setState({ open: true });
+        }
       }
     }
-  }, [hasLyrics, isLoading, openLyricsMode, showNotFoundBubble]);
+  }, [hasLyrics, isLoading, mode, open, lyricsSessionRequested]);
 
   useEffect(() => {
     if (mode !== 'artwork' || openAnimation !== 'fromMiniPlayer') return;
@@ -3540,7 +3904,7 @@ const FullscreenPanels = React.memo(() => {
         className="relative z-10 flex justify-end items-center gap-2 px-6 pt-5 pb-2"
         data-tauri-drag-region
       >
-        {lyricsPaneVisible ? (
+        {lyricsStageActive ? (
           <button
             type="button"
             onClick={closeLyricsModeManually}
@@ -3597,86 +3961,48 @@ const FullscreenPanels = React.memo(() => {
         </button>
       </div>
 
-      {/* Split layout with transition */}
-      <div ref={splitRef} className="relative z-10 flex-1 min-h-0" style={{ isolation: 'isolate' }}>
-        {/* Left: track column */}
-        <div
-          className="absolute inset-0 min-w-0 min-h-0"
-          style={{
-            clipPath: trackStageClipPath,
-            WebkitClipPath: trackStageClipPath,
-            transition: layoutTransition === 'none' ? 'none' : `clip-path ${layoutTransition}`,
-            willChange: 'clip-path',
-          }}
-        >
-          <div
-            className="flex h-full w-full items-center justify-center"
-            style={{
-              transform: `translate3d(${trackStageTranslateX}, 0, 0)`,
-              transition: layoutTransition === 'none' ? 'none' : `transform ${layoutTransition}`,
-              willChange: 'transform',
-            }}
-          >
-            <div
-              style={{
-                transform: `scale(${lyricsTrackScale.toFixed(3)})`,
-                transformOrigin: 'center center',
-                transition: layoutTransition === 'none' ? 'none' : `transform ${layoutTransition}`,
-                willChange: 'transform',
-              }}
-            >
+      <div className="relative z-10 flex-1 min-h-0" style={{ isolation: 'isolate' }}>
+        {lyricsStageActive ? (
+          <div className="mx-auto flex h-full w-full max-w-[min(1240px,calc(100vw-2rem))] items-center justify-center px-[clamp(20px,4vw,72px)] pb-[clamp(44px,8vh,96px)]">
+            <div className="h-full min-h-0 w-full">
               {/* artwork mode: column width scales with viewport height — */}
               {/* clamps between 280px (very short windows) and 640px (4K). */}
               {/* Reserves ~460px for title + slider + controls + panel + */}
               {/* gaps + fullscreen header. If still not enough, the column */}
-              {/* is scrollable (overflow-y-auto on the parent). */}
-                <TrackColumn
-                  key={track.urn}
-                  track={track}
-                  maxArt={
-                  lyricsPaneVisible
-                    ? 'max-w-[340px]'
-                    : 'max-w-[min(640px,max(280px,calc(100vh-460px)))]'
-                }
+              <FullscreenLyricsColumn
+                lyrics={lyrics}
+                isLoading={isLoading}
+                warmupEnabled={warmupEnabled}
+                motionHints={warmupEnabled ? motionHints : []}
+                pseudoSynced={pseudoSynced}
+                hintLabel={hintLabel}
+                suppressFallback={suppressLyricsStage}
+                onOpenSearch={openSearchModal}
               />
             </div>
           </div>
-        </div>
-
-        {/* Right: lyrics */}
-        <div
-          className="absolute inset-y-0 right-0 min-w-0 overflow-hidden"
-          style={{
-            width: `${lyricsPanePercent}%`,
-            opacity: lyricsPaneVisible ? 1 : 0,
-            transform: lyricsPaneVisible ? 'translate3d(0, 0, 0)' : 'translate3d(10%, 0, 0)',
-            pointerEvents: lyricsPaneVisible ? 'auto' : 'none',
-            transition:
-              layoutTransition === 'none'
-                ? 'opacity 160ms ease'
-                : `transform ${layoutTransition}, opacity 320ms ease, width ${layoutTransition}`,
-            willChange: 'transform, opacity, width',
-          }}
-        >
-          <div className="h-full min-h-0">
-            <FullscreenLyricsColumn
-              lyrics={lyrics}
-              isLoading={isLoading}
-              warmupEnabled={warmupEnabled}
-              motionHints={warmupEnabled ? motionHints : []}
-              pseudoSynced={pseudoSynced}
-              hintLabel={hintLabel}
-              suppressFallback={suppressLyricsFallback}
-              onOpenSearch={openSearchModal}
+        ) : (
+          <div className="flex h-full min-h-0 items-center justify-center">
+            <TrackColumn
+              key={track.urn}
+              track={track}
+              maxArt="max-w-[min(640px,max(280px,calc(100vh-460px)))]"
             />
           </div>
-        </div>
-
-        {/* Divider handle */}
-        </div>
+        )}
       </div>
 
-        {visualizerFullscreen && <FullscreenVisualizer />}
+      {visualizerFullscreen && <FullscreenVisualizer />}
+      </div>
+
+      {lyricsStageActive && (
+        <FullscreenLyricsMiniPlayerOverlay
+          track={track}
+          color={artworkColor}
+          openAnimation={openAnimation}
+          closeAnimation={closeAnimation}
+        />
+      )}
 
         <LyricsSearchModal
           isOpen={isSearchModalOpen}

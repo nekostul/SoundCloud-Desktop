@@ -99,11 +99,15 @@ export const useDirectAuthStore = create<DirectAuthState>()(
         ) as Partial<DirectAuthState>;
         const accessToken = state.accessToken ?? currentState.accessToken;
         const expiresAt = state.expiresAt ?? currentState.expiresAt;
+        
+        // Add 60s buffer to prevent using token that's about to expire
+        const bufferMs = 60000;
+        const isActive = !!accessToken && (!expiresAt || Date.now() + bufferMs < expiresAt);
 
         return {
           ...currentState,
           ...state,
-          isAuthenticated: hasActiveDirectSession(accessToken, expiresAt),
+          isAuthenticated: isActive,
         };
       },
       partialize: (state) => ({

@@ -294,31 +294,48 @@ export class AuthService {
     }
 
     const creds = await this.getSessionCredentials(session);
+    let lastError: unknown;
 
-    try {
-      const tokenResponse = await this.soundcloudService.refreshAccessToken(
-        session.refreshToken,
-        creds,
-      );
-
-      session.accessToken = tokenResponse.access_token;
-      session.refreshToken = tokenResponse.refresh_token;
-      session.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000);
-
-      await this.sessionRepo.save(session);
-      return session;
-    } catch (error: unknown) {
-      const isBan = await this.checkAndHandleBan(error, session.oauthAppId);
-
-      if (!isBan) {
-        await this.sessionRepo.remove(session);
-        throw new UnauthorizedException(
-          'Refresh token expired or invalid. Please re-authenticate.',
+    // Retry refresh token up to 2 times on transient errors
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const tokenResponse = await this.soundcloudService.refreshAccessToken(
+          session.refreshToken,
+          creds,
         );
-      }
 
-      throw new UnauthorizedException('SoundCloud app banned. Please re-authenticate.');
+        session.accessToken = tokenResponse.access_token;
+        session.refreshToken = tokenResponse.refresh_token;
+        const expiresInSec = Math.max(tokenResponse.expires_in || 3600, 300);
+        session.expiresAt = new Date(Date.now() + expiresInSec * 1000);
+
+        await this.sessionRepo.save(session);
+        return session;
+      } catch (error: unknown) {
+        lastError = error;
+        
+        const isBan = await this.checkAndHandleBan(error, session.oauthAppId);
+        if (isBan) {
+          throw new UnauthorizedException('SoundCloud app banned. Please re-authenticate.');
+        }
+
+        // Retry on network errors, not on auth errors
+        if (attempt < 1) {
+          const isNetworkError = error instanceof AxiosError && (!error.response || error.code === 'ECONNABORTED');
+          if (isNetworkError) {
+            await new Promise(r => setTimeout(r, 300 + Math.random() * 200));
+            continue;
+          }
+        }
+        
+        break;
+      }
     }
+
+    await this.sessionRepo.remove(session);
+    throw new UnauthorizedException(
+      'Refresh token expired or invalid. Please re-authenticate.',
+    );
   }
 
   async logout(sessionId: string): Promise<void> {
@@ -346,7 +363,9 @@ export class AuthService {
       throw new UnauthorizedException('Session is not authenticated');
     }
 
-    if (session.expiresAt <= new Date()) {
+    const bufferMs = 60000; // 1 min buffer before actual expiry
+    const expiresWithBuffer = new Date(session.expiresAt.getTime() - bufferMs);
+    if (new Date() >= expiresWithBuffer) {
       session = await this.refreshSession(sessionId);
     }
 

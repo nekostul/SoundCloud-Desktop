@@ -151,7 +151,12 @@ export const ProgressSlider = React.memo(() => {
         return;
       }
 
-      paintProgressFill(isPlaying ? getSmoothCurrentTime() : getCurrentTime());
+      const currentValue = isPlaying ? getSmoothCurrentTime() : getCurrentTime();
+      paintProgressFill(currentValue);
+      // Синхронизируем слайдер со значением, чтобы он не "зависал"
+      if (!draggingRef.current && Math.abs(currentValue - sliderValue) > 0.1) {
+        setSliderValue(currentValue);
+      }
     };
 
     rafId = requestAnimationFrameImmediate(loop);
@@ -159,6 +164,9 @@ export const ProgressSlider = React.memo(() => {
       if (!draggingRef.current) {
         const nextValue = getCurrentTime();
         paintProgressFill(nextValue);
+        if (Math.abs(nextValue - sliderValue) > 0.1) {
+          setSliderValue(nextValue);
+        }
       }
     });
 
@@ -166,7 +174,7 @@ export const ProgressSlider = React.memo(() => {
       cancelAnimationFrameImmediate(rafId);
       unsub();
     };
-  }, [isPlaying, paintProgressFill]);
+  }, [isPlaying, paintProgressFill, sliderValue]);
 
   const displayValue = dragging ? dragValue : liveValueRef.current;
   const seekableLimit = duration > 0 ? Math.max(0, duration - 0.15) : Number.POSITIVE_INFINITY;
@@ -570,7 +578,7 @@ const VolumeSlider = React.memo(({ className = '' }: { className?: string }) => 
           setVolume(Math.max(0, Math.min(100, volume + (e.deltaY < 0 ? 1 : -1))));
         }}
       >
-        <Slider.Track className="relative h-[3px] grow rounded-full bg-white/[0.08] group-hover:h-[4px] transition-all duration-150">
+        <Slider.Track className="relative h-[3px] grow rounded-full bg-white/[0.08] group-hover:h-[5px] transition-all duration-150">
           <Slider.Range className="absolute h-full rounded-full bg-white/60" />
         </Slider.Track>
         <Slider.Thumb className="block w-2.5 h-2.5 rounded-full bg-white transition-all duration-150 outline-none scale-0 opacity-0 group-hover:scale-100 group-hover:opacity-100" />
@@ -980,7 +988,7 @@ function MoodCorrectionButton({ track }: { track: Track }) {
 /* ── Isolated control buttons ────────────────────────────────── */
 
 const btnClass = (active: boolean, size: 'default' | 'sm') =>
-  `${size === 'sm' ? 'w-9 h-9' : 'w-10 h-10'} rounded-full flex items-center justify-center transition-all duration-150 ease-[var(--ease-apple)] cursor-pointer hover:bg-white/[0.04] ${
+  `${size === 'sm' ? 'w-9 h-9' : 'w-12 h-12'} rounded-full flex items-center justify-center transition-all duration-150 ease-[var(--ease-apple)] cursor-pointer hover:bg-white/[0.04] ${
     active ? 'text-accent' : 'text-white/40 hover:text-white/70'
   }`;
 

@@ -671,6 +671,8 @@
     "errorTitle": "Could not complete sign-in",
     "errorBody": "Returning to the app so you can try again.",
     "statusOpening": "Opening SoundCloud Desktop...",
+    "statusLoading": "Activating your session...",
+    "returnMessage": "Return to the app",
     "helper": "If the app did not open automatically, use the button below.",
     "openApp": "Open SoundCloud Desktop"
   }

@@ -66,6 +66,60 @@ export class AuthController {
     return this.authService.getLoginStatus(loginRequestId);
   }
 
+  @Post('callback-api')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'OAuth callback API for web clients (returns JSON)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'Authorization code from SoundCloud' },
+        state: { type: 'string', description: 'State parameter for CSRF protection' },
+        error: { type: 'string', description: 'Error code if auth failed' },
+        error_description: { type: 'string', description: 'Error description' },
+      },
+      required: ['code', 'state'],
+    },
+  })
+  @ApiOkResponse({
+    description: 'OAuth callback result',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        sessionId: { type: 'string' },
+        username: { type: 'string' },
+        error: { type: 'string' },
+      },
+    },
+  })
+  async callbackApi(
+    @Body() body: { code?: string; state?: string; error?: string; error_description?: string },
+  ) {
+    try {
+      const result = await this.authService.handleCallback(
+        body.code,
+        body.state,
+        body.error,
+        body.error_description,
+      );
+
+      return {
+        success: result.success,
+        sessionId: result.session.id,
+        username: result.session.username,
+        error: result.error,
+      };
+    } catch (error: unknown) {
+      return {
+        success: false,
+        sessionId: undefined,
+        username: undefined,
+        error: error instanceof Error ? error.message : 'OAuth callback failed',
+      };
+    }
+  }
+
   @Get('callback')
   @ApiOperation({ summary: 'OAuth callback from SoundCloud' })
   @ApiQuery({ name: 'code', required: false })

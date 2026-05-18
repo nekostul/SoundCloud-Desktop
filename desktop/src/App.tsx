@@ -191,6 +191,21 @@ function AppInner() {
     };
   }, []);
 
+  // Handle sessionId from deep link URL parameters (from OAuth callback redirect)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sessionIdParam = params.get('sessionId');
+
+    if (sessionIdParam?.trim()) {
+      console.log('[Auth] Received sessionId from OAuth callback:', sessionIdParam.substring(0, 8) + '...');
+      useAuthStore.setState({ sessionId: sessionIdParam });
+
+      // Clean up URL parameters
+      const cleanUrl = window.location.pathname + window.location.hash;
+      window.history.replaceState({}, '', cleanUrl);
+    }
+  }, []);
+
   useEffect(() => {
     if (!authHydrated || !directHydrated) {
       setChecking(true);

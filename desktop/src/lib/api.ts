@@ -20,7 +20,7 @@ let lastUnauthorizedAt = 0;
 let lastServerErrorToastAt = 0;
 
 const SERVER_ERROR_TOAST_COOLDOWN_MS = 10000;
-const UNAUTHORIZED_COOLDOWN_MS = 30_000;
+const UNAUTHORIZED_COOLDOWN_MS = 60_000; // increased to 60s to reduce re-login spam
 const RATE_LIMIT_FALLBACK_MS = 3000;
 const RATE_LIMIT_TOAST_COOLDOWN_MS = 15000;
 const SESSION_EXPIRED_TOAST_COOLDOWN_MS = 20000;
@@ -1342,7 +1342,7 @@ function handleUnauthorized() {
 
   setTimeout(() => {
     sessionInvalidated = false;
-  }, 60_000);
+  }, UNAUTHORIZED_COOLDOWN_MS);
 
   unauthorizedHandler?.();
 
