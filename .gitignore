@@ -1,29 +1,56 @@
 desktop/node_modules/
 desktop/dist/
+
+# Global dependencies/build
+**/node_modules/
+**/dist/
+**/build/
+
+# Environment
 .env
 .env.*
 !.env.example
+
+# Logs
 *.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# OS
 .DS_Store
 Thumbs.db
-.flatpak-builder
+
+# Claude / local tooling
 .claude
+.agents/
+
+# Flatpak
+.flatpak-builder
 
 # Tauri build output
 desktop/src-tauri/target/
 
 # IDE
 .idea/
+.vscode/
 
-# FireBase
+# Firebase
 .firebase
+
+# TypeScript
+*.tsbuildinfo
+
+# Temp/cache
+tmp/
+temp/
+.cache/
+tmp-repo/
+
+# Internal tool/temp
+test-apis.js
 
 # Local landing callback prototype
 landing/src/OAuthCallbackPage.tsx
 landing/src/RootApp.tsx
 landing/src/oauth-callback-i18n.ts
-
-# Internal tool/temp
-.agents/
-tmp-repo/
-test-apis.js
