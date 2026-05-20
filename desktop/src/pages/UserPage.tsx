@@ -3,6 +3,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
+import {
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../components/context-menu/context-menu-registry';
 import { AddToPlaylistDialog } from '../components/music/AddToPlaylistDialog';
 import { LikeButton } from '../components/music/LikeButton';
 import { PlaylistCard } from '../components/music/PlaylistCard';
@@ -254,9 +258,26 @@ const PopularTrackRow = React.memo(function PopularTrackRow({
   const navigate = useNavigate();
   const cover = art(track.artwork_url, 't200x200');
   const { isThis, isThisPlaying, togglePlay } = useTrackPlay(track, queue);
+  const trackContextProps = useContextMenuTarget(
+    useMemo(
+      () => ({
+        type: 'track' as const,
+        track,
+        queue,
+      }),
+      [queue, track],
+    ),
+  );
+  const artistContextProps = useContextMenuTarget(
+    useMemo(() => {
+      const user = toContextMenuUserEntity(track.user);
+      return user ? { type: 'user' as const, user } : null;
+    }, [track.user]),
+  );
 
   return (
     <div
+      {...trackContextProps}
       className={`group grid grid-cols-[34px_54px_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-[22px] px-3 py-2.5 transition-all duration-200 ease-[var(--ease-apple)] ${
         isThis ? 'bg-white/[0.07] ring-1 ring-white/[0.08]' : 'hover:bg-white/[0.045]'
       }`}
@@ -300,6 +321,7 @@ const PopularTrackRow = React.memo(function PopularTrackRow({
         </button>
         <button
           type="button"
+          {...artistContextProps}
           onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           className="block truncate text-left text-[12px] text-white/42 hover:text-white/72 transition-colors cursor-pointer mt-0.5"
         >
@@ -351,9 +373,26 @@ const ReleaseCard = React.memo(function ReleaseCard({
   const cover = art(track.artwork_url, compact ? 't300x300' : 't500x500');
   const queue = useMemo(() => [track], [track]);
   const { isThisPlaying, togglePlay } = useTrackPlay(track, queue);
+  const trackContextProps = useContextMenuTarget(
+    useMemo(
+      () => ({
+        type: 'track' as const,
+        track,
+        queue,
+      }),
+      [queue, track],
+    ),
+  );
+  const artistContextProps = useContextMenuTarget(
+    useMemo(() => {
+      const user = toContextMenuUserEntity(track.user);
+      return user ? { type: 'user' as const, user } : null;
+    }, [track.user]),
+  );
 
   return (
     <div
+      {...trackContextProps}
       className={`group rounded-[28px] border border-white/[0.06] bg-white/[0.03] overflow-hidden transition-all duration-300 ease-[var(--ease-apple)] hover:bg-white/[0.05] hover:border-white/[0.1] ${
         compact ? '' : 'shadow-[0_24px_80px_rgba(0,0,0,0.28)]'
       }`}
@@ -397,6 +436,7 @@ const ReleaseCard = React.memo(function ReleaseCard({
         </button>
         <button
           type="button"
+          {...artistContextProps}
           onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           className="block text-left w-full text-[12px] text-white/46 hover:text-white/72 transition-colors truncate mt-1 cursor-pointer"
         >
@@ -414,10 +454,17 @@ const ReleaseCard = React.memo(function ReleaseCard({
 
 const SimilarArtistCard = React.memo(function SimilarArtistCard({ user }: { user: SCUser }) {
   const navigate = useNavigate();
+  const userContextProps = useContextMenuTarget(
+    useMemo(() => {
+      const contextUser = toContextMenuUserEntity(user);
+      return contextUser ? { type: 'user' as const, user: contextUser } : null;
+    }, [user]),
+  );
 
   return (
     <button
       type="button"
+      {...userContextProps}
       onClick={() => navigate(`/user/${encodeURIComponent(user.urn)}`)}
       className="group flex flex-col items-center text-center gap-3 cursor-pointer"
     >
@@ -500,6 +547,12 @@ export function UserPage() {
 
   const avatar = art(user?.avatar_url, 't500x500');
   const isOwnProfile = currentUser?.urn === user?.urn;
+  const userContextProps = useContextMenuTarget(
+    useMemo(() => {
+      const contextUser = toContextMenuUserEntity(user);
+      return contextUser ? { type: 'user' as const, user: contextUser } : null;
+    }, [user]),
+  );
   const monthlyPlays = formatMonthlyPlays(
     insights?.estimatedMonthlyPlays,
     i18n.resolvedLanguage || i18n.language,
@@ -579,12 +632,16 @@ export function UserPage() {
             </button>
             <div
               className="relative z-10 flex h-[min(calc(100vw-4rem),calc(100vh-4rem))] w-[min(calc(100vw-4rem),calc(100vh-4rem))] items-center justify-center sm:h-[min(calc(100vw-6rem),calc(100vh-6rem))] sm:w-[min(calc(100vw-6rem),calc(100vh-6rem))]"
+              data-sc-context-image-url={avatar}
+              data-sc-context-image-alt={`${user?.username || ''} avatar`}
               onClick={(event) => event.stopPropagation()}
             >
               <div className="h-full w-full overflow-hidden rounded-[28px] border border-white/10 bg-black/24 shadow-[0_32px_128px_rgba(0,0,0,0.8)]">
                 <img
                   src={avatar}
                   alt={user?.username || ''}
+                  data-sc-context-image-url={avatar}
+                  data-sc-context-image-alt={`${user?.username || ''} avatar`}
                   loading="eager"
                   decoding="async"
                   fetchPriority="high"
@@ -633,7 +690,9 @@ export function UserPage() {
               >
                 <button
                   type="button"
+                  {...userContextProps}
                   onClick={() => avatar && setShowFullAvatar(true)}
+                  data-sc-disable-context-image="true"
                   className="relative w-10 h-10 rounded-full overflow-hidden ring-1 ring-white/[0.08] shrink-0 cursor-pointer"
                 >
                   <Avatar key={user.urn || urn} src={user.avatar_url} alt={user.username} size={40} />
@@ -665,12 +724,13 @@ export function UserPage() {
           </div>
         )}
 
-        <section ref={heroSectionRef} className="relative">
+        <section {...userContextProps} ref={heroSectionRef} className="relative">
           <div className="relative px-0 py-2 md:py-4 lg:py-6">
             <div className="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-8 items-center">
               <button
                 type="button"
                 onClick={() => avatar && setShowFullAvatar(true)}
+                data-sc-disable-context-image="true"
                 className="relative w-[180px] h-[180px] md:w-[220px] md:h-[220px] rounded-full overflow-hidden ring-1 ring-white/[0.08] bg-white/[0.03] shadow-[0_28px_70px_rgba(0,0,0,0.34)] cursor-pointer transition-transform duration-300 ease-[var(--ease-apple)] hover:scale-[1.02]"
               >
                 {avatar ? (

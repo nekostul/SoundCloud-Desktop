@@ -61,7 +61,6 @@ pub struct SpotifyImportProgress {
 struct SpotifySavedTracksPage {
     items: Vec<SpotifySavedTrack>,
     next: Option<String>,
-    total: u32,
 }
 
 #[derive(serde::Deserialize)]

@@ -3,6 +3,7 @@ mod constants;
 mod discord;
 mod hls;
 mod image_cache;
+mod media_proxy;
 mod proxy;
 mod proxy_server;
 mod server;
@@ -14,13 +15,14 @@ mod tray;
 mod ym_import;
 mod ytmusic_import;
 
+use base64::Engine;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{window::Color, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use discord::DiscordState;
 use server::ServerState;
@@ -393,6 +395,265 @@ async fn external_http_get(url: String, accept: Option<String>) -> Result<Extern
     })
 }
 
+fn sanitize_filename_component(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            _ => ch,
+        })
+        .collect();
+
+    let compact = sanitized
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let trimmed = compact.trim_matches(|ch: char| matches!(ch, '.' | ' '));
+    if trimmed.is_empty() {
+        "soundcloud-image".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_image_extension(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => Some("jpg"),
+        "png" => Some("png"),
+        "webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn image_extension_from_content_type(content_type: &str) -> Option<&'static str> {
+    let mime = content_type.split(';').next()?.trim().to_ascii_lowercase();
+    match mime.as_str() {
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn image_extension_from_path(path: &Path) -> Option<&'static str> {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .and_then(normalize_image_extension)
+}
+
+fn image_extension_from_data_url(url: &str) -> Option<&'static str> {
+    let header = url
+        .strip_prefix("data:")?
+        .split(',')
+        .next()?
+        .split(';')
+        .next()?
+        .trim()
+        .to_ascii_lowercase();
+
+    match header.as_str() {
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn decode_scproxy_target_url(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.scheme() != "scproxy" {
+        return None;
+    }
+
+    let encoded = parsed
+        .path()
+        .strip_prefix("/img/")?
+        .trim();
+    if encoded.is_empty() {
+        return None;
+    }
+
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let payload = String::from_utf8(decoded).ok()?;
+    let urls = serde_json::from_str::<Vec<String>>(&payload).ok()?;
+    urls.into_iter().next().filter(|value| !value.trim().is_empty())
+}
+
+fn decode_data_url_image(url: &str) -> Result<(Vec<u8>, &'static str), String> {
+    let payload = url
+        .strip_prefix("data:")
+        .ok_or_else(|| "Unsupported image URL".to_string())?;
+    let (meta, data) = payload
+        .split_once(',')
+        .ok_or_else(|| "Invalid data URL".to_string())?;
+    let extension = image_extension_from_data_url(url)
+        .ok_or_else(|| "Unsupported data URL image format".to_string())?;
+
+    if meta.contains(";base64") {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| e.to_string())?;
+        return Ok((decoded, extension));
+    }
+
+    let decoded = urlencoding::decode(data)
+        .map_err(|e| e.to_string())?
+        .into_owned()
+        .into_bytes();
+    Ok((decoded, extension))
+}
+
+fn resolve_downloads_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Ok(path) = app.path().download_dir() {
+        return Ok(path);
+    }
+
+    if let Ok(home_dir) = app.path().home_dir() {
+        return Ok(home_dir.join("Downloads"));
+    }
+
+    Err("Failed to resolve Downloads directory".to_string())
+}
+
+fn next_available_download_path(dir: &Path, stem: &str, extension: &str) -> PathBuf {
+    let mut index = 0u32;
+
+    loop {
+        let file_name = if index == 0 {
+            format!("{stem}.{extension}")
+        } else {
+            format!("{stem} ({index}).{extension}")
+        };
+        let candidate = dir.join(file_name);
+
+        if !candidate.exists() {
+            return candidate;
+        }
+
+        index += 1;
+    }
+}
+
+#[tauri::command]
+async fn save_image_to_downloads(
+    app: tauri::AppHandle,
+    url: String,
+    suggested_name: Option<String>,
+) -> Result<String, String> {
+    let url = decode_scproxy_target_url(&url).unwrap_or(url);
+    let data_url_result = if url.starts_with("data:") {
+        Some(decode_data_url_image(&url)?)
+    } else {
+        None
+    };
+
+    let parsed_url = if data_url_result.is_none() {
+        Some(reqwest::Url::parse(&url).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    if parsed_url
+        .as_ref()
+        .is_some_and(|parsed_url| !matches!(parsed_url.scheme(), "http" | "https"))
+    {
+        return Err("Unsupported image URL".to_string());
+    }
+
+    let suggested_name = suggested_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("soundcloud-image");
+    let suggested_path = Path::new(suggested_name);
+    let stem_source = suggested_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("soundcloud-image");
+    let stem = sanitize_filename_component(stem_source);
+    let (bytes, extension) = if let Some((bytes, extension)) = data_url_result {
+        (bytes, extension)
+    } else {
+        let parsed_url = parsed_url
+            .as_ref()
+            .ok_or_else(|| "Unsupported image URL".to_string())?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(12000))
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let mut request = client.get(parsed_url.clone());
+        request = request
+            .header(
+                reqwest::header::ACCEPT,
+                "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            )
+            .header(
+                reqwest::header::ACCEPT_LANGUAGE,
+                "en-US,en;q=0.8,ru;q=0.7",
+            )
+            .header(
+                reqwest::header::USER_AGENT,
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            );
+
+        if let Some(host) = parsed_url.host_str() {
+            if host.contains("music.yandex.") {
+                request = request
+                    .header(reqwest::header::REFERER, "https://music.yandex.ru/")
+                    .header(reqwest::header::ORIGIN, "https://music.yandex.ru");
+            } else if host.contains("sndcdn.com") || host.contains("soundcloud.com") {
+                request = request
+                    .header(reqwest::header::REFERER, "https://soundcloud.com/")
+                    .header(reqwest::header::ORIGIN, "https://soundcloud.com");
+            }
+        }
+
+        let response = request.send().await.map_err(|e| e.to_string())?;
+
+        if !response.status().is_success() {
+            return Err(format!("Image download failed: {}", response.status()));
+        }
+
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        if !content_type.is_empty() && !content_type.to_ascii_lowercase().starts_with("image/") {
+            return Err("URL did not return an image".to_string());
+        }
+
+        let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+        if bytes.is_empty() {
+            return Err("Downloaded image is empty".to_string());
+        }
+
+        let extension = image_extension_from_content_type(&content_type)
+            .or_else(|| image_extension_from_path(suggested_path))
+            .or_else(|| image_extension_from_path(Path::new(parsed_url.path())))
+            .unwrap_or("jpg");
+
+        (bytes.to_vec(), extension)
+    };
+
+    let downloads_dir = resolve_downloads_dir(&app)?;
+    fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
+
+    let destination = next_available_download_path(&downloads_dir, &stem, extension);
+    tokio::fs::write(&destination, &bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(destination.to_string_lossy().into_owned())
+}
+
 pub(crate) fn emit_window_visibility(app: &tauri::AppHandle, visible: bool) {
     let state = app.state::<audio_player::AudioState>();
     state.window_visible.store(visible, Ordering::Relaxed);
@@ -490,6 +751,7 @@ pub fn run() {
                     .title("SoundCloud Desktop")
                     .inner_size(1300.0, 820.0)
                     .min_inner_size(1300.0, 820.0)
+                    .background_color(Color(17, 18, 20, 255))
                     .decorations(false);
 
             #[cfg(target_os = "windows")]
@@ -529,6 +791,7 @@ pub fn run() {
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
             let shared_http_client = reqwest::Client::new();
+            let media_proxy_state = media_proxy::init(app.handle().clone());
 
             proxy::STATE
                 .set(proxy::State {
@@ -541,7 +804,7 @@ pub fn run() {
             image_cache::STATE
                 .set(image_cache::ImageCache {
                     dir: images_dir,
-                    http_client: shared_http_client,
+                    _http_client: shared_http_client,
                 })
                 .ok();
 
@@ -563,6 +826,7 @@ pub fn run() {
             let audio_state = audio_player::init();
             audio_player::set_framerate_config(&audio_state, target, unlocked);
             app.manage(audio_state);
+            app.manage(media_proxy_state);
             app.manage(spotify_import::SpotifyState::new());
             app.manage(ytmusic_import::YtMusicState::new());
 
@@ -639,6 +903,12 @@ pub fn run() {
             read_font_family,
             copy_custom_font,
             external_http_get,
+            save_image_to_downloads,
+            media_proxy::media_proxy_apply_settings,
+            media_proxy::media_proxy_get_status,
+            media_proxy::media_proxy_refresh_auto,
+            media_proxy::media_proxy_report_degraded,
+            media_proxy::media_proxy_http_get,
             // 7.1.0 port: direct-from-SC track cache + permanent image cache.
             track_cache::track_ensure_cached,
             track_cache::track_is_cached,

@@ -364,8 +364,8 @@ fn collect_cached_urns(
 pub struct TrackCacheState {
     pub audio_dir: PathBuf,
     pub liked_dir: PathBuf,
-    pub client: Client,
-    pub storage_client: Client,
+    pub _client: Client,
+    pub _storage_client: Client,
     pub app_handle: Option<tauri::AppHandle>,
     active: Arc<Mutex<HashMap<String, ActiveDownload>>>,
     preload_limiter: Arc<Semaphore>,
@@ -398,8 +398,8 @@ pub fn init(audio_dir: PathBuf, liked_dir: PathBuf) -> TrackCacheState {
     TrackCacheState {
         audio_dir,
         liked_dir,
-        client,
-        storage_client,
+        _client: client,
+        _storage_client: storage_client,
         app_handle: None,
         active: Arc::new(Mutex::new(HashMap::new())),
         preload_limiter: Arc::new(Semaphore::new(MAX_PARALLEL_PRELOADS)),
@@ -814,21 +814,25 @@ async fn write_hls_to_cache(
 
 /// Download a track from an API URL to cache.
 async fn download_api(
-    client: &Client,
     target_dir: &Path,
     urn: &str,
     url: &str,
     session_id: Option<&str>,
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<DownloadResult, DownloadError> {
-    let mut req = client.get(url);
+    let mut headers = Vec::new();
     if let Some(sid) = session_id {
-        req = req.header("x-session-id", sid);
+        headers.push(("x-session-id".to_string(), sid.to_string()));
     }
 
-    let response = req.send().await.map_err(|err| {
-        DownloadError::Retryable(format!("request: {}", format_reqwest_error(err)))
-    })?;
+    let (response, decision, _) = crate::media_proxy::perform_get(
+        url,
+        &headers,
+        None,
+        crate::media_proxy::ClientProfile::Download,
+    )
+    .await
+    .map_err(|err| DownloadError::Retryable(format!("request: {err}")))?;
     let status = response.status();
 
     if status.is_success() {
@@ -839,8 +843,11 @@ async fn download_api(
         }
         let quality = quality_from_url(url);
         if response_is_hls(&response, url) {
+            let client = decision
+                .build_client(crate::media_proxy::ClientProfile::Download)
+                .map_err(DownloadError::Retryable)?;
             return write_hls_to_cache(
-                client,
+                &client,
                 target_dir,
                 urn,
                 url,
@@ -1049,8 +1056,15 @@ impl TrackCacheState {
             }
             let prefer_hq = storage_url.contains("/hq/");
 
-            match self.storage_client.get(storage_url).send().await {
-                Ok(resp) if resp.status().is_success() => {
+            match crate::media_proxy::perform_get(
+                storage_url,
+                &[],
+                None,
+                crate::media_proxy::ClientProfile::Storage,
+            )
+            .await
+            {
+                Ok((resp, _, _)) if resp.status().is_success() => {
                     self.mark_storage_host_ok(&host);
                     let quality = if prefer_hq {
                         PlaybackQuality::Hq
@@ -1086,8 +1100,9 @@ impl TrackCacheState {
                         }
                     }
                 }
-                Ok(resp) if resp.status().as_u16() == 404 || resp.status().as_u16() == 410 => {}
-                Ok(resp) => {
+                Ok((resp, _, _))
+                    if resp.status().as_u16() == 404 || resp.status().as_u16() == 410 => {}
+                Ok((resp, _, _)) => {
                     eprintln!(
                         "[TrackCache] storage HTTP {} for {urn} ({host})",
                         resp.status()
@@ -1150,7 +1165,6 @@ impl TrackCacheState {
             }
 
             match download_api(
-                &self.client,
                 target_dir,
                 urn,
                 url,

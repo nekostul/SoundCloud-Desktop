@@ -15,7 +15,9 @@ import { Globe, ListMusic, ListPlus, Loader2, Lock, Plus, X } from '../../lib/ic
 interface AddToPlaylistDialogProps {
   trackUrn?: string;
   trackUrns?: string[];
-  children: React.ReactNode;
+  children?: React.ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 const PlaylistOption = React.memo(function PlaylistOption({
@@ -129,16 +131,28 @@ export const AddToPlaylistDialog = React.memo(function AddToPlaylistDialog({
   trackUrn,
   trackUrns,
   children,
+  open: controlledOpen,
+  onOpenChange: controlledOnOpenChange,
 }: AddToPlaylistDialogProps) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
   const normalizedTrackUrns = useMemo(() => {
     if (trackUrn) return [trackUrn];
     return trackUrns ?? [];
   }, [trackUrn, trackUrns]);
   const { playlists, isLoading } = useMyPlaylists(30, open);
   const addToPlaylist = useAddToPlaylist();
+
+  const handleOpenChange = (v: boolean) => {
+    if (controlledOnOpenChange) {
+      controlledOnOpenChange(v);
+    } else {
+      setUncontrolledOpen(v);
+    }
+    if (!v) setShowCreate(false);
+  };
 
   const handleSelect = async (playlist: Playlist) => {
     const existingUrns = playlist.tracks?.map((t) => t.urn) ?? [];
@@ -162,7 +176,7 @@ export const AddToPlaylistDialog = React.memo(function AddToPlaylistDialog({
 
     if (newUrns.length === 0) {
       toast.info(t('playlist.alreadyContains'));
-      setOpen(false);
+      handleOpenChange(false);
       return;
     }
 
@@ -171,20 +185,15 @@ export const AddToPlaylistDialog = React.memo(function AddToPlaylistDialog({
       {
         onSuccess: () => {
           toast.success(t('playlist.addedToPlaylist'));
-          setOpen(false);
+          handleOpenChange(false);
         },
       },
     );
   };
 
-  const handleOpenChange = (v: boolean) => {
-    setOpen(v);
-    if (!v) setShowCreate(false);
-  };
-
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
-      <Dialog.Trigger asChild>{children}</Dialog.Trigger>
+      {children ? <Dialog.Trigger asChild>{children}</Dialog.Trigger> : null}
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[70] animate-fade-in" />
         <Dialog.Content className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[70] w-[380px] max-h-[70vh] rounded-2xl glass border border-white/[0.08] shadow-2xl animate-fade-in-up flex flex-col">
@@ -201,11 +210,10 @@ export const AddToPlaylistDialog = React.memo(function AddToPlaylistDialog({
 
           {/* New playlist button / form */}
           {showCreate ? (
-              <CreatePlaylistForm
-               trackUrns={normalizedTrackUrns}
-               onCreated={() => {
-                 setShowCreate(false);
-                 setOpen(false);
+            <CreatePlaylistForm
+              trackUrns={normalizedTrackUrns}
+              onCreated={() => {
+                handleOpenChange(false);
               }}
             />
           ) : (

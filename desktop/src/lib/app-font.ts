@@ -1,5 +1,5 @@
-const TEXT_SIZE_BASE = 15;
-export const FORCED_APP_TEXT_SIZE = 16;
+const TEXT_SIZE_BASE = 14;
+export const FORCED_APP_TEXT_SIZE = 14;
 export const FORCED_APP_UI_SCALE = 1;
 const TEXT_SCALE_STYLE_ID = 'app-text-scale-style';
 
@@ -66,7 +66,10 @@ function applyTextScale(scale: number, textSizePx: number): void {
 
   const out: string[] = [];
   for (const rule of textRulesCache) {
-    out.push(`${rule.selector}{font-size:${(rule.px * scale).toFixed(3)}px !important}`);
+    const scaledPx = Math.round(rule.px * scale);
+    out.push(
+      `${rule.selector}{font-size:${scaledPx}px !important}`
+    );
   }
   tag.textContent = out.join('\n');
 

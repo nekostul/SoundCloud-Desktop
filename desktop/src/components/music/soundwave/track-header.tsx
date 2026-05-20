@@ -9,6 +9,10 @@ import { art, dur } from '../../../lib/formatters';
 import { playBlack14 } from '../../../lib/icons';
 import { usePlayerStore } from '../../../stores/player';
 import type { Track } from '../../../stores/player';
+import {
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../../context-menu/context-menu-registry';
 
 function formatMMSS(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) sec = 0;
@@ -78,11 +82,28 @@ interface Props {
 
 /** Cover + title/artist row rendered above the waveform. */
 export const WaveTrackHeader = React.memo(
-  function WaveTrackHeader({ track, queue: _queue, isCurrent }: Props) {
+  function WaveTrackHeader({ track, queue, isCurrent }: Props) {
     const navigate = useNavigate();
     const isPlaying = usePlayerStore((s) => s.isPlaying);
     const previousCoverClearTimeoutRef = useRef<number | null>(null);
     const lastResolvedCoverRef = useRef<string | null>(null);
+    const coverImgRef = useRef<HTMLImageElement | null>(null);
+    const trackContextProps = useContextMenuTarget(
+      useMemo(
+        () => ({
+          type: 'track' as const,
+          track,
+          queue,
+        }),
+        [queue, track],
+      ),
+    );
+    const artistContextProps = useContextMenuTarget(
+      useMemo(() => {
+        const user = toContextMenuUserEntity(track.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [track.user]),
+    );
     const coverSources = useMemo(
       () =>
         uniqueCoverSources([
@@ -91,6 +112,7 @@ export const WaveTrackHeader = React.memo(
         ]),
       [track.artwork_url, track.user.avatar_url],
     );
+    const coverSourcesKey = useMemo(() => coverSources.join('|'), [coverSources]);
     const [coverIndex, setCoverIndex] = useState(0);
     const [coverLoaded, setCoverLoaded] = useState(false);
     const [previousCover, setPreviousCover] = useState<string | null>(null);
@@ -102,11 +124,17 @@ export const WaveTrackHeader = React.memo(
         window.clearTimeout(previousCoverClearTimeoutRef.current);
         previousCoverClearTimeoutRef.current = null;
       }
-      setPreviousCover(lastResolvedCoverRef.current);
-      setPreviousCoverVisible(Boolean(lastResolvedCoverRef.current));
+      const nextCover = coverSources[0] ?? null;
+      const previousResolvedCover = lastResolvedCoverRef.current;
+      const shouldCrossfade = Boolean(
+        previousResolvedCover && nextCover && previousResolvedCover !== nextCover,
+      );
+
+      setPreviousCover(shouldCrossfade ? previousResolvedCover : null);
+      setPreviousCoverVisible(shouldCrossfade);
       setCoverIndex(0);
-      setCoverLoaded(false);
-    }, [track.urn, coverSources]);
+      setCoverLoaded(Boolean(nextCover && previousResolvedCover === nextCover));
+    }, [coverSources, track.urn]);
 
     useEffect(() => {
       return () => {
@@ -117,30 +145,46 @@ export const WaveTrackHeader = React.memo(
     }, []);
 
     const cover = coverSources[coverIndex] ?? null;
-    const handleCoverLoad = () => {
-      lastResolvedCoverRef.current = cover;
-      setCoverLoaded(true);
-      if (previousCover) {
-        requestAnimationFrame(() => {
-          setPreviousCoverVisible(false);
-        });
-        previousCoverClearTimeoutRef.current = window.setTimeout(() => {
-          setPreviousCover(null);
-          previousCoverClearTimeoutRef.current = null;
-        }, 420);
+    const handleCoverLoad = useMemo(
+      () => () => {
+        if (!cover) return;
+
+        lastResolvedCoverRef.current = cover;
+        setCoverLoaded(true);
+        if (previousCover) {
+          requestAnimationFrame(() => {
+            setPreviousCoverVisible(false);
+          });
+          previousCoverClearTimeoutRef.current = window.setTimeout(() => {
+            setPreviousCover(null);
+            previousCoverClearTimeoutRef.current = null;
+          }, 420);
+        }
+      },
+      [cover, previousCover],
+    );
+
+    useEffect(() => {
+      const image = coverImgRef.current;
+      if (!image || !cover) return;
+
+      if (image.complete && image.naturalWidth > 0) {
+        handleCoverLoad();
       }
-    };
+    }, [cover, handleCoverLoad, track.urn]);
+
     const handleCoverError = () => {
       setCoverLoaded(false);
       setCoverIndex((current) => (current + 1 < coverSources.length ? current + 1 : current));
     };
 
     return (
-      <div className="flex items-center gap-3 min-w-0">
+      <div {...trackContextProps} className="flex items-center gap-3 min-w-0">
         <div className="relative block w-14 h-14 rounded-xl overflow-hidden shrink-0 ring-1 ring-white/[0.12] shadow-lg">
           <div className="absolute inset-0 bg-white/[0.04]" />
           {previousCover ? (
             <img
+              key={`${track.urn}-previous-${previousCover}`}
               src={previousCover}
               alt=""
               className={`absolute inset-0 block w-full h-full object-cover transition-opacity duration-[420ms] ease-[var(--ease-apple)] ${
@@ -152,6 +196,8 @@ export const WaveTrackHeader = React.memo(
           ) : null}
           {cover ? (
             <img
+              key={`${track.urn}-${coverSourcesKey}-${coverIndex}`}
+              ref={coverImgRef}
               src={cover}
               alt={track.title}
               onLoad={handleCoverLoad}
@@ -189,6 +235,7 @@ export const WaveTrackHeader = React.memo(
             {track.title}
           </p>
           <p
+            {...artistContextProps}
             className="text-[12px] text-white/50 truncate mt-0.5 cursor-pointer hover:text-white/80 transition-colors"
             onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           >

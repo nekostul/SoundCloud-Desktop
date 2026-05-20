@@ -1,8 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import Fuse from 'fuse.js';
 import { saveLyricsToCache, loadLyricsFromCache } from './cache';
 import { api, ApiError, getCdnStreamUrl } from './api';
+import { fetchMediaText } from './media-proxy';
 import { isTauriRuntime } from './runtime';
 
 const LRCLIB_API = 'https://lrclib.net/api';
@@ -956,9 +956,15 @@ async function requestText(url: string, signal?: AbortSignal): Promise<string> {
           'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
       }
     : undefined;
-  const res = isTauriRuntime()
-    ? await tauriFetch(url, { method: 'GET', signal, headers })
-    : await fetch(url, { signal, headers });
+  if (isTauriRuntime()) {
+    return await fetchMediaText(url, {
+      accept: headers?.Accept,
+      headers,
+      timeoutMs: TIMEOUT_MS,
+    });
+  }
+
+  const res = await fetch(url, { signal, headers });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.text();
 }

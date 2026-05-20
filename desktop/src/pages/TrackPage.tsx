@@ -4,6 +4,10 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { AddToPlaylistDialog } from '../components/music/AddToPlaylistDialog';
+import {
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../components/context-menu/context-menu-registry';
 import { CopyLinkButton } from '../components/ui/CopyLinkButton';
 import { api } from '../lib/api';
 import { getCurrentTime, preloadTrack } from '../lib/audio';
@@ -144,10 +148,17 @@ const RepostBtn = React.memo(({ trackUrn, count }: { trackUrn: string; count?: n
 const CommentItem = React.memo(({ comment }: { comment: Comment }) => {
   const navigate = useNavigate();
   const avatar = art(comment.user.avatar_url, 'small');
+  const userContextProps = useContextMenuTarget(
+    useMemo(() => {
+      const user = toContextMenuUserEntity(comment.user);
+      return user ? { type: 'user' as const, user } : null;
+    }, [comment.user]),
+  );
 
   return (
     <div className="flex gap-3 group">
       <img
+        {...userContextProps}
         src={avatar ?? ''}
         alt=""
         className="w-8 h-8 rounded-full shrink-0 ring-1 ring-white/[0.06] mt-0.5 cursor-pointer hover:ring-white/[0.15] transition-all duration-150"
@@ -156,6 +167,7 @@ const CommentItem = React.memo(({ comment }: { comment: Comment }) => {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span
+            {...userContextProps}
             className="text-[12px] font-medium text-white/70 hover:text-white/90 cursor-pointer transition-colors duration-150"
             onClick={() => navigate(`/user/${encodeURIComponent(comment.user.urn)}`)}
           >
@@ -229,9 +241,26 @@ const RelatedRow = React.memo(
     const navigate = useNavigate();
     const { isThis, isThisPlaying, togglePlay } = useTrackPlay(track, queue);
     const cover = art(track.artwork_url, 't200x200');
+    const trackContextProps = useContextMenuTarget(
+      useMemo(
+        () => ({
+          type: 'track' as const,
+          track,
+          queue,
+        }),
+        [queue, track],
+      ),
+    );
+    const artistContextProps = useContextMenuTarget(
+      useMemo(() => {
+        const user = toContextMenuUserEntity(track.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [track.user]),
+    );
 
     return (
       <div
+        {...trackContextProps}
         className={`group flex items-center gap-3 p-2.5 rounded-xl transition-all duration-200 ease-[var(--ease-apple)] ${
           isThis ? 'bg-accent/[0.04] ring-1 ring-accent/15' : 'hover:bg-white/[0.03]'
         }`}
@@ -269,6 +298,7 @@ const RelatedRow = React.memo(
             {track.title}
           </p>
           <p
+            {...artistContextProps}
             className="text-[11px] text-white/30 truncate mt-0.5 cursor-pointer hover:text-white/50 transition-colors duration-150"
             onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           >
@@ -386,6 +416,22 @@ export const TrackPage = React.memo(() => {
   const tags = parseTags(track.tag_list);
   const desc = track.description?.trim();
   const descLong = desc && desc.length > 200;
+  const trackContextProps = useContextMenuTarget(
+    useMemo(
+      () => ({
+        type: 'track' as const,
+        track,
+        queue: relatedTracks.length > 0 ? [track, ...relatedTracks] : [track],
+      }),
+      [relatedTracks, track],
+    ),
+  );
+  const artistContextProps = useContextMenuTarget(
+    useMemo(() => {
+      const user = toContextMenuUserEntity(track.user);
+      return user ? { type: 'user' as const, user } : null;
+    }, [track.user]),
+  );
 
   const handlePlay = () => {
     const { play, pause, resume } = usePlayerStore.getState();
@@ -401,7 +447,7 @@ export const TrackPage = React.memo(() => {
   return (
     <div className="p-6 pb-4 space-y-7">
       {/* ── Hero ─────────────────────────────────────── */}
-      <section className="relative rounded-3xl overflow-hidden glass-featured">
+      <section {...trackContextProps} className="relative rounded-3xl overflow-hidden glass-featured">
         {/* Blurred bg */}
         {cover && (
           <div className="absolute inset-0 pointer-events-none">
@@ -468,6 +514,7 @@ export const TrackPage = React.memo(() => {
 
             {/* Artist */}
             <div
+              {...artistContextProps}
               className="flex items-center gap-2.5 mb-5 cursor-pointer group/artist"
               onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
             >
@@ -645,6 +692,7 @@ export const TrackPage = React.memo(() => {
         <div className="space-y-6">
           {/* Artist card */}
           <section
+            {...artistContextProps}
             className="glass rounded-2xl p-4 cursor-pointer hover:bg-white/[0.04] transition-all duration-200 group/ac"
             onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           >

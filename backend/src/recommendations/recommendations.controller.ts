@@ -75,6 +75,12 @@ export class RecommendationsController {
   @ApiOperation({ summary: 'Extend SoundWave from an anchor track' })
   @ApiQuery({ name: 'limit', required: false, example: 20 })
   @ApiQuery({ name: 'mode', required: false, enum: ['similar', 'diverse'] })
+  @ApiQuery({ name: 'exclude', required: false, description: 'Comma-separated track IDs to skip' })
+  @ApiQuery({
+    name: 'recent',
+    required: false,
+    description: 'Comma-separated recent track IDs/URNs for continuity scoring',
+  })
   @ApiQuery({ name: 'languages', required: false, description: 'Comma-separated language codes' })
   getWave(
     @AccessToken() token: string,
@@ -82,11 +88,15 @@ export class RecommendationsController {
     @Param('trackRef') trackRef: string,
     @Query('limit') limit?: string,
     @Query('mode') mode?: string,
+    @Query('exclude') exclude?: string,
+    @Query('recent') recent?: string,
     @Query('languages') languages?: string,
   ) {
     return this.recommendationsService.getWaveRecommendations(token, sessionId, trackRef, {
       limit: Number(limit),
       mode,
+      exclude,
+      recent,
       languages,
     });
   }

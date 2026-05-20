@@ -60,6 +60,10 @@ import { useArtworkStore, useFullscreenPanelStore, useLyricsStore } from '../../
 import { type Track, usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
 import { type MoodLabel, useSoundWaveStore } from '../../stores/soundwave';
+import {
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../context-menu/context-menu-registry';
 import { AdaptiveTrackTitle } from '../ui/AdaptiveTrackTitle';
 import { EqualizerPanel } from '../music/EqualizerPanel';
 import { PlaybackSpeedPresets } from '../music/PlaybackSpeedPresets';
@@ -1231,12 +1235,34 @@ const TrackInfo = React.memo(() => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const currentTrack = usePlayerStore((s) => s.currentTrack);
+  const queue = usePlayerStore((s) => s.queue);
+  const queueIndex = usePlayerStore((s) => s.queueIndex);
   const artwork200 = art(currentTrack?.artwork_url, 't200x200');
   const artwork500 = art(currentTrack?.artwork_url, 't500x500');
   const artworkOriginal = artwork500 ? artwork500.replace('t500x500', 'original') : null;
   const [artLoaded, setArtLoaded] = useState(false);
   const [artFailed, setArtFailed] = useState(false);
   const prevUrnRef = useRef<string | null>(currentTrack?.urn ?? null);
+  const trackContextProps = useContextMenuTarget(
+    useMemo(
+      () =>
+        currentTrack
+          ? {
+              type: 'track' as const,
+              track: currentTrack,
+              queue,
+              queueIndex: queueIndex >= 0 ? queueIndex : undefined,
+            }
+          : null,
+      [currentTrack, queue, queueIndex],
+    ),
+  );
+  const artistContextProps = useContextMenuTarget(
+    useMemo(() => {
+      const user = currentTrack ? toContextMenuUserEntity(currentTrack.user) : null;
+      return user ? { type: 'user' as const, user } : null;
+    }, [currentTrack]),
+  );
 
   useEffect(() => {
     const nextUrn = currentTrack?.urn ?? null;
@@ -1280,7 +1306,7 @@ const TrackInfo = React.memo(() => {
   }
 
   return (
-    <div className="flex items-center gap-3.5 w-full min-w-0">
+    <div {...trackContextProps} className="flex items-center gap-3.5 w-full min-w-0">
       <div
         className="relative w-16 h-16 rounded-[14px] shrink-0 overflow-hidden cursor-pointer shadow-xl shadow-black/40 ring-1 ring-white/[0.06] hover:ring-white/[0.12] transition-all duration-200 group/art -ml-1"
         onClick={() => artworkPanelApi.openFromMiniPlayer()}
@@ -1357,6 +1383,7 @@ const TrackInfo = React.memo(() => {
           )}
         </div>
         <p
+          {...artistContextProps}
           className="text-[11px] text-white/35 truncate mt-1 cursor-pointer hover:text-white/55 transition-colors"
           onClick={() => navigate(`/user/${encodeURIComponent(currentTrack.user.urn)}`)}
         >

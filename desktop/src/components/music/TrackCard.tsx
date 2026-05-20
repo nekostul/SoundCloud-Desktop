@@ -7,6 +7,10 @@ import { ListPlus, pauseBlack20, playBlack20, playIcon32 } from '../../lib/icons
 import { useTilt } from '../../lib/hooks/useTilt';
 import { useTrackPlay } from '../../lib/useTrackPlay';
 import type { Track } from '../../stores/player';
+import {
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../context-menu/context-menu-registry';
 import { AddToPlaylistDialog } from './AddToPlaylistDialog';
 import { LikeButton } from './LikeButton';
 
@@ -32,12 +36,30 @@ export const TrackCard = React.memo(
     const artwork = art(track.artwork_url, 't300x300');
     const isShelf = variant === 'shelf';
     const shouldTilt = !disableTilt && !isShelf;
+    const playbackQueue = queue ?? [track];
+    const trackContextProps = useContextMenuTarget(
+      React.useMemo(
+        () => ({
+          type: 'track' as const,
+          track,
+          queue: playbackQueue,
+        }),
+        [playbackQueue, track],
+      ),
+    );
+    const artistContextProps = useContextMenuTarget(
+      React.useMemo(() => {
+        const user = toContextMenuUserEntity(track.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [track.user]),
+    );
 
     const { ref, onMouseEnter, onMouseLeave } = useTilt();
 
     return (
       <div
         ref={shouldTilt ? ref : undefined}
+        {...trackContextProps}
         className="group relative"
         onMouseEnter={() => {
           if (shouldTilt) onMouseEnter();
@@ -148,6 +170,7 @@ export const TrackCard = React.memo(
           </p>
           {track.user && (
             <p
+              {...artistContextProps}
               className="text-[11px] text-white/35 truncate mt-0.5 cursor-pointer hover:text-white/55 transition-colors duration-150"
               onClick={() => navigate(`/user/${encodeURIComponent(track.user!.urn)}`)}
             >

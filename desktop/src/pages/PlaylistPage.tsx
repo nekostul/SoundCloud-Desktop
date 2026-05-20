@@ -16,6 +16,11 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useShallow } from 'zustand/shallow';
+import {
+  toContextMenuPlaylistEntity,
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../components/context-menu/context-menu-registry';
 import { LikeButton } from '../components/music/LikeButton';
 import { SoundWaveLaunchButton } from '../components/music/SoundWaveLaunchButton';
 import { CopyLinkButton } from '../components/ui/CopyLinkButton';
@@ -121,17 +126,40 @@ const SortableTrackRow = React.memo(
     queue,
     isOwner,
     onRemove,
+    parentPlaylist,
   }: {
     track: Track;
     index: number;
     queue: Track[];
     isOwner: boolean;
     onRemove?: (urn: string) => void;
+    parentPlaylist?: {
+      urn: string;
+      title: string;
+      permalink_url?: string | null;
+    };
   }) {
     const navigate = useNavigate();
     const { t } = useTranslation();
     const { isThis, isThisPlaying, togglePlay } = useTrackPlay(track, queue);
     const cover = art(track.artwork_url, 't200x200');
+    const trackContextProps = useContextMenuTarget(
+      React.useMemo(
+        () => ({
+          type: 'track' as const,
+          track,
+          queue,
+          parentPlaylist,
+        }),
+        [parentPlaylist, queue, track],
+      ),
+    );
+    const artistContextProps = useContextMenuTarget(
+      React.useMemo(() => {
+        const user = toContextMenuUserEntity(track.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [track.user]),
+    );
 
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
       id: track.urn,
@@ -148,6 +176,7 @@ const SortableTrackRow = React.memo(
     return (
       <div
         ref={setNodeRef}
+        {...trackContextProps}
         style={style}
         className={`group flex items-center gap-3.5 px-4 py-3 rounded-xl transition-colors duration-200 ease-[var(--ease-apple)] ${
           isThis ? 'bg-accent/[0.05] ring-1 ring-accent/15' : 'hover:bg-white/[0.03]'
@@ -208,6 +237,7 @@ const SortableTrackRow = React.memo(
             {track.title}
           </p>
           <p
+            {...artistContextProps}
             className="text-[11px] text-white/30 truncate mt-0.5 cursor-pointer hover:text-white/50 transition-colors duration-150"
             onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           >
@@ -260,13 +290,45 @@ const SortableTrackRow = React.memo(
 /* ── Non-sortable Track Row (for non-owner view) ─────────── */
 
 const TrackRow = React.memo(
-  function TrackRow({ track, index, queue }: { track: Track; index: number; queue: Track[] }) {
+  function TrackRow({
+    track,
+    index,
+    queue,
+    parentPlaylist,
+  }: {
+    track: Track;
+    index: number;
+    queue: Track[];
+    parentPlaylist?: {
+      urn: string;
+      title: string;
+      permalink_url?: string | null;
+    };
+  }) {
     const navigate = useNavigate();
     const { isThis, isThisPlaying, togglePlay } = useTrackPlay(track, queue);
     const cover = art(track.artwork_url, 't200x200');
+    const trackContextProps = useContextMenuTarget(
+      React.useMemo(
+        () => ({
+          type: 'track' as const,
+          track,
+          queue,
+          parentPlaylist,
+        }),
+        [parentPlaylist, queue, track],
+      ),
+    );
+    const artistContextProps = useContextMenuTarget(
+      React.useMemo(() => {
+        const user = toContextMenuUserEntity(track.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [track.user]),
+    );
 
     return (
       <div
+        {...trackContextProps}
         className={`group flex items-center gap-3.5 px-4 py-3 rounded-xl transition-all duration-200 ease-[var(--ease-apple)] ${
           isThis ? 'bg-accent/[0.05] ring-1 ring-accent/15' : 'hover:bg-white/[0.03]'
         }`}
@@ -315,6 +377,7 @@ const TrackRow = React.memo(
             {track.title}
           </p>
           <p
+            {...artistContextProps}
             className="text-[11px] text-white/30 truncate mt-0.5 cursor-pointer hover:text-white/50 transition-colors duration-150"
             onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           >
@@ -440,6 +503,34 @@ export const PlaylistPage = React.memo(() => {
     useSensor(KeyboardSensor),
   );
 
+  const playlistContextProps = useContextMenuTarget(
+    React.useMemo(() => {
+      if (!playlist) return null;
+      const contextPlaylist = toContextMenuPlaylistEntity({
+        ...playlist,
+        tracks,
+      });
+      return contextPlaylist ? { type: 'playlist' as const, playlist: contextPlaylist } : null;
+    }, [playlist, tracks]),
+  );
+  const creatorContextProps = useContextMenuTarget(
+    React.useMemo(() => {
+      if (!playlist) return null;
+      const user = toContextMenuUserEntity(playlist.user);
+      return user ? { type: 'user' as const, user } : null;
+    }, [playlist]),
+  );
+  const cover = playlist
+    ? (art(playlist.artwork_url, 't500x500') ?? art(tracks[0]?.artwork_url, 't500x500'))
+    : null;
+  const parentPlaylist = playlist
+    ? {
+        urn: playlist.urn,
+        title: playlist.title,
+        permalink_url: playlist.permalink_url ?? null,
+      }
+    : undefined;
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -468,7 +559,6 @@ export const PlaylistPage = React.memo(() => {
       </div>
     );
   }
-  const cover = art(playlist.artwork_url, 't500x500') ?? art(tracks[0]?.artwork_url, 't500x500');
 
   const handlePlayAll = () => {
     if (tracks.length === 0) return;
@@ -520,7 +610,7 @@ export const PlaylistPage = React.memo(() => {
   return (
     <div className="p-6 pb-4 space-y-7 animate-fade-in-up">
       {/* ── Hero ─────────────────────────────────────── */}
-      <section className="relative">
+      <section {...playlistContextProps} className="relative">
         <div className="relative flex items-center gap-7 p-7">
           {/* Artwork */}
           <div
@@ -577,6 +667,7 @@ export const PlaylistPage = React.memo(() => {
 
             {/* Artist */}
             <div
+              {...creatorContextProps}
               className="flex items-center gap-2.5 mb-5 cursor-pointer group/artist"
               onClick={() => navigate(`/user/${encodeURIComponent(playlist.user.urn)}`)}
             >
@@ -720,6 +811,7 @@ export const PlaylistPage = React.memo(() => {
                     queue={tracks}
                     isOwner={true}
                     onRemove={handleRemoveTrack}
+                    parentPlaylist={parentPlaylist}
                   />
                 ))}
               </SortableContext>
@@ -745,7 +837,13 @@ export const PlaylistPage = React.memo(() => {
             <div className="h-px bg-white/[0.04] mx-4 mb-1" />
 
             {tracks.map((track, i) => (
-              <TrackRow key={track.urn} track={track} index={i} queue={tracks} />
+              <TrackRow
+                key={track.urn}
+                track={track}
+                index={i}
+                queue={tracks}
+                parentPlaylist={parentPlaylist}
+              />
             ))}
             {hasNextPage && (
               <div ref={scrollRef} className="flex justify-center py-4">

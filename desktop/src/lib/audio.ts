@@ -1366,6 +1366,19 @@ function syncNativeAudioRuntime() {
   }).catch(console.error);
 }
 
+async function primeCachedPlaybackStart(trackUrn: string, expectedGen: number) {
+  if (!isTauriRuntime() || !usePlayerStore.getState().isPlaying) return;
+  if (expectedGen !== loadGen) return;
+  if (currentUrn !== trackUrn || usePlayerStore.getState().currentTrack?.urn !== trackUrn) return;
+
+  try {
+    await invoke('audio_play');
+    await invoke('audio_seek', { position: 0 });
+  } catch (error) {
+    console.warn('[Audio] Cached playback start prime failed', error);
+  }
+}
+
 async function loadTrackAtImmediateSeekTarget(
   track: Track,
   target: number,
@@ -1649,6 +1662,7 @@ async function loadTrack(track: Track, skipStop = false) {
     usePlayerStore.getState().setCurrentTrackStreamQuality(resolvedQuality);
     usePlayerStore.getState().setCurrentTrackStreamCodec(resolvedCodec);
     if (loadedFromCache) {
+      await primeCachedPlaybackStart(urn, gen);
       waitForReadyBuffer = false;
       waitingForStartupProgress = false;
       startupProgressDeadline = 0;

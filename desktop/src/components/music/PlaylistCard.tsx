@@ -1,5 +1,10 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  toContextMenuPlaylistEntity,
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../context-menu/context-menu-registry';
 import { art, fc } from '../../lib/formatters';
 import type { Playlist } from '../../lib/hooks';
 import { Heart, ListMusic, Play, pauseBlack22 } from '../../lib/icons';
@@ -17,6 +22,18 @@ export const PlaylistCard = React.memo(
     const navigate = useNavigate();
     const cover =
       art(playlist.artwork_url, 't300x300') ?? art(playlist.tracks?.[0]?.artwork_url, 't300x300');
+    const playlistContextProps = useContextMenuTarget(
+      React.useMemo(() => {
+        const contextPlaylist = toContextMenuPlaylistEntity(playlist);
+        return contextPlaylist ? { type: 'playlist' as const, playlist: contextPlaylist } : null;
+      }, [playlist]),
+    );
+    const creatorContextProps = useContextMenuTarget(
+      React.useMemo(() => {
+        const user = toContextMenuUserEntity(playlist.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [playlist.user]),
+    );
 
     const trackUrns = React.useMemo(
       () => new Set((playlist.tracks ?? []).map((t: Track) => t.urn)),
@@ -57,6 +74,7 @@ export const PlaylistCard = React.memo(
 
     return (
       <div
+        {...playlistContextProps}
         className="group relative flex flex-col gap-3 cursor-pointer"
         onClick={() => navigate(`/playlist/${encodeURIComponent(playlist.urn)}`)}
       >
@@ -133,7 +151,7 @@ export const PlaylistCard = React.memo(
               )}
             </div>
           ) : (
-            <p className="text-[12px] text-white/40 truncate mt-1">
+            <p {...creatorContextProps} className="text-[12px] text-white/40 truncate mt-1">
               {playlist.user?.username || 'Unknown'}
             </p>
           )}

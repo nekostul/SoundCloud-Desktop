@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -9,6 +10,15 @@ import { useArtworkGradientPalette } from '../lib/artwork-palette';
 import { reloadCurrentTrack } from '../lib/audio';
 import { getApiBase } from '../lib/constants';
 import { FPS_PRESETS } from '../lib/framerate';
+import { isTauriRuntime } from '../lib/runtime';
+import {
+  applyMediaProxySettings,
+  getMediaProxyStatus,
+  rememberLastKnownWorkingMediaProxy,
+  refreshMediaProxyPool,
+  resolveMediaProxyStatusMessage,
+  type MediaProxyStatus,
+} from '../lib/media-proxy';
 import {
   clearCache,
   clearAssetsCache,
@@ -31,6 +41,7 @@ import {
   type AppIconVariant,
   type DiscordRpcButtonMode,
   type DiscordRpcMode,
+  type MediaProxyMode,
   type ThemeGradientAnimation,
   type ThemeGradientType,
   type ThemePreset,
@@ -1779,7 +1790,351 @@ const PlaybackSection = React.memo(function PlaybackSection() {
   );
 });
 
-/* ── Import Section ──────────────────────────────────────── */
+const ProxySection = React.memo(function ProxySection() {
+  const { t } = useTranslation();
+  const mediaProxyMode = useSettingsStore((s) => s.mediaProxyMode);
+  const mediaProxyHost = useSettingsStore((s) => s.mediaProxyHost);
+  const mediaProxyUsername = useSettingsStore((s) => s.mediaProxyUsername);
+  const mediaProxyPassword = useSettingsStore((s) => s.mediaProxyPassword);
+  const setMediaProxyMode = useSettingsStore((s) => s.setMediaProxyMode);
+  const setMediaProxyHost = useSettingsStore((s) => s.setMediaProxyHost);
+  const setMediaProxyUsername = useSettingsStore((s) => s.setMediaProxyUsername);
+  const setMediaProxyPassword = useSettingsStore((s) => s.setMediaProxyPassword);
+  const [status, setStatus] = useState<MediaProxyStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showRefreshConfirm, setShowRefreshConfirm] = useState(false);
+  const requestSeqRef = useRef(0);
+
+  const loadStatus = useCallback(async () => {
+    const next = await getMediaProxyStatus();
+    setStatus(next);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void loadStatus();
+  }, [loadStatus]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+
+    let active = true;
+    let unlistenStatus: (() => void) | null = null;
+    let unlistenFallback: (() => void) | null = null;
+    const syncStatus = (next: MediaProxyStatus) => {
+      if (!active) return;
+      setStatus(next);
+      setLoading(false);
+    };
+
+    const bind = async () => {
+      const [statusCleanup, fallbackCleanup] = await Promise.all([
+        listen<MediaProxyStatus>('media-proxy:status', (event) => {
+          syncStatus(event.payload);
+        }),
+        listen<MediaProxyStatus>('media-proxy:auto-fallback', (event) => {
+          syncStatus(event.payload);
+        }),
+      ]);
+
+      if (!active) {
+        statusCleanup();
+        fallbackCleanup();
+        return;
+      }
+
+      unlistenStatus = statusCleanup;
+      unlistenFallback = fallbackCleanup;
+    };
+
+    void bind();
+
+    return () => {
+      active = false;
+      unlistenStatus?.();
+      unlistenFallback?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadStatus();
+    }, 700);
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    loadStatus,
+    mediaProxyMode,
+    mediaProxyHost,
+    mediaProxyUsername,
+    mediaProxyPassword,
+  ]);
+
+  useEffect(() => {
+    if (mediaProxyMode === 'auto') return;
+    setShowRefreshConfirm(false);
+    setRefreshing(false);
+  }, [mediaProxyMode]);
+
+  useEffect(() => {
+    if (status?.mode === 'auto' && status.state === 'proxy-active') return;
+    setShowRefreshConfirm(false);
+  }, [status]);
+
+  const applyMode = useCallback(
+    async (mode: MediaProxyMode) => {
+      const requestId = ++requestSeqRef.current;
+      if (mediaProxyMode === 'auto') {
+        rememberLastKnownWorkingMediaProxy(status);
+      }
+      setShowRefreshConfirm(false);
+      setRefreshing(false);
+      setMediaProxyMode(mode);
+      try {
+        const next = await applyMediaProxySettings();
+        if (requestSeqRef.current !== requestId) return;
+        if (next) setStatus(next);
+      } catch (error) {
+        if (requestSeqRef.current !== requestId) return;
+        toast.error(t('settings.mediaProxyUnexpectedError', { error: String(error) }));
+      }
+    },
+    [mediaProxyMode, setMediaProxyMode, status, t],
+  );
+
+  const runRefresh = useCallback(async () => {
+    const requestId = ++requestSeqRef.current;
+    setShowRefreshConfirm(false);
+    setRefreshing(true);
+    try {
+      const next = await refreshMediaProxyPool();
+      if (requestSeqRef.current !== requestId) return;
+      if (next) setStatus(next);
+    } catch (error) {
+      if (requestSeqRef.current !== requestId) return;
+      toast.error(t('settings.mediaProxyUnexpectedError', { error: String(error) }));
+    } finally {
+      if (requestSeqRef.current !== requestId) return;
+      setRefreshing(false);
+    }
+  }, [t]);
+
+  const handleRefresh = useCallback(() => {
+    if (status?.mode === 'auto' && status.state === 'proxy-active') {
+      setShowRefreshConfirm(true);
+      return;
+    }
+
+    void runRefresh();
+  }, [runRefresh, status]);
+
+  const modeOptions: Array<{ value: MediaProxyMode; label: string }> = [
+    { value: 'off', label: t('settings.mediaProxyOff') },
+    { value: 'auto', label: t('settings.mediaProxyAuto') },
+    { value: 'manual', label: t('settings.mediaProxyManual') },
+  ];
+
+  const stateLabelKey =
+    status?.state === 'proxy-active'
+      ? 'settings.mediaProxyStateActive'
+      : status?.state === 'invalid'
+        ? 'settings.mediaProxyStateInvalid'
+        : status?.state === 'standby'
+          ? 'settings.mediaProxyStateStandby'
+          : status?.state === 'disabled'
+            ? 'settings.mediaProxyStateDisabled'
+            : 'settings.mediaProxyStateDirect';
+  const routingLabelKey =
+    status?.routing === 'proxy'
+      ? 'settings.mediaProxyRoutingProxy'
+      : 'settings.mediaProxyRoutingDirect';
+  const proxyTypeLabel =
+    status?.proxy_type === 'http'
+      ? t('settings.mediaProxyTypeHttp')
+      : status?.proxy_type === 'https'
+        ? t('settings.mediaProxyTypeHttps')
+        : status?.proxy_type === 'socks4'
+          ? t('settings.mediaProxyTypeSocks4')
+          : status?.proxy_type === 'socks5'
+            ? t('settings.mediaProxyTypeSocks5')
+            : '-';
+  const resolvedMessage = resolveMediaProxyStatusMessage(status);
+  const showProxyStatusCard = status?.state === 'proxy-active';
+
+  const statusTone =
+    status?.state === 'proxy-active'
+      ? 'text-emerald-300 border-emerald-400/20 bg-emerald-500/10'
+      : status?.state === 'invalid'
+        ? 'text-red-200 border-red-400/20 bg-red-500/10'
+        : 'text-white/70 border-white/[0.06] bg-white/[0.03]';
+
+  return (
+    <section className="bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl space-y-4">
+      <div>
+        <h3 className="text-[15px] font-bold text-white/80 tracking-tight">
+          {t('settings.mediaProxyTitle')}
+        </h3>
+        <p className="mt-1 text-[12px] text-white/35">{t('settings.mediaProxyDesc')}</p>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        {modeOptions.map((option) => {
+          const active = mediaProxyMode === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => void applyMode(option.value)}
+              className={
+                active
+                  ? 'rounded-2xl border px-4 py-3 text-[12px] font-semibold transition-all cursor-pointer border-white/[0.14] bg-white/[0.09] text-white/90'
+                  : 'rounded-2xl border px-4 py-3 text-[12px] font-semibold transition-all cursor-pointer border-white/[0.05] bg-white/[0.03] text-white/45 hover:bg-white/[0.05] hover:text-white/70'
+              }
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {mediaProxyMode === 'auto' && (
+        showRefreshConfirm ? (
+          <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-[12px] font-semibold text-white/88">
+                  {t('settings.mediaProxyRefreshConfirmTitle')}
+                </p>
+                <p className="mt-1 text-[11px] leading-relaxed text-white/45">
+                  {t('settings.mediaProxyRefreshConfirmDesc')}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void runRefresh()}
+                  className="rounded-xl border border-white/[0.1] bg-white/[0.08] px-3 py-2 text-[12px] font-semibold text-white/85 transition-all hover:bg-white/[0.12] cursor-pointer"
+                >
+                  {t('settings.mediaProxyRefreshConfirmYes')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRefreshConfirm(false)}
+                  className="rounded-xl border border-white/[0.06] bg-transparent px-3 py-2 text-[12px] font-semibold text-white/55 transition-all hover:border-white/[0.1] hover:text-white/80 cursor-pointer"
+                >
+                  {t('settings.mediaProxyRefreshConfirmNo')}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4">
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-[12px] leading-relaxed text-amber-100/85">
+                {t('settings.mediaProxyAutoWarning')}
+              </p>
+              <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={refreshing}
+                className="shrink-0 rounded-xl border border-white/[0.08] bg-white/[0.05] px-3 py-2 text-[12px] font-semibold text-white/80 transition-all hover:bg-white/[0.09] disabled:opacity-50 cursor-pointer"
+              >
+                {refreshing ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 size={12} className="animate-spin" />
+                    {t('settings.mediaProxyRefreshing')}
+                  </span>
+                ) : (
+                  t('settings.mediaProxyRefresh')
+                )}
+              </button>
+            </div>
+          </div>
+        )
+      )}
+
+      {mediaProxyMode === 'manual' && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <input
+            type="text"
+            value={mediaProxyHost}
+            onChange={(e) => setMediaProxyHost(e.target.value)}
+            placeholder={t('settings.mediaProxyHost')}
+            className="sm:col-span-2 px-4 py-3 rounded-2xl bg-white/[0.04] border border-white/[0.06] text-[13px] text-white/85 placeholder:text-white/25 focus:border-white/[0.12] focus:bg-white/[0.06] transition-all duration-200 outline-none"
+          />
+          <input
+            type="text"
+            value={mediaProxyUsername}
+            onChange={(e) => setMediaProxyUsername(e.target.value)}
+            placeholder={t('settings.mediaProxyUsername')}
+            className="px-4 py-3 rounded-2xl bg-white/[0.04] border border-white/[0.06] text-[13px] text-white/85 placeholder:text-white/25 focus:border-white/[0.12] focus:bg-white/[0.06] transition-all duration-200 outline-none"
+          />
+          <input
+            type="password"
+            value={mediaProxyPassword}
+            onChange={(e) => setMediaProxyPassword(e.target.value)}
+            placeholder={t('settings.mediaProxyPassword')}
+            className="px-4 py-3 rounded-2xl bg-white/[0.04] border border-white/[0.06] text-[13px] text-white/85 placeholder:text-white/25 focus:border-white/[0.12] focus:bg-white/[0.06] transition-all duration-200 outline-none"
+          />
+        </div>
+      )}
+
+      {showProxyStatusCard ? (
+        <div className={`rounded-2xl border p-4 ${statusTone}`}>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.12em] text-white/35">
+              {t('settings.mediaProxyStatus')}
+            </p>
+            <p className="mt-1 text-[13px] font-semibold text-inherit">
+              {loading ? t('settings.loading') : t(stateLabelKey)}
+            </p>
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.12em] text-white/35">
+              {t('settings.mediaProxyRouting')}
+            </p>
+            <p className="mt-1 text-[13px] font-semibold text-inherit">{t(routingLabelKey)}</p>
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.12em] text-white/35">
+              {t('settings.mediaProxyType')}
+            </p>
+            <p className="mt-1 text-[13px] font-semibold text-inherit">{proxyTypeLabel}</p>
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.12em] text-white/35">
+              {t('settings.mediaProxyLatency')}
+            </p>
+            <p className="mt-1 text-[13px] font-semibold text-inherit">
+              {typeof status?.latency_ms === 'number' ? `${status.latency_ms} ms` : '-'}
+            </p>
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.12em] text-white/35">
+              {t('settings.mediaProxyThroughput')}
+            </p>
+            <p className="mt-1 text-[13px] font-semibold text-inherit">
+              {typeof status?.throughput_kbps === 'number' ? `${status.throughput_kbps} kb/s` : '-'}
+            </p>
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.12em] text-white/35">
+              {t('settings.mediaProxyEndpoint')}
+            </p>
+            <p className="mt-1 break-all text-[13px] font-semibold text-inherit">
+              {status?.endpoint || '-'}
+            </p>
+          </div>
+        </div>
+        {resolvedMessage ? (
+          <p className="mt-3 text-[12px] leading-relaxed text-white/80">{resolvedMessage}</p>
+        ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+});
 
 const ImportSection = React.memo(function ImportSection() {
   const { t } = useTranslation();
@@ -2036,6 +2391,7 @@ export function Settings() {
       <CacheSection />
       <ThemeSection />
       <PlaybackSection />
+      <ProxySection />
       <EqualizerSection />
       <AudioDeviceSection />
       <ImportSection />

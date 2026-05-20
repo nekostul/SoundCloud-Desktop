@@ -1,6 +1,6 @@
 import * as Slider from '@radix-ui/react-slider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Volume, Volume2, VolumeX } from 'lucide-react';
 import { createPortal, flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -80,7 +80,15 @@ function uniqueArtworkSources(values: Array<string | null | undefined>): string[
   );
 }
 
-const LYRICS_SHARED_ARTWORK_TRANSITION_NAME = 'lyrics-fullscreen-artwork';
+type ArtworkLightboxSource = 'track-column' | 'lyrics-mini-player';
+
+type ArtworkLightboxRect = {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+  radius: number;
+};
 
 type ViewTransitionHandle = {
   finished: Promise<void>;
@@ -112,6 +120,79 @@ function runDocumentViewTransition(update: () => void) {
   doc.startViewTransition(() => {
     flushSync(update);
   });
+}
+
+function measureArtworkRect(element: HTMLElement | null): ArtworkLightboxRect | null {
+  if (!element) return null;
+
+  const rect = element.getBoundingClientRect();
+
+  if (rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+
+  const computedStyle = window.getComputedStyle(element);
+  const radius = Number.parseFloat(computedStyle.borderTopLeftRadius || '24') || 24;
+
+  return {
+    top: rect.top,
+    left: rect.left,
+    width: rect.width,
+    height: rect.height,
+    radius,
+  };
+}
+
+function shrinkArtworkRect(rect: ArtworkLightboxRect): ArtworkLightboxRect {
+  const scale = 0.94;
+  const width = rect.width * scale;
+  const height = rect.height * scale;
+
+  return {
+    top: rect.top + (rect.height - height) / 2,
+    left: rect.left + (rect.width - width) / 2,
+    width,
+    height,
+    radius: rect.radius,
+  };
+}
+
+function useArtworkLightboxState(defaultSource: ArtworkLightboxSource = 'track-column') {
+  const [open, setOpen] = useState(false);
+  const [source, setSource] = useState<ArtworkLightboxSource>(defaultSource);
+  const [anchorRect, setAnchorRect] = useState<ArtworkLightboxRect | null>(null);
+  const [sourceArtworkHidden, setSourceArtworkHidden] = useState(false);
+  const sourceElementRef = useRef<HTMLElement | null>(null);
+
+  const openLightbox = useCallback(
+    (nextSource: ArtworkLightboxSource, sourceElement: HTMLElement | null = null) => {
+      sourceElementRef.current = sourceElement;
+      setSource(nextSource);
+      setAnchorRect(measureArtworkRect(sourceElement));
+      setSourceArtworkHidden(true);
+      setOpen(true);
+    },
+    [],
+  );
+
+  const closeLightbox = useCallback(() => {
+    setOpen(false);
+  }, []);
+
+  const handleLightboxExited = useCallback(() => {
+    setSourceArtworkHidden(false);
+  }, []);
+
+  return {
+    artworkLightboxOpen: open,
+    artworkLightboxSource: source,
+    artworkLightboxAnchorRect: anchorRect,
+    artworkLightboxSourceArtworkHidden: sourceArtworkHidden,
+    artworkLightboxSourceElement: sourceElementRef.current,
+    openArtworkLightbox: openLightbox,
+    closeArtworkLightbox: closeLightbox,
+    handleArtworkLightboxExited: handleLightboxExited,
+  };
 }
 
 function getTrackArtworkSources(track: Track | null | undefined, size: string): string[] {
@@ -750,7 +831,303 @@ const Controls = React.memo(({ track }: { track: Track }) => {
 
 /* ── Shared: artwork + info + slider + controls column ────── */
 
-const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: string }) => {
+const ArtworkLightbox = React.memo(
+  ({
+    track,
+    open,
+    source,
+    anchorRect,
+    sourceElement,
+    onAfterClose,
+    onClose,
+  }: {
+    track: Track;
+    open: boolean;
+    source: ArtworkLightboxSource;
+    anchorRect: ArtworkLightboxRect | null;
+    sourceElement: HTMLElement | null;
+    onAfterClose?: () => void;
+    onClose: () => void;
+  }) => {
+    const { t } = useTranslation();
+    const fullscreenArtSources = getTrackFullscreenArtworkSources(track);
+    const [fullscreenArtIndex, setFullscreenArtIndex] = useState(0);
+    const [mounted, setMounted] = useState(open);
+    const [chromeVisible, setChromeVisible] = useState(open);
+    const [frameRect, setFrameRect] = useState<ArtworkLightboxRect | null>(null);
+    const [animationPhase, setAnimationPhase] = useState<'idle' | 'opening' | 'open' | 'closing'>(
+      open ? 'open' : 'idle',
+    );
+    const placeholderRef = useRef<HTMLDivElement | null>(null);
+    const settleTimerRef = useRef<number | null>(null);
+    const rafOneRef = useRef<number | null>(null);
+    const rafTwoRef = useRef<number | null>(null);
+    const anchorRectRef = useRef<ArtworkLightboxRect | null>(anchorRect);
+    const sourceElementRef = useRef<HTMLElement | null>(sourceElement);
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+    useEffect(() => {
+      setFullscreenArtIndex(0);
+    }, [open, track.urn]);
+
+    useEffect(() => {
+      if (!mounted) return;
+      const handler = (event: KeyboardEvent) => {
+        if (event.key === 'Escape') {
+          onClose();
+        }
+      };
+      window.addEventListener('keydown', handler);
+      return () => window.removeEventListener('keydown', handler);
+    }, [mounted, onClose]);
+
+    const fullscreenArtSrc = fullscreenArtSources[fullscreenArtIndex] ?? null;
+
+    useEffect(() => {
+      if (!open) return;
+      anchorRectRef.current = anchorRect;
+      sourceElementRef.current = sourceElement;
+    }, [anchorRect, open, sourceElement]);
+
+    useEffect(() => {
+      return () => {
+        if (settleTimerRef.current !== null) {
+          window.clearTimeout(settleTimerRef.current);
+        }
+        if (rafOneRef.current !== null) {
+          window.cancelAnimationFrame(rafOneRef.current);
+        }
+        if (rafTwoRef.current !== null) {
+          window.cancelAnimationFrame(rafTwoRef.current);
+        }
+      };
+    }, []);
+
+    useEffect(() => {
+      if (!fullscreenArtSrc || typeof document === 'undefined') {
+        setMounted(false);
+        setAnimationPhase('idle');
+        return;
+      }
+
+      if (open) {
+        setMounted(true);
+      } else if (mounted && animationPhase !== 'closing') {
+        setAnimationPhase('closing');
+        setChromeVisible(false);
+      }
+    }, [animationPhase, fullscreenArtSrc, mounted, open]);
+
+    const clearAnimationTimers = () => {
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current);
+        settleTimerRef.current = null;
+      }
+      if (rafOneRef.current !== null) {
+        window.cancelAnimationFrame(rafOneRef.current);
+        rafOneRef.current = null;
+      }
+      if (rafTwoRef.current !== null) {
+        window.cancelAnimationFrame(rafTwoRef.current);
+        rafTwoRef.current = null;
+      }
+    };
+
+    useLayoutEffect(() => {
+      if (!mounted || !fullscreenArtSrc) return;
+
+      const placeholderRect = measureArtworkRect(placeholderRef.current);
+
+      if (!placeholderRect) return;
+
+      clearAnimationTimers();
+
+      const finalRect = {
+        ...placeholderRect,
+        radius: 24,
+      } satisfies ArtworkLightboxRect;
+
+      if (open) {
+        if (prefersReducedMotion) {
+          setFrameRect(finalRect);
+          setChromeVisible(true);
+          setAnimationPhase('open');
+          return;
+        }
+
+        const startRect = shrinkArtworkRect(anchorRectRef.current ?? finalRect);
+        setAnimationPhase('opening');
+        setChromeVisible(false);
+        setFrameRect(startRect);
+
+        rafOneRef.current = window.requestAnimationFrame(() => {
+          rafTwoRef.current = window.requestAnimationFrame(() => {
+            setChromeVisible(true);
+            setFrameRect(finalRect);
+            settleTimerRef.current = window.setTimeout(() => {
+              setAnimationPhase('open');
+              settleTimerRef.current = null;
+            }, 760);
+          });
+        });
+
+        return;
+      }
+
+      if (prefersReducedMotion) {
+        setMounted(false);
+        setFrameRect(null);
+        setAnimationPhase('idle');
+        onAfterClose?.();
+        return;
+      }
+
+      const closingRect =
+        measureArtworkRect(sourceElementRef.current) ??
+        anchorRectRef.current ??
+        shrinkArtworkRect(finalRect);
+
+      setAnimationPhase('closing');
+      setFrameRect(finalRect);
+
+      rafOneRef.current = window.requestAnimationFrame(() => {
+        rafTwoRef.current = window.requestAnimationFrame(() => {
+          setFrameRect({
+            ...closingRect,
+            radius: closingRect.radius || 24,
+          });
+          settleTimerRef.current = window.setTimeout(() => {
+            setMounted(false);
+            setFrameRect(null);
+            setAnimationPhase('idle');
+            settleTimerRef.current = null;
+            onAfterClose?.();
+          }, 860);
+        });
+      });
+    }, [fullscreenArtSrc, mounted, onAfterClose, open, prefersReducedMotion]);
+
+    if (!mounted || !fullscreenArtSrc || typeof document === 'undefined') {
+      return null;
+    }
+
+    const isMiniPlayerSource = source === 'lyrics-mini-player';
+    const isOpening = animationPhase === 'opening';
+    const frameInlineStyle = frameRect
+      ? {
+          top: `${frameRect.top}px`,
+          left: `${frameRect.left}px`,
+          width: `${frameRect.width}px`,
+          height: `${frameRect.height}px`,
+          borderRadius: `${frameRect.radius}px`,
+        }
+      : undefined;
+    const glowClassName = chromeVisible
+      ? 'opacity-80 scale-100 blur-[76px]'
+      : 'opacity-0 scale-[0.96] blur-[60px]';
+    const metaClassName = chromeVisible
+      ? 'translate-y-0 scale-100 opacity-100 blur-0'
+      : 'translate-y-2 scale-[0.985] opacity-0 blur-[2px]';
+    const frameShellClassName =
+      isOpening && !chromeVisible
+        ? 'border-transparent bg-black/0 shadow-[0_0_0_rgba(0,0,0,0)]'
+        : 'border-white/12 bg-black/30 shadow-[0_44px_160px_rgba(0,0,0,0.72)]';
+
+    return createPortal(
+      <div className="fixed inset-0 z-[240] overflow-hidden">
+        <button
+          type="button"
+          aria-label={t('common.close', 'Close')}
+          className={`absolute inset-0 bg-black/88 backdrop-blur-xl transition-[opacity,backdrop-filter] duration-[820ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${
+            chromeVisible ? 'opacity-100 backdrop-blur-xl' : 'opacity-0 backdrop-blur-0'
+          }`}
+          onClick={onClose}
+        />
+
+        <button
+          type="button"
+          onClick={onClose}
+          className={`absolute right-5 top-5 z-20 flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/10 text-white transition-all duration-300 ease-[var(--ease-apple)] hover:scale-[1.04] hover:bg-white/18 ${
+            chromeVisible ? 'translate-y-0 opacity-100' : '-translate-y-2 opacity-0'
+          }`}
+          aria-label={t('common.close', 'Close')}
+        >
+          <X size={20} />
+        </button>
+
+        <div className="pointer-events-none absolute inset-0 z-10 flex max-h-full w-full flex-col items-center justify-center gap-5 p-6 sm:p-10">
+          <div
+            className={`pointer-events-none absolute inset-x-[18%] top-[14%] bottom-[18%] rounded-[44px] bg-white/[0.06] transition-[opacity,transform,filter] duration-[820ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${glowClassName}`}
+          />
+          <div
+            ref={placeholderRef}
+            aria-hidden="true"
+            className="aspect-square w-[min(calc(100vw-3rem),calc(100vh-7.5rem))] max-h-[calc(100vh-7.5rem)] max-w-full opacity-0 sm:w-[min(calc(100vw-6rem),calc(100vh-9rem))]"
+          />
+
+          <div
+            className={`pointer-events-none origin-center w-[min(560px,calc(100vw-2.5rem))] transition-[opacity,transform,filter] duration-[820ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${metaClassName}`}
+          >
+            <div className="mx-auto flex w-fit max-w-full flex-col items-center gap-0.5 rounded-[22px] border border-white/10 bg-black/42 px-4 py-3 text-center shadow-[0_18px_48px_rgba(0,0,0,0.34)] backdrop-blur-xl transition-opacity duration-[820ms] ease-[cubic-bezier(0.16,1,0.3,1)]">
+              <p className="max-w-[min(480px,calc(100vw-5rem))] truncate text-lg font-bold text-white/92">
+                {track.title}
+              </p>
+              <p className="max-w-[min(440px,calc(100vw-5rem))] truncate text-sm text-white/48">
+                {track.user.username}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {frameRect ? (
+          <div
+            className={`pointer-events-auto fixed z-[15] overflow-hidden transition-[top,left,width,height,border-radius,box-shadow,background-color,border-color] duration-[720ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${frameShellClassName}`}
+            style={frameInlineStyle}
+            data-sc-context-image-url={fullscreenArtSrc}
+            data-sc-context-image-alt={`${track.user.username} - ${track.title}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              src={fullscreenArtSrc}
+              alt={track.title}
+              data-sc-context-image-url={fullscreenArtSrc}
+              data-sc-context-image-alt={`${track.user.username} - ${track.title}`}
+              loading="eager"
+              decoding="async"
+              fetchPriority="high"
+              className={`h-full w-full object-cover transition-[transform,filter,opacity] duration-[720ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                isOpening && !chromeVisible
+                  ? isMiniPlayerSource
+                    ? 'scale-[1.04] opacity-[0.6] blur-[10px]'
+                    : 'scale-[1.015] opacity-[0.72] blur-[6px]'
+                  : 'scale-100 opacity-100 blur-0'
+              }`}
+              onError={() => {
+                setFullscreenArtIndex((current) =>
+                  current + 1 < fullscreenArtSources.length ? current + 1 : current,
+                );
+              }}
+            />
+            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.07)_0%,rgba(255,255,255,0)_18%,rgba(0,0,0,0.06)_100%)]" />
+          </div>
+        ) : null}
+      </div>,
+      document.body,
+    );
+  },
+);
+
+const TrackColumn = React.memo(({
+  track,
+  maxArt,
+  onOpenArtworkLightbox,
+}: {
+  track: Track;
+  maxArt?: string;
+  onOpenArtworkLightbox?: (sourceElement: HTMLElement | null) => void;
+}) => {
   const { t } = useTranslation();
   const previewArtSources = uniqueArtworkSources([
     ...getTrackArtworkSources(track, 't200x200'),
@@ -760,7 +1137,6 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
     ...getTrackArtworkSources(track, 't500x500'),
     ...getTrackArtworkSources(track, 't200x200'),
   ]);
-  const fullscreenArtSources = getTrackFullscreenArtworkSources(track);
   const previewArtBase = previewArtSources[0] ?? null;
   const displayArtBase = displayArtSources[0] ?? null;
   const displayArtSourcesKey = displayArtSources.join('|');
@@ -774,11 +1150,10 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
   );
   const [loaded, setLoaded] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
-  const [showFullArt, setShowFullArt] = useState(false);
-  const [fullscreenArtIndex, setFullscreenArtIndex] = useState(0);
   const prevUrnRef = useRef<string | null>(track.urn);
   const mountedRef = useRef(false);
   const switchTimerRef = useRef<number | null>(null);
+  const artworkFrameRef = useRef<HTMLDivElement | null>(null);
 
   const clearSwitching = () => {
     if (switchTimerRef.current !== null) {
@@ -797,8 +1172,6 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
     if (prevUrnRef.current !== track.urn) {
       prevUrnRef.current = track.urn;
       setLoaded(false);
-      setShowFullArt(false);
-      setFullscreenArtIndex(0);
 
       const shouldBlurTransition = Boolean(
         previewArtBase && displayArtBase && previewArtBase !== displayArtBase,
@@ -826,12 +1199,6 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
   }, []);
 
   useEffect(() => {
-    if (!showFullArt) {
-      setFullscreenArtIndex(0);
-    }
-  }, [showFullArt, track.urn]);
-
-  useEffect(() => {
     const urls = displayArtSources.slice(0, 2);
     const preloadedImages: HTMLImageElement[] = [];
 
@@ -851,124 +1218,79 @@ const TrackColumn = React.memo(({ track, maxArt }: { track: Track; maxArt?: stri
     };
   }, [displayArtSourcesKey, track.urn]);
 
-  const fullscreenArtSrc = fullscreenArtSources[fullscreenArtIndex] ?? null;
   const hasArtwork = Boolean(previewArtSrc || displayArtSrc);
   // Artwork can grow large with viewport height (driven by maxArt prop).
   // Title/slider/controls/volume-panel keep a tighter readable width — wide
   // sliders and centered text on a 640px column look unbalanced.
 const artMaxWidthClass = `w-full ${maxArt ?? 'max-w-[280px]'}`;
 const columnMaxWidthClass = `w-full max-w-[320px]`;
-  const columnWidthTransitionStyle = {
+const columnWidthTransitionStyle = {
     transition: 'max-width 500ms cubic-bezier(0.22, 1, 0.36, 1)',
   } satisfies React.CSSProperties;
-  const artworkTransitionStyle = {
-    ...columnWidthTransitionStyle,
-    viewTransitionName: LYRICS_SHARED_ARTWORK_TRANSITION_NAME,
-  } satisfies React.CSSProperties;
-  const fullArtModal =
-    showFullArt && fullscreenArtSrc && typeof document !== 'undefined'
-      ? createPortal(
-          <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/90 p-8 backdrop-blur-md sm:p-12">
-            <div
-              className="absolute inset-0 cursor-pointer"
-              onClick={() => setShowFullArt(false)}
-            />
-            <button
-              type="button"
-              onClick={() => setShowFullArt(false)}
-              className="absolute right-6 top-6 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/10 text-white transition-all hover:bg-white/20"
-            >
-              <X size={20} />
-            </button>
-            <div
-              className="relative z-10 aspect-square w-[min(calc(100vw-4rem),calc(100vh-4rem))] max-w-full max-h-full sm:w-[min(calc(100vw-6rem),calc(100vh-6rem))]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="h-full w-full overflow-hidden rounded-[28px] border border-white/10 bg-black/24 shadow-[0_32px_128px_rgba(0,0,0,0.8)]">
-                <img
-                  src={fullscreenArtSrc}
-                  alt={track.title}
-                  loading="eager"
-                  decoding="async"
-                  fetchPriority="high"
-                  className="h-full w-full animate-zoom-in rounded-[28px] object-cover"
-                  onError={() => {
-                    setFullscreenArtIndex((current) =>
-                      current + 1 < fullscreenArtSources.length ? current + 1 : current,
-                    );
-                  }}
-                />
-              </div>
-            </div>
-            <div className="pointer-events-none absolute bottom-8 left-1/2 z-10 w-[min(560px,calc(100vw-3rem))] -translate-x-1/2 px-3">
-              <div className="mx-auto flex w-fit max-w-full flex-col items-center gap-0.5 rounded-2xl border border-white/10 bg-black/42 px-4 py-3 text-center shadow-[0_8px_32px_rgba(0,0,0,0.3)] backdrop-blur-lg">
-                <p className="max-w-[min(480px,calc(100vw-6rem))] truncate text-lg font-bold text-white/92">
-                  {track.title}
-                </p>
-                <p className="max-w-[min(440px,calc(100vw-6rem))] truncate text-sm text-white/48">
-                  {track.user.username}
-                </p>
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )
-      : null;
-
   return (
     <div className="relative z-10 flex h-full min-h-0 w-full flex-col items-center justify-center gap-[clamp(10px,1.6vh,28px)] overflow-y-auto px-12 py-6">
       <div
-        className={`${artMaxWidthClass} aspect-square rounded-2xl overflow-hidden shadow-2xl shadow-black/60 ring-1 ring-white/[0.08] relative group/art`}
-        style={artworkTransitionStyle}
+        className={`${artMaxWidthClass} aspect-square rounded-[24px] overflow-hidden shadow-2xl shadow-black/60 ring-1 ring-white/[0.08] relative group/art`}
+        data-sc-disable-context-image="true"
+        style={columnWidthTransitionStyle}
       >
         {hasArtwork ? (
           <>
-            {/* Low-res placeholder (Blur applied only during track switch) */}
-            <img
-              src={previewArtSrc || displayArtSrc || ''}
-              alt=""
-              loading="eager"
-              decoding="async"
-              fetchPriority="high"
-              onError={handlePreviewArtError}
-              className={`absolute inset-0 w-full h-full object-cover scale-110 transition-[transform,opacity,filter] duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ease-[var(--ease-apple)] ${
-                isSwitching ? 'blur-2xl scale-125' : ''
-              } ${loaded ? 'opacity-0' : 'opacity-100'}`}
-            />
-            {/* High-res image */}
-            <img
-              src={displayArtSrc || previewArtSrc || ''}
-              alt=""
-              loading="eager"
-              decoding="async"
-              fetchPriority="high"
-              onLoad={() => {
-                setLoaded(true);
-                clearSwitching();
-              }}
-              onError={() => {
-                setLoaded(false);
-                handleDisplayArtError();
-                clearSwitching();
-              }}
-              className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ease-[var(--ease-apple)] ${loaded ? 'opacity-100' : 'opacity-0'}`}
-            />
+            <div
+              ref={artworkFrameRef}
+              className="absolute inset-0 overflow-hidden rounded-[24px]"
+              style={columnWidthTransitionStyle}
+            >
+              {/* Low-res placeholder (Blur applied only during track switch) */}
+              <img
+                src={previewArtSrc || displayArtSrc || ''}
+                alt=""
+                loading="eager"
+                decoding="async"
+                fetchPriority="high"
+                onError={handlePreviewArtError}
+                className={`absolute inset-0 w-full h-full object-cover scale-110 transition-[transform,opacity,filter] duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ease-[var(--ease-apple)] ${
+                  isSwitching ? 'blur-2xl scale-125' : ''
+                } ${loaded ? 'opacity-0' : 'opacity-100'}`}
+              />
+              {/* High-res image */}
+              <img
+                src={displayArtSrc || previewArtSrc || ''}
+                alt=""
+                loading="eager"
+                decoding="async"
+                fetchPriority="high"
+                onLoad={() => {
+                  setLoaded(true);
+                  clearSwitching();
+                }}
+                onError={() => {
+                  setLoaded(false);
+                  handleDisplayArtError();
+                  clearSwitching();
+                }}
+                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ease-[var(--ease-apple)] ${loaded ? 'opacity-100' : 'opacity-0'}`}
+              />
+            </div>
 
             {/* Hover Overlay with View Icon */}
-            <button
-              type="button"
-              onClick={() => setShowFullArt(true)}
-              className="absolute inset-0 bg-black/40 opacity-0 group-hover/art:opacity-100 transition-opacity duration-300 flex items-center justify-center text-white/90 backdrop-blur-sm cursor-pointer outline-none"
-            >
-              <div className="flex flex-col items-center gap-2 scale-90 group-hover/art:scale-100 transition-transform duration-300">
-                <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center border border-white/20">
-                  <Eye size={24} />
+            {onOpenArtworkLightbox ? (
+              <button
+                type="button"
+                onClick={() => onOpenArtworkLightbox(artworkFrameRef.current)}
+                data-sc-disable-context-image="true"
+                className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.06)_0%,rgba(255,255,255,0)_34%),linear-gradient(180deg,rgba(0,0,0,0.12)_0%,rgba(0,0,0,0.4)_100%)] opacity-0 group-hover/art:opacity-100 transition-opacity duration-300 flex items-center justify-center text-white/90 backdrop-blur-sm cursor-pointer outline-none"
+              >
+                <div className="flex flex-col items-center gap-2 scale-90 group-hover/art:scale-100 transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full border border-white/18 bg-white/[0.16] shadow-[0_10px_32px_rgba(0,0,0,0.24)]">
+                    <Eye size={24} />
+                  </div>
+                  <span className="text-[11px] font-bold tracking-[0.2em] uppercase opacity-72">
+                    {t('track.viewArtwork', 'View')}
+                  </span>
                 </div>
-                <span className="text-[11px] font-bold tracking-wider uppercase opacity-60">
-                  {t('track.viewArtwork', 'View')}
-                </span>
-              </div>
-            </button>
+              </button>
+            ) : null}
           </>
         ) : (
           <div className="w-full h-full bg-gradient-to-br from-white/[0.06] to-white/[0.02] flex items-center justify-center">
@@ -976,8 +1298,6 @@ const columnMaxWidthClass = `w-full max-w-[320px]`;
           </div>
         )}
       </div>
-
-      {fullArtModal}
 
       <div
         className={`${columnMaxWidthClass} text-center space-y-1`}
@@ -3116,6 +3436,15 @@ export const ArtworkPanel = React.memo(
     const track = usePlayerStore((s) => s.currentTrack);
     const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
     const artworkColor = useArtworkColor(track?.artwork_url ?? null);
+    const {
+      artworkLightboxOpen,
+      artworkLightboxSource,
+      artworkLightboxAnchorRect,
+      artworkLightboxSourceElement,
+      openArtworkLightbox,
+      closeArtworkLightbox,
+      handleArtworkLightboxExited,
+    } = useArtworkLightboxState();
 
     useEffect(() => {
       if (!interactiveVisible) return;
@@ -3134,58 +3463,77 @@ export const ArtworkPanel = React.memo(
       : 'fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in-up bg-[#08080a]';
 
     return (
-      <div className={rootClassName} style={panelStyle}>
-        <FullscreenBackground
-          key={`${track.urn}-bg`}
-          artworkSources={backgroundArtSources}
-          trackKey={track.urn}
-          color={artworkColor}
-        />
-
-        <div className="absolute top-6 left-6 z-20 pointer-events-none">
-          <StreamQualityBadge
-            quality={track.streamQuality}
-            codec={track.streamCodec}
-            access={track.access}
-            className="backdrop-blur-sm"
+      <>
+        <div className={rootClassName} style={panelStyle}>
+          <FullscreenBackground
+            key={`${track.urn}-bg`}
+            artworkSources={backgroundArtSources}
+            trackKey={track.urn}
+            color={artworkColor}
           />
-        </div>
 
-        {/* Close */}
-        <div
-          className="relative z-10 flex justify-end items-center gap-2 px-6 pt-5 pb-2"
-          data-tauri-drag-region
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              openLyrics();
-            }}
-            className="h-9 rounded-full px-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white/45 hover:text-white/80 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+          <div className="absolute top-6 left-6 z-20 pointer-events-none">
+            <StreamQualityBadge
+              quality={track.streamQuality}
+              codec={track.streamCodec}
+              access={track.access}
+              className="backdrop-blur-sm"
+            />
+          </div>
+
+          {/* Close */}
+          <div
+            className="relative z-10 flex justify-end items-center gap-2 px-6 pt-5 pb-2"
+            data-tauri-drag-region
           >
-            <MicVocal size={14} />
-            <span>{t('track.lyrics')}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setOpen(false)}
-            className="w-9 h-9 rounded-full flex items-center justify-center text-white/25 hover:text-white/70 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                openLyrics();
+              }}
+              className="h-9 rounded-full px-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white/45 hover:text-white/80 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+            >
+              <MicVocal size={14} />
+              <span>{t('track.lyrics')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="w-9 h-9 rounded-full flex items-center justify-center text-white/25 hover:text-white/70 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Centered single column */}
+          <div
+            className="relative z-10 flex-1 flex items-center justify-center min-h-0"
+            style={{ isolation: 'isolate' }}
           >
-            <X size={18} />
-          </button>
+            <TrackColumn
+              key={track.urn}
+              track={track}
+              maxArt="max-w-[600px]"
+              onOpenArtworkLightbox={(sourceElement) =>
+                openArtworkLightbox('track-column', sourceElement)
+              }
+            />
+          </div>
+
+          {live && visualizerFullscreen && <FullscreenVisualizer />}
         </div>
 
-        {/* Centered single column */}
-        <div
-          className="relative z-10 flex-1 flex items-center justify-center min-h-0"
-          style={{ isolation: 'isolate' }}
-        >
-          <TrackColumn key={track.urn} track={track} maxArt="max-w-[600px]" />
-        </div>
-
-        {live && visualizerFullscreen && <FullscreenVisualizer />}
-      </div>
+        <ArtworkLightbox
+          track={track}
+          open={artworkLightboxOpen}
+          source={artworkLightboxSource}
+          anchorRect={artworkLightboxAnchorRect}
+          sourceElement={artworkLightboxSourceElement}
+          onAfterClose={handleArtworkLightboxExited}
+          onClose={closeArtworkLightbox}
+        />
+      </>
     );
   },
 );
@@ -3320,11 +3668,15 @@ const LyricsMiniPlayerDock = ({
   color,
   openAnimation,
   closeAnimation,
+  hideArtwork,
+  onOpenArtworkLightbox,
 }: {
   track: Track;
   color: [number, number, number];
   openAnimation: 'default' | 'fromMiniPlayer';
   closeAnimation: 'none' | 'toMiniPlayer';
+  hideArtwork: boolean;
+  onOpenArtworkLightbox: (sourceElement: HTMLElement | null) => void;
 }) => {
   const { t } = useTranslation();
   const controlsCollapsed = useSettingsStore((s) => s.lyricsMiniPlayerControlsCollapsed);
@@ -3377,7 +3729,12 @@ const LyricsMiniPlayerDock = ({
 
         <div className="lyrics-mini-player-content relative">
           <div className="lyrics-mini-player-header flex items-start gap-4">
-            <LyricsMiniPlayerArtwork track={track} controlsCollapsed={controlsCollapsed} />
+            <LyricsMiniPlayerArtwork
+              track={track}
+              controlsCollapsed={controlsCollapsed}
+              hideArtwork={hideArtwork}
+              onOpenArtworkLightbox={onOpenArtworkLightbox}
+            />
 
             <div className="min-w-0 flex-1 pt-1">
               <AdaptiveTrackTitle
@@ -3423,7 +3780,18 @@ const LyricsMiniPlayerDock = ({
 };
 
 const LyricsMiniPlayerArtwork = React.memo(
-  ({ track, controlsCollapsed }: { track: Track; controlsCollapsed: boolean }) => {
+  ({
+    track,
+    controlsCollapsed,
+    hideArtwork,
+    onOpenArtworkLightbox,
+  }: {
+    track: Track;
+    controlsCollapsed: boolean;
+    hideArtwork: boolean;
+    onOpenArtworkLightbox: (sourceElement: HTMLElement | null) => void;
+  }) => {
+  const { t } = useTranslation();
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const togglePlay = usePlayerStore((s) => s.togglePlay);
   const previewArtSources = useMemo(
@@ -3453,6 +3821,7 @@ const LyricsMiniPlayerArtwork = React.memo(
     `${track.urn}:lyrics-mini-display`,
   );
   const [loaded, setLoaded] = useState(false);
+  const artworkFrameRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setLoaded(false);
@@ -3482,39 +3851,66 @@ const LyricsMiniPlayerArtwork = React.memo(
 
   return (
     <div
-      className="relative h-[88px] w-[88px] shrink-0 overflow-hidden rounded-[24px] ring-1 ring-white/[0.1] shadow-[0_16px_36px_rgba(0,0,0,0.35)]"
-      style={{ viewTransitionName: LYRICS_SHARED_ARTWORK_TRANSITION_NAME }}
+      className={`group/lyrics-mini-art relative h-[88px] w-[88px] shrink-0 overflow-hidden rounded-[24px] ring-1 ring-white/[0.1] shadow-[0_16px_36px_rgba(0,0,0,0.35)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+        controlsCollapsed ? '' : 'cursor-zoom-in hover:scale-[1.025]'
+      }`}
     >
       {hasArtwork ? (
         <>
-          <img
-            key={`${track.urn}-lyrics-mini-preview-${previewArtSrc ?? displayArtSrc ?? 'fallback'}`}
-            src={previewArtSrc || displayArtSrc || ''}
-            alt=""
-            className={`absolute inset-0 h-full w-full object-cover scale-105 transition-opacity duration-500 ease-[var(--ease-apple)] ${
-              loaded ? 'opacity-0' : 'opacity-100'
-            }`}
-            loading="eager"
-            decoding="async"
-            fetchPriority="high"
-            onError={handlePreviewArtError}
-          />
-          <img
-            key={`${track.urn}-lyrics-mini-display-${displayArtSrc ?? previewArtSrc ?? 'fallback'}`}
-            src={displayArtSrc || previewArtSrc || ''}
-            alt={track.title}
-            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ease-[var(--ease-apple)] ${
-              loaded ? 'opacity-100' : 'opacity-0'
-            }`}
-            loading="eager"
-            decoding="async"
-            fetchPriority="high"
-            onLoad={() => setLoaded(true)}
-            onError={() => {
-              setLoaded(false);
-              handleDisplayArtError();
-            }}
-          />
+          <div
+            ref={artworkFrameRef}
+            className="absolute inset-0 overflow-hidden rounded-[24px]"
+          >
+            {hideArtwork ? (
+              <div className="absolute inset-0 rounded-[24px] bg-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]" />
+            ) : (
+              <>
+                <img
+                  key={`${track.urn}-lyrics-mini-preview-${previewArtSrc ?? displayArtSrc ?? 'fallback'}`}
+                  src={previewArtSrc || displayArtSrc || ''}
+                  alt=""
+                  className={`absolute inset-0 h-full w-full object-cover scale-105 transition-[opacity,transform] duration-500 ease-[var(--ease-apple)] ${
+                    loaded ? 'opacity-0' : 'opacity-100'
+                  } ${
+                    controlsCollapsed ? '' : 'group-hover/lyrics-mini-art:scale-[1.04]'
+                  }`}
+                  loading="eager"
+                  decoding="async"
+                  fetchPriority="high"
+                  onError={handlePreviewArtError}
+                />
+                <img
+                  key={`${track.urn}-lyrics-mini-display-${displayArtSrc ?? previewArtSrc ?? 'fallback'}`}
+                  src={displayArtSrc || previewArtSrc || ''}
+                  alt={track.title}
+                  className={`absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-500 ease-[var(--ease-apple)] ${
+                    loaded ? 'opacity-100' : 'opacity-0'
+                  } ${
+                    controlsCollapsed ? '' : 'group-hover/lyrics-mini-art:scale-[1.04]'
+                  }`}
+                  loading="eager"
+                  decoding="async"
+                  fetchPriority="high"
+                  onLoad={() => setLoaded(true)}
+                  onError={() => {
+                    setLoaded(false);
+                    handleDisplayArtError();
+                  }}
+                />
+                {!controlsCollapsed ? (
+                  <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[24px] opacity-0 transition-opacity duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/lyrics-mini-art:opacity-100">
+                    <img
+                      src={displayArtSrc || previewArtSrc || ''}
+                      alt=""
+                      aria-hidden="true"
+                      className="absolute -inset-[10%] h-[120%] w-[120%] max-w-none object-cover blur-[14px] brightness-[0.76] saturate-[1.08]"
+                    />
+                    <div className="absolute inset-0 bg-black/[0.14]" />
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
         </>
       ) : (
         <div className="flex h-full w-full items-center justify-center bg-white/[0.06]">
@@ -3534,6 +3930,18 @@ const LyricsMiniPlayerArtwork = React.memo(
           </span>
         </button>
       )}
+      {!controlsCollapsed && !hideArtwork && (
+        <button
+          type="button"
+          onClick={() => onOpenArtworkLightbox(artworkFrameRef.current)}
+          aria-label={t('track.viewArtwork', 'View')}
+          className="absolute inset-0 z-10 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/lyrics-mini-art:bg-black/[0.18] group-hover/lyrics-mini-art:opacity-100 focus-visible:bg-black/[0.18] focus-visible:opacity-100 focus-visible:outline-none"
+        >
+          <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/18 bg-white/[0.16] text-white/92 shadow-[0_14px_36px_rgba(0,0,0,0.26)] backdrop-blur-md transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] scale-[0.9] group-hover/lyrics-mini-art:scale-100">
+            <Eye size={16} />
+          </span>
+        </button>
+      )}
     </div>
   );
 });
@@ -3544,11 +3952,15 @@ const FullscreenLyricsMiniPlayerOverlay = React.memo(
     color,
     openAnimation,
     closeAnimation,
+    hideArtwork,
+    onOpenArtworkLightbox,
   }: {
     track: Track;
     color: [number, number, number];
     openAnimation: 'default' | 'fromMiniPlayer';
     closeAnimation: 'none' | 'toMiniPlayer';
+    hideArtwork: boolean;
+    onOpenArtworkLightbox: (sourceElement: HTMLElement | null) => void;
   }) => {
     if (typeof document === 'undefined') return null;
     const overlayAnimationClass =
@@ -3568,6 +3980,8 @@ const FullscreenLyricsMiniPlayerOverlay = React.memo(
             color={color}
             openAnimation={openAnimation}
             closeAnimation={closeAnimation}
+            hideArtwork={hideArtwork}
+            onOpenArtworkLightbox={onOpenArtworkLightbox}
           />
         </div>
       </div>,
@@ -3640,6 +4054,16 @@ const FullscreenPanels = React.memo(() => {
   const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
   const artworkColor = useArtworkColor(track?.artwork_url ?? null);
   const { t } = useTranslation();
+  const {
+    artworkLightboxOpen,
+    artworkLightboxSource,
+    artworkLightboxAnchorRect,
+    artworkLightboxSourceArtworkHidden,
+    artworkLightboxSourceElement,
+    openArtworkLightbox,
+    closeArtworkLightbox,
+    handleArtworkLightboxExited,
+  } = useArtworkLightboxState('lyrics-mini-player');
   const isLyrics = mode === 'lyrics';
   const closingToMiniPlayer = closeAnimation === 'toMiniPlayer';
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
@@ -3707,6 +4131,8 @@ const FullscreenPanels = React.memo(() => {
   const suppressLyricsFallback =
     lyricsSessionRequested && (isTrackLyricsPending || isTrackSwitchingFrame) && !hasLyrics;
   const suppressLyricsStage = suppressLyricsFallback || isTrackSwitchingFrame;
+  const hideMiniPlayerArtwork =
+    artworkLightboxSource === 'lyrics-mini-player' && artworkLightboxSourceArtworkHidden;
 
 
   const clearNotFoundHint = useCallback(() => {
@@ -4065,6 +4491,9 @@ const FullscreenPanels = React.memo(() => {
               key={track.urn}
               track={track}
               maxArt="max-w-[min(640px,max(280px,calc(100vh-460px)))]"
+              onOpenArtworkLightbox={(sourceElement) =>
+                openArtworkLightbox('track-column', sourceElement)
+              }
             />
           </div>
         )}
@@ -4079,8 +4508,22 @@ const FullscreenPanels = React.memo(() => {
           color={artworkColor}
           openAnimation={openAnimation}
           closeAnimation={closeAnimation}
+          hideArtwork={hideMiniPlayerArtwork}
+          onOpenArtworkLightbox={(sourceElement) =>
+            openArtworkLightbox('lyrics-mini-player', sourceElement)
+          }
         />
       )}
+
+      <ArtworkLightbox
+        track={track}
+        open={artworkLightboxOpen}
+        source={artworkLightboxSource}
+        anchorRect={artworkLightboxAnchorRect}
+        sourceElement={artworkLightboxSourceElement}
+        onAfterClose={handleArtworkLightboxExited}
+        onClose={closeArtworkLightbox}
+      />
 
         <LyricsSearchModal
           isOpen={isSearchModalOpen}

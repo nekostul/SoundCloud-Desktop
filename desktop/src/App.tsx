@@ -5,6 +5,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { useShallow } from 'zustand/shallow';
 import { AppShell } from './components/layout/AppShell';
+import { ContextMenuProvider } from './components/context-menu/ContextMenuProvider';
 import { ThemeProvider } from './components/ThemeProvider';
 import { UpdateChecker } from './components/UpdateChecker';
 import { setSessionExpiredHandler, setSessionId, setUnauthorizedHandler } from './lib/api';
@@ -286,47 +287,49 @@ function AppInner() {
   return (
     <ThemeProvider>
       <BrowserRouter>
-        <Toaster
-          theme="dark"
-          position="top-right"
-          toastOptions={{
-            style: {
-              background: 'rgba(30, 30, 34, 0.9)',
-              backdropFilter: 'blur(20px)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              color: 'rgba(255,255,255,0.85)',
-              fontSize: '13px',
-            },
-          }}
-        />
-        {isBooting && (
-          <div
-            className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2.5 px-5 py-2.5 rounded-full border border-white/[0.08] bg-white/[0.06] backdrop-blur-lg shadow-[0_4px_16px_rgba(0,0,0,0.3)] animate-fade-in whitespace-nowrap"
-          >
-              <span className="text-[12px] font-medium text-white/70">
-              {sessionId || directAuthenticated ? t('auth.restoringSession') : t('auth.startingApp')}
-            </span>
-            <div className="h-4 w-4 rounded-full border-2 border-white/10 border-t-accent animate-spin" />
-          </div>
-        )}
-        {effectiveAuthenticated && <UpdateChecker />}
+        <ContextMenuProvider>
+          <Toaster
+            theme="dark"
+            position="top-right"
+            toastOptions={{
+              style: {
+                background: 'rgba(30, 30, 34, 0.9)',
+                backdropFilter: 'blur(20px)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                color: 'rgba(255,255,255,0.85)',
+                fontSize: '13px',
+              },
+            }}
+          />
+          {isBooting && (
+            <div
+              className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2.5 px-5 py-2.5 rounded-full border border-white/[0.08] bg-white/[0.06] backdrop-blur-lg shadow-[0_4px_16px_rgba(0,0,0,0.3)] animate-fade-in whitespace-nowrap"
+            >
+                <span className="text-[12px] font-medium text-white/70">
+                {sessionId || directAuthenticated ? t('auth.restoringSession') : t('auth.startingApp')}
+              </span>
+              <div className="h-4 w-4 rounded-full border-2 border-white/10 border-t-accent animate-spin" />
+            </div>
+          )}
+          {effectiveAuthenticated && <UpdateChecker />}
 
-        {!effectiveAuthenticated ? (
-          <Login autoStartRequestId={reloginRequestId} />
-        ) : (
-          <Routes>
-            <Route element={<AppShell />}>
-              <Route index element={<Home />} />
-              <Route path="search" element={<Search />} />
-              <Route path="library" element={<Library />} />
-              <Route path="track/:urn" element={<TrackPage />} />
-              <Route path="playlist/:urn" element={<PlaylistPage />} />
-              <Route path="user/:urn" element={<UserPage />} />
-              <Route path="settings" element={<Settings />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Route>
-          </Routes>
-        )}
+          {!effectiveAuthenticated ? (
+            <Login autoStartRequestId={reloginRequestId} />
+          ) : (
+            <Routes>
+              <Route element={<AppShell />}>
+                <Route index element={<Home />} />
+                <Route path="search" element={<Search />} />
+                <Route path="library" element={<Library />} />
+                <Route path="track/:urn" element={<TrackPage />} />
+                <Route path="playlist/:urn" element={<PlaylistPage />} />
+                <Route path="user/:urn" element={<UserPage />} />
+                <Route path="settings" element={<Settings />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Route>
+            </Routes>
+          )}
+        </ContextMenuProvider>
       </BrowserRouter>
     </ThemeProvider>
   );

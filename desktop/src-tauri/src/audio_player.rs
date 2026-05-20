@@ -2189,7 +2189,6 @@ pub async fn audio_load_url(
             };
 
             runtime.block_on(async move {
-                let client = reqwest::Client::new();
                 let mut resolved_total_size = None;
                 let mut planned_range_seek = None;
                 let cache_temp_path_for_download = cache_path_for_download
@@ -2223,13 +2222,19 @@ pub async fn audio_load_url(
                     range_seek_duration_for_download,
                 ) {
                     if resolved_total_size.is_none() {
-                        let mut probe_req =
-                            client.get(&url_for_download).header("range", "bytes=0-0");
+                        let mut probe_headers = vec![("range".to_string(), "bytes=0-0".to_string())];
                         if let Some(sid) = session_id_for_download.as_deref() {
-                            probe_req = probe_req.header("x-session-id", sid);
+                            probe_headers.push(("x-session-id".to_string(), sid.to_string()));
                         }
 
-                        if let Ok(probe_resp) = probe_req.send().await {
+                        if let Ok((probe_resp, _, _)) = crate::media_proxy::perform_get(
+                            &url_for_download,
+                            &probe_headers,
+                            None,
+                            crate::media_proxy::ClientProfile::Download,
+                        )
+                        .await
+                        {
                             resolved_total_size = parse_total_size_from_content_range(
                                 probe_resp
                                     .headers()
@@ -2259,18 +2264,35 @@ pub async fn audio_load_url(
                     requested_range_start = resume_cached_len;
                 }
 
-                let mut req = client.get(&url_for_download);
+                let mut request_headers = Vec::new();
                 if let Some(sid) = session_id_for_download.as_deref() {
-                    req = req.header("x-session-id", sid);
+                    request_headers.push(("x-session-id".to_string(), sid.to_string()));
                 }
                 if requested_range_start > 0 {
-                    req = req.header("range", format!("bytes={requested_range_start}-"));
+                    request_headers.push((
+                        "range".to_string(),
+                        format!("bytes={requested_range_start}-"),
+                    ));
                 }
 
-                let resp = match req.send().await {
-                    Ok(resp) => resp,
+                let (resp, routing_decision, _) = match crate::media_proxy::perform_get(
+                    &url_for_download,
+                    &request_headers,
+                    None,
+                    crate::media_proxy::ClientProfile::Download,
+                )
+                .await
+                {
+                    Ok(result) => result,
                     Err(error) => {
-                        let _ = bootstrap_tx.send(Err(error.to_string()));
+                        let _ = bootstrap_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let client = match routing_decision.build_client(crate::media_proxy::ClientProfile::Download) {
+                    Ok(client) => client,
+                    Err(error) => {
+                        let _ = bootstrap_tx.send(Err(error));
                         return;
                     }
                 };

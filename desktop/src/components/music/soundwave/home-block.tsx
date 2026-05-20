@@ -8,15 +8,12 @@ import {
   Search,
   Sparkles,
 } from '../../../lib/icons';
-import { isUrnLiked } from '../../../lib/likes';
+import { useSoundWave, useSoundWaveSearch } from '../../../lib/soundwave';
 import {
-  fetchWaveTailFromSeed,
-  hydrateByIds,
-  type RecommendResult,
-  type SoundWaveMode,
-  useSoundWave,
-  useSoundWaveSearch,
-} from '../../../lib/soundwave';
+  buildWaveQueueFromPlayerContext,
+  buildWaveQueueFromSeeds,
+  createInitialSoundWaveQueue,
+} from '../../../lib/soundwave-queue';
 import { useAuthStore } from '../../../stores/auth';
 import type { Track } from '../../../stores/player';
 import { usePlayerStore } from '../../../stores/player';
@@ -33,250 +30,20 @@ import { useInfiniteWave } from './use-infinite-wave';
 import { VibeSearchBar, type VibeSearchBarHandle } from './vibe-search-bar';
 import { LiveWaveform } from './waveform';
 
-/**
- * Fetch more wave recommendations seeded by the last track the user is
- * currently listening to. This is what makes the wave infinite — we keep
- * asking "what's similar to where we are now?".
- */
-async function fetchWaveTail(
-  languages: string[],
-  mode: SoundWaveMode,
-  hideLiked: boolean,
-): Promise<Track[]> {
-  const q = usePlayerStore.getState().queue;
-  const last = q.length > 0 ? q[q.length - 1] : null;
-  if (!last) return [];
-  const trackId = String(last.urn.split(':').pop() ?? '');
-  if (!trackId) return [];
+const HOME_WAVE_REFILL_TARGET = 12;
+const HOME_WAVE_START_TAIL_TARGET = 18;
 
-  const recs = await fetchWaveTailFromSeed(trackId, { languages, mode });
-  if (!recs.length) return [];
-  const tracks = await hydrateByIds(recs);
-  return hideLiked ? tracks.filter((t) => !t.user_favorite && !isUrnLiked(t.urn)) : tracks;
-}
+function appendWaveTailToActiveQueue(tracks: Track[]) {
+  if (tracks.length === 0) return;
 
-const HOME_WAVE_QUEUE_TARGET = 24;
-const HOME_WAVE_BASE_FETCH_LIMIT = 14;
-const HOME_WAVE_REFINEMENT_FETCH_LIMIT = 10;
-const HOME_WAVE_REFINEMENT_SEED_LIMIT = 4;
+  const player = usePlayerStore.getState();
+  if (player.queueSource !== 'soundwave') return;
 
-function dedupeTracksByUrn(tracks: Track[]): Track[] {
-  const seen = new Set<string>();
-  const unique: Track[] = [];
-
-  for (const track of tracks) {
-    if (!track?.urn || seen.has(track.urn)) continue;
-    seen.add(track.urn);
-    unique.push(track);
+  const existing = new Set(player.queue.map((track) => track.urn));
+  const fresh = tracks.filter((track) => !existing.has(track.urn));
+  if (fresh.length > 0) {
+    player.addToQueue(fresh);
   }
-
-  return unique;
-}
-
-function getTrackId(track: Track | null | undefined): string {
-  return String(track?.urn?.split(':').pop() ?? '');
-}
-
-function buildWaveTrackFingerprint(track: Track): Set<string> {
-  const text = `${track.genre || ''} ${track.tag_list || ''} ${track.title || ''} ${track.user?.username || ''}`
-    .toLowerCase()
-    .replace(/[^a-z0-9а-яё\s-]+/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (!text) return new Set();
-
-  return new Set(
-    text
-      .split(' ')
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 3),
-  );
-}
-
-function computeTrackCoherenceScore(track: Track, anchors: Track[]): number {
-  if (anchors.length === 0) return 0;
-
-  const trackArtist = track.user?.username?.toLowerCase().trim() || '';
-  const trackGenre = (track.genre || '').toLowerCase().trim();
-  const trackTokens = buildWaveTrackFingerprint(track);
-  let score = 0;
-
-  for (let index = 0; index < anchors.length; index += 1) {
-    const anchor = anchors[index];
-    const weight = index === anchors.length - 1 ? 1.35 : 0.9;
-    const anchorArtist = anchor.user?.username?.toLowerCase().trim() || '';
-    const anchorGenre = (anchor.genre || '').toLowerCase().trim();
-    const anchorTokens = buildWaveTrackFingerprint(anchor);
-
-    if (trackGenre && anchorGenre && trackGenre === anchorGenre) {
-      score += 2.4 * weight;
-    }
-
-    if (trackArtist && anchorArtist && trackArtist === anchorArtist) {
-      score += 1.2 * weight;
-    }
-
-    let overlap = 0;
-    for (const token of trackTokens) {
-      if (anchorTokens.has(token)) overlap += 1;
-    }
-    score += Math.min(4, overlap) * 0.4 * weight;
-  }
-
-  return score;
-}
-
-function pickRefinementSeeds(tracks: Track[], mode: SoundWaveMode): Track[] {
-  const pool = dedupeTracksByUrn(tracks).slice(
-    0,
-    mode === 'diverse' ? HOME_WAVE_REFINEMENT_SEED_LIMIT + 1 : HOME_WAVE_REFINEMENT_SEED_LIMIT,
-  );
-
-  if (mode === 'diverse' || pool.length <= 2) return pool.slice(0, HOME_WAVE_REFINEMENT_SEED_LIMIT);
-
-  return [pool[0], ...pool.slice(Math.max(1, pool.length - 2))].slice(0, HOME_WAVE_REFINEMENT_SEED_LIMIT);
-}
-
-async function buildWaveQueueFromSeeds(
-  seedTracks: Track[],
-  languages: string[],
-  mode: SoundWaveMode,
-  hideLiked: boolean,
-): Promise<Track[]> {
-  const seedIds = seedTracks
-    .map((track) => getTrackId(track))
-    .filter(Boolean)
-    .slice(0, 4);
-  if (seedIds.length === 0) return [];
-
-  const seedIdSet = new Set(seedIds);
-  const candidateScores = new Map<string, { rec: RecommendResult; score: number; hops: number }>();
-
-  const mergeRecommendations = (
-    recs: RecommendResult[],
-    sourceBoost: number,
-    hops: number,
-    anchorTracks: Track[],
-  ) => {
-    recs.forEach((rec, index) => {
-      const id = String(rec.id ?? '');
-      if (!id || seedIdSet.has(id)) return;
-
-      const existing = candidateScores.get(id);
-      const rankScore = Math.max(0, sourceBoost - index * (hops === 1 ? 0.42 : 0.34));
-      const similarityScore = Math.max(0, Number(rec.score || 0)) * (hops === 1 ? 1.25 : 1.6);
-      const baseScore =
-        rankScore +
-        similarityScore +
-        (existing ? 4.6 : 0) +
-        (anchorTracks.length > 0 ? 1.2 : 0);
-
-      candidateScores.set(id, {
-        rec,
-        hops: Math.max(existing?.hops ?? 0, hops),
-        score: (existing?.score ?? 0) + baseScore,
-      });
-    });
-  };
-
-  const baseRecommendationGroups = await Promise.all(
-    seedIds.map((seedTrackId) =>
-      fetchWaveTailFromSeed(seedTrackId, {
-        languages,
-        mode,
-        limit: HOME_WAVE_BASE_FETCH_LIMIT,
-      }),
-    ),
-  );
-
-  baseRecommendationGroups.forEach((group) => {
-    mergeRecommendations(group, mode === 'diverse' ? 5.8 : 7.2, 1, seedTracks);
-  });
-
-  const baseHydrated = await hydrateByIds(
-    Array.from(candidateScores.values())
-      .sort((a, b) => b.score - a.score)
-      .map(({ rec }) => rec)
-      .slice(0, 48),
-  );
-  const baseFiltered = dedupeTracksByUrn(
-    (hideLiked
-      ? baseHydrated.filter((track) => !track.user_favorite && !isUrnLiked(track.urn))
-      : baseHydrated
-    ).filter((track) => !seedIdSet.has(getTrackId(track))),
-  );
-
-  const refinementSeeds = pickRefinementSeeds(baseFiltered, mode);
-  if (refinementSeeds.length > 0) {
-    const refinementGroups = await Promise.all(
-      refinementSeeds.map((track) =>
-        fetchWaveTailFromSeed(getTrackId(track), {
-          languages,
-          mode,
-          limit: HOME_WAVE_REFINEMENT_FETCH_LIMIT,
-        }),
-      ),
-    );
-
-    refinementGroups.forEach((group, index) => {
-      mergeRecommendations(group, mode === 'diverse' ? 6.4 : 9.1, 2, [refinementSeeds[index]]);
-    });
-  }
-
-  const scoredHydrated = await hydrateByIds(
-    Array.from(candidateScores.values())
-      .sort((a, b) => b.score - a.score)
-      .map(({ rec }) => rec)
-      .slice(0, 64),
-  );
-
-  const filtered = dedupeTracksByUrn(
-    (hideLiked
-      ? scoredHydrated.filter((track) => !track.user_favorite && !isUrnLiked(track.urn))
-      : scoredHydrated
-    ).filter((track) => !seedIdSet.has(getTrackId(track))),
-  );
-
-  if (filtered.length === 0) return [];
-
-  const ordered: Track[] = [];
-  const remaining = [...filtered];
-  const anchors = dedupeTracksByUrn(seedTracks).slice(0, 3);
-
-  while (remaining.length > 0 && ordered.length < HOME_WAVE_QUEUE_TARGET) {
-    let bestIndex = 0;
-    let bestScore = Number.NEGATIVE_INFINITY;
-
-    for (let index = 0; index < remaining.length; index += 1) {
-      const track = remaining[index];
-      const id = getTrackId(track);
-      const candidate = candidateScores.get(id);
-      if (!candidate) continue;
-
-      let score = candidate.score + computeTrackCoherenceScore(track, anchors);
-      const lastAnchor = anchors[anchors.length - 1];
-      const sameArtistAsLast =
-        lastAnchor?.user?.username &&
-        track.user?.username &&
-        lastAnchor.user.username.trim().toLowerCase() === track.user.username.trim().toLowerCase();
-      if (sameArtistAsLast) {
-        score -= mode === 'diverse' ? 2.8 : 1.5;
-      }
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestIndex = index;
-      }
-    }
-
-    const [nextTrack] = remaining.splice(bestIndex, 1);
-    ordered.push(nextTrack);
-    anchors.push(nextTrack);
-    if (anchors.length > 3) anchors.shift();
-  }
-
-  return ordered;
 }
 
 export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
@@ -290,6 +57,7 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
 
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const playerQueue = usePlayerStore((s) => s.queue);
   const queueSource = usePlayerStore((s) => s.queueSource);
   const isWaveActive = useSoundWaveStore((s) => s.isActive);
   const startFromQueue = useSoundWaveStore((s) => s.startFromQueue);
@@ -327,16 +95,32 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
   const waveSessionPreset =
     mode === 'diverse' ? CHARACTER_PRESETS.discover : CHARACTER_PRESETS.favorite;
   const isWaveQueue = isWaveActive && queueSource === 'soundwave' && !!currentTrack;
+  const shouldCollapseDiscovery = isStartingWave || isWaveQueue;
+  const ownedWaveTracks = useMemo(
+    () => (isWaveQueue ? playerQueue : recTracks),
+    [isWaveQueue, playerQueue, recTracks],
+  );
+
+  const appendWaveTail = useCallback((tail: Track[]) => {
+    appendWaveTailToActiveQueue(tail);
+  }, []);
 
   const fetchMore = useCallback(
-    () => fetchWaveTail(stableLanguages, mode, hideLiked),
+    () =>
+      buildWaveQueueFromPlayerContext({
+        languages: stableLanguages,
+        mode,
+        hideLiked,
+        targetSize: HOME_WAVE_REFILL_TARGET,
+      }),
     [stableLanguages, mode, hideLiked],
   );
 
   useInfiniteWave({
     enabled: isAuthenticated && !isSearchMode,
-    tracks: recTracks,
+    tracks: ownedWaveTracks,
     fetchMore,
+    minTail: 6,
   });
 
   const handleSubmitSearch = useCallback((q: string) => {
@@ -359,15 +143,24 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
 
   const restartWaveFromTrack = useCallback(
     async (anchorTrack: Track) => {
-      const tail = await buildWaveQueueFromSeeds([anchorTrack], stableLanguages, mode, hideLiked);
+      const initialQueue = createInitialSoundWaveQueue([anchorTrack], mode);
+      if (initialQueue.length === 0) return;
+
       await startFromQueue({
-        queue: dedupeTracksByUrn([anchorTrack, ...tail]),
+        queue: initialQueue,
         seedTracks: [anchorTrack],
         preserveCurrentTrack: true,
         preset: waveSessionPreset,
       });
+
+      void buildWaveQueueFromPlayerContext({
+        languages: stableLanguages,
+        mode,
+        hideLiked,
+        targetSize: HOME_WAVE_START_TAIL_TARGET,
+      }).then(appendWaveTail);
     },
-    [stableLanguages, mode, hideLiked, startFromQueue, waveSessionPreset],
+    [stableLanguages, mode, hideLiked, startFromQueue, waveSessionPreset, appendWaveTail],
   );
 
   const handlePlayAll = async () => {
@@ -393,19 +186,20 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
         return;
       }
 
-      const queue = await buildWaveQueueFromSeeds(
-        recommendationSeeds,
-        stableLanguages,
-        mode,
-        hideLiked,
-      );
-      if (queue.length === 0) return;
+      const initialQueue = createInitialSoundWaveQueue(recommendationSeeds, mode);
+      if (initialQueue.length === 0) return;
 
       await startFromQueue({
-        queue,
+        queue: initialQueue,
         seedTracks: recommendationSeeds,
         preset: waveSessionPreset,
       });
+
+      void buildWaveQueueFromSeeds(recommendationSeeds, stableLanguages, mode, hideLiked, {
+        queueTracks: initialQueue,
+        recentTracks: initialQueue,
+        targetSize: HOME_WAVE_START_TAIL_TARGET,
+      }).then(appendWaveTail);
     } finally {
       setIsStartingWave(false);
     }
@@ -474,10 +268,6 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
         className="absolute inset-0 pointer-events-none"
         aria-hidden
         style={{
-          // Top mostly transparent so the music-reactive aurora + drifting
-          // particles from <AmbientLayer> are actually visible. Keeps a
-          // soft darken at the bottom for legibility of the "Play all" /
-          // controls strip there.
           background:
             'linear-gradient(180deg, rgba(8,8,10,0.12) 0%, rgba(8,8,10,0.08) 45%, rgba(8,8,10,0.6) 100%)',
           contain: 'strict',
@@ -592,15 +382,20 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
         </div>
 
         <div
+          className="transition-[max-height,opacity,transform,filter,margin] duration-[520ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
           style={{
             overflow: 'hidden',
-            maxHeight: 'none',
-            opacity: 1,
-            transform: 'translateY(0) scaleY(1) translateZ(0)',
-            marginTop: 0,
-            pointerEvents: 'auto',
+            maxHeight: shouldCollapseDiscovery ? 0 : 560,
+            opacity: shouldCollapseDiscovery ? 0 : 1,
+            filter: shouldCollapseDiscovery ? 'blur(10px) saturate(0.82)' : 'blur(0px) saturate(1)',
+            transform: shouldCollapseDiscovery
+              ? 'translateY(-12px) scaleY(0.94) translateZ(0)'
+              : 'translateY(0) scaleY(1) translateZ(0)',
+            marginTop: shouldCollapseDiscovery ? -8 : 0,
+            pointerEvents: shouldCollapseDiscovery ? 'none' : 'auto',
             transformOrigin: 'top center',
             contain: 'layout style paint',
+            willChange: 'max-height, opacity, transform, filter',
           }}
         >
           <div className="flex flex-col gap-5 pt-0.5">
@@ -656,7 +451,6 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
   );
 });
 
-/** Stateless "nothing here yet" card used for both cold-start and no-search-results. */
 const EmptyState = React.memo(function EmptyState({
   icon,
   title,

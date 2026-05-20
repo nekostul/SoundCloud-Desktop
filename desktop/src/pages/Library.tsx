@@ -2,6 +2,10 @@ import { useQueries } from '@tanstack/react-query';
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../components/context-menu/context-menu-registry';
 import { AddToPlaylistDialog } from '../components/music/AddToPlaylistDialog';
 import { LikeButton } from '../components/music/LikeButton';
 import { PlaylistCard } from '../components/music/PlaylistCard';
@@ -73,6 +77,22 @@ const LibraryTrackRow = React.memo(
       baseToggle();
       if (!isThis && onPlay) onPlay();
     };
+    const trackContextProps = useContextMenuTarget(
+      useMemo(
+        () => ({
+          type: 'track' as const,
+          track,
+          queue,
+        }),
+        [queue, track],
+      ),
+    );
+    const artistContextProps = useContextMenuTarget(
+      useMemo(() => {
+        const user = toContextMenuUserEntity(track.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [track.user]),
+    );
 
     const handleAddToQueue = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -83,6 +103,7 @@ const LibraryTrackRow = React.memo(
 
     return (
       <div
+        {...trackContextProps}
         className={`group flex items-center gap-4 px-4 py-3 rounded-2xl transition-all duration-300 ease-[var(--ease-apple)] ${
           isThis
             ? 'bg-accent/[0.06] ring-1 ring-accent/20 shadow-[inset_0_0_20px_rgba(255,85,0,0.05)]'
@@ -132,6 +153,7 @@ const LibraryTrackRow = React.memo(
             {track.title}
           </p>
           <p
+            {...artistContextProps}
             className="text-[12px] text-white/40 truncate mt-0.5 cursor-pointer hover:text-white/70 transition-colors"
             onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           >
@@ -185,9 +207,16 @@ const LibraryTrackRow = React.memo(
 const UserCard = React.memo(({ user }: { user: SCUser }) => {
   const navigate = useNavigate();
   const avatar = art(user.avatar_url, 't300x300');
+  const userContextProps = useContextMenuTarget(
+    useMemo(() => {
+      const contextUser = toContextMenuUserEntity(user);
+      return contextUser ? { type: 'user' as const, user: contextUser } : null;
+    }, [user]),
+  );
 
   return (
     <div
+      {...userContextProps}
       className="group flex flex-col items-center gap-4 p-5 rounded-3xl bg-white/[0.02] hover:bg-white/[0.04] border border-white/[0.04] hover:border-white/[0.08] transition-all duration-300 cursor-pointer"
       onClick={() => navigate(`/user/${encodeURIComponent(user.urn)}`)}
     >
@@ -733,9 +762,26 @@ const DislikedTrackRow = React.memo(
     const { isThis, isThisPlaying, togglePlay } = useTrackPlay(track, queue);
 
     const cover = art(track.artwork_url, 't200x200');
+    const trackContextProps = useContextMenuTarget(
+      useMemo(
+        () => ({
+          type: 'track' as const,
+          track,
+          queue,
+        }),
+        [queue, track],
+      ),
+    );
+    const artistContextProps = useContextMenuTarget(
+      useMemo(() => {
+        const user = toContextMenuUserEntity(track.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [track.user]),
+    );
 
     return (
       <div
+        {...trackContextProps}
         className={`group flex items-center gap-4 px-4 py-3 rounded-2xl transition-all duration-300 ease-[var(--ease-apple)] ${
           isThis
             ? 'bg-accent/[0.06] ring-1 ring-accent/20 shadow-[inset_0_0_20px_rgba(255,85,0,0.05)]'
@@ -785,6 +831,7 @@ const DislikedTrackRow = React.memo(
             {track.title}
           </p>
           <p
+            {...artistContextProps}
             className="text-[12px] text-white/40 truncate mt-0.5 cursor-pointer hover:text-white/70 transition-colors"
             onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           >

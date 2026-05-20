@@ -17,7 +17,12 @@ import {
   Settings,
 } from '../../lib/icons';
 import { useAuthStore } from '../../stores/auth';
-import { useSettingsStore } from '../../stores/settings';
+import { type SidebarPinnedPlaylist, useSettingsStore } from '../../stores/settings';
+import {
+  toContextMenuPlaylistEntity,
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../context-menu/context-menu-registry';
 import { Avatar } from '../ui/Avatar';
 
 const navItems = [
@@ -26,10 +31,101 @@ const navItems = [
   { to: '/library', icon: Library, label: 'nav.library' },
 ];
 
+const PinnedPlaylistLink = React.memo(function PinnedPlaylistLink({
+  playlist,
+  collapsed,
+}: {
+  playlist: SidebarPinnedPlaylist;
+  collapsed: boolean;
+}) {
+  const artwork = art(playlist.artworkUrl, 'small');
+  const playlistContextProps = useContextMenuTarget(
+    React.useMemo(() => {
+      const contextPlaylist = toContextMenuPlaylistEntity({
+        urn: playlist.urn,
+        title: playlist.title,
+        artwork_url: playlist.artworkUrl,
+      });
+      return contextPlaylist ? { type: 'playlist' as const, playlist: contextPlaylist } : null;
+    }, [playlist]),
+  );
+
+  return (
+    <NavLink
+      {...playlistContextProps}
+      to={`/playlist/${encodeURIComponent(playlist.urn)}`}
+      title={collapsed ? playlist.title : undefined}
+      className={({ isActive }) =>
+        `flex items-center gap-2.5 w-full rounded-xl text-[12px] font-medium transition-all duration-200 ${
+          collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2.5'
+        } ${
+          isActive
+            ? 'text-white bg-white/[0.07]'
+            : 'text-white/40 hover:text-white/70 hover:bg-white/[0.04]'
+        }`
+      }
+    >
+      {artwork ? (
+        <img
+          src={artwork}
+          alt=""
+          className="w-4 h-4 rounded-[4px] object-cover shrink-0 ring-1 ring-white/[0.08]"
+          decoding="async"
+          loading="lazy"
+        />
+      ) : (
+        <ListMusic size={16} strokeWidth={1.8} />
+      )}
+
+      {!collapsed && <span className="truncate">{playlist.title}</span>}
+    </NavLink>
+  );
+});
+
+const SidebarProfileLink = React.memo(function SidebarProfileLink({
+  collapsed,
+}: {
+  collapsed: boolean;
+}) {
+  const user = useAuthStore((s) => s.user);
+  const userContextProps = useContextMenuTarget(
+    React.useMemo(() => {
+      const contextUser = toContextMenuUserEntity(user);
+      return contextUser ? { type: 'user' as const, user: contextUser } : null;
+    }, [user]),
+  );
+
+  if (!user) return null;
+
+  return (
+    <div className="pt-2">
+      <NavLink
+        {...userContextProps}
+        to={`/user/${encodeURIComponent(user.urn)}`}
+        title={collapsed ? user.username : undefined}
+        className={({ isActive }) =>
+          `flex items-center gap-2.5 px-2 py-2.5 rounded-xl transition-all duration-200 cursor-pointer ${
+            collapsed ? 'justify-center' : ''
+          } ${
+            isActive
+              ? 'bg-white/[0.07] shadow-[inset_0_0.5px_0_rgba(255,255,255,0.1)]'
+              : 'hover:bg-white/[0.04]'
+          }`
+        }
+      >
+        <Avatar src={user.avatar_url} alt={user.username} size={24} />
+
+        {!collapsed && (
+          <span className="text-[12px] text-white/40 truncate font-medium">{user.username}</span>
+        )}
+      </NavLink>
+    </div>
+  );
+});
+
 export const Sidebar = React.memo(() => {
   const { t, i18n } = useTranslation();
 
-  const user = useAuthStore((s) => s.user);
   const { collapsed, pinnedPlaylists, toggleSidebar } = useSettingsStore(
     useShallow((s) => ({
       collapsed: s.sidebarCollapsed,
@@ -100,37 +196,8 @@ export const Sidebar = React.memo(() => {
         </NavLink>
 
         {pinnedPlaylists.map((playlist) => {
-          const artwork = art(playlist.artworkUrl, 'small');
-
           return (
-            <NavLink
-              key={playlist.urn}
-              to={`/playlist/${encodeURIComponent(playlist.urn)}`}
-              title={collapsed ? playlist.title : undefined}
-              className={({ isActive }) =>
-                `flex items-center gap-2.5 w-full rounded-xl text-[12px] font-medium transition-all duration-200 ${
-                  collapsed ? 'justify-center px-0 py-2.5' : 'px-3 py-2.5'
-                } ${
-                  isActive
-                    ? 'text-white bg-white/[0.07]'
-                    : 'text-white/40 hover:text-white/70 hover:bg-white/[0.04]'
-                }`
-              }
-            >
-              {artwork ? (
-                <img
-                  src={artwork}
-                  alt=""
-                  className="w-4 h-4 rounded-[4px] object-cover shrink-0 ring-1 ring-white/[0.08]"
-                  decoding="async"
-                  loading="lazy"
-                />
-              ) : (
-                <ListMusic size={16} strokeWidth={1.8} />
-              )}
-
-              {!collapsed && <span className="truncate">{playlist.title}</span>}
-            </NavLink>
+            <PinnedPlaylistLink key={playlist.urn} playlist={playlist} collapsed={collapsed} />
           );
         })}
       </div>
@@ -183,31 +250,7 @@ export const Sidebar = React.memo(() => {
           {!collapsed && <span className="truncate">{t('nav.settings')}</span>}
         </NavLink>
 
-        {user && (
-          <div className="pt-2">
-            <NavLink
-              to={`/user/${encodeURIComponent(user.urn)}`}
-              title={collapsed ? user.username : undefined}
-              className={({ isActive }) =>
-                `flex items-center gap-2.5 px-2 py-2.5 rounded-xl transition-all duration-200 cursor-pointer ${
-                  collapsed ? 'justify-center' : ''
-                } ${
-                  isActive
-                    ? 'bg-white/[0.07] shadow-[inset_0_0.5px_0_rgba(255,255,255,0.1)]'
-                    : 'hover:bg-white/[0.04]'
-                }`
-              }
-            >
-              <Avatar src={user.avatar_url} alt={user.username} size={24} />
-
-{!collapsed && (
-  <span className="text-[12px] text-white/40 truncate font-medium">
-    {user.username}
-  </span>
-)}
-            </NavLink>
-          </div>
-        )}
+        <SidebarProfileLink collapsed={collapsed} />
       </div>
     </aside>
   );

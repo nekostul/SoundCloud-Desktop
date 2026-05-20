@@ -1,6 +1,11 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import {
+  toContextMenuPlaylistEntity,
+  toContextMenuUserEntity,
+  useContextMenuTarget,
+} from '../components/context-menu/context-menu-registry';
 import { LikeButton } from '../components/music/LikeButton';
 import { MixCard } from '../components/music/MixCard';
 import { SoundWaveBlock } from '../components/music/soundwave';
@@ -118,9 +123,26 @@ const FeedTrackCard = React.memo(
     const { isThis, isThisPlaying, togglePlay } = useTrackPlay(track, queue);
     const isRepost = item.type.includes('repost');
     const cover = art(track.artwork_url, 't300x300');
+    const trackContextProps = useContextMenuTarget(
+      useMemo(
+        () => ({
+          type: 'track' as const,
+          track,
+          queue,
+        }),
+        [queue, track],
+      ),
+    );
+    const artistContextProps = useContextMenuTarget(
+      useMemo(() => {
+        const user = toContextMenuUserEntity(track.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [track.user]),
+    );
 
     return (
       <div
+        {...trackContextProps}
         className={`group glass-flat rounded-2xl p-3 flex items-center gap-3.5 transition-all duration-300 ease-[var(--ease-apple)] ${
           isThis ? 'ring-1 ring-accent/20 bg-accent/[0.02]' : 'hover:bg-white/[0.035]'
         }`}
@@ -172,6 +194,7 @@ const FeedTrackCard = React.memo(
             {track.title}
           </p>
           <p
+            {...artistContextProps}
             className="text-[11px] text-white/35 truncate mt-0.5 cursor-pointer hover:text-white/55 transition-colors duration-150"
             onClick={() => navigate(`/user/${encodeURIComponent(track.user.urn)}`)}
           >
@@ -223,6 +246,18 @@ const FeedPlaylistCard = React.memo(
     const isRepost = item.type.includes('repost');
     const cover =
       art(origin.artwork_url, 't300x300') ?? art(origin.tracks?.[0]?.artwork_url, 't300x300');
+    const playlistContextProps = useContextMenuTarget(
+      useMemo(() => {
+        const playlist = toContextMenuPlaylistEntity(origin);
+        return playlist ? { type: 'playlist' as const, playlist } : null;
+      }, [origin]),
+    );
+    const creatorContextProps = useContextMenuTarget(
+      useMemo(() => {
+        const user = toContextMenuUserEntity(origin.user);
+        return user ? { type: 'user' as const, user } : null;
+      }, [origin.user]),
+    );
 
     // Only re-render when this playlist's playing state actually changes
     const trackUrns = useMemo(
@@ -279,6 +314,7 @@ const FeedPlaylistCard = React.memo(
 
     return (
       <div
+        {...playlistContextProps}
         className={`group glass-flat rounded-2xl p-3 flex items-center gap-3.5 transition-all duration-300 ease-[var(--ease-apple)] ${
           isPlayingFromThis ? 'ring-1 ring-accent/20 bg-accent/[0.02]' : 'hover:bg-white/[0.035]'
         }`}
@@ -343,6 +379,7 @@ const FeedPlaylistCard = React.memo(
             {origin.title}
           </p>
           <p
+            {...creatorContextProps}
             className="text-[11px] text-white/35 truncate mt-0.5 cursor-pointer hover:text-white/55 transition-colors duration-150"
             onClick={() =>
               origin.user?.urn && navigate(`/user/${encodeURIComponent(origin.user.urn)}`)

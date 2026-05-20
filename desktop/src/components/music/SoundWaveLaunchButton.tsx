@@ -2,7 +2,11 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { AudioLines, Loader2 } from '../../lib/icons';
-import { buildWaveQueueFromSeeds, dedupeTracksByUrn } from '../../lib/soundwave-queue';
+import {
+  buildWaveQueueFromPlayerContext,
+  createInitialSoundWaveQueue,
+  dedupeTracksByUrn,
+} from '../../lib/soundwave-queue';
 import type { Track } from '../../stores/player';
 import { usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
@@ -85,21 +89,35 @@ export function SoundWaveLaunchButton({
 
     setIsLoading(true);
     try {
-      const generatedQueue = await buildWaveQueueFromSeeds(
-        selectedSeedTracks,
-        selectedLanguages,
-        mode,
-        hideLiked,
-      );
+      const initialQueue = createInitialSoundWaveQueue(selectedSeedTracks, mode);
+      if (initialQueue.length === 0) return;
 
       await startFromQueue({
-        queue: generatedQueue.length > 0 ? generatedQueue : selectedSeedTracks,
+        queue: initialQueue,
         seedTracks: selectedSeedTracks,
         preset: waveSessionPreset,
         launchContext: context,
       });
 
       navigate('/');
+
+      void buildWaveQueueFromPlayerContext({
+        languages: selectedLanguages,
+        mode,
+        hideLiked,
+        targetSize: 18,
+      }).then((tail) => {
+        if (tail.length === 0) return;
+
+        const player = usePlayerStore.getState();
+        if (player.queueSource !== 'soundwave') return;
+
+        const existing = new Set(player.queue.map((track) => track.urn));
+        const fresh = tail.filter((track) => !existing.has(track.urn));
+        if (fresh.length > 0) {
+          player.addToQueue(fresh);
+        }
+      });
     } finally {
       setIsLoading(false);
     }

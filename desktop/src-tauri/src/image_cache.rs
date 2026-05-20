@@ -33,7 +33,7 @@ fn is_domain_whitelisted(host: &str) -> bool {
 /// a single directory.
 pub struct ImageCache {
     pub dir: PathBuf,
-    pub http_client: reqwest::Client,
+    pub _http_client: reqwest::Client,
 }
 
 pub static STATE: OnceLock<ImageCache> = OnceLock::new();
@@ -169,30 +169,26 @@ pub async fn handle(encoded: &str) -> ImageResult {
     #[cfg(debug_assertions)]
     println!("[ImageCache] MISS {}", target_url);
 
-    let mut status = 502u16;
-    let mut data: Vec<u8> = Vec::new();
-    let resp = match state.http_client.get(&target_url).send().await {
-        Ok(r) => r,
+    let fetched = match crate::media_proxy::fetch_bytes(
+        &target_url,
+        &[],
+        None,
+        crate::media_proxy::ClientProfile::Generic,
+    )
+    .await
+    {
+        Ok(result) => result,
         Err(_) => {
             return ImageResult {
-                status: status,
-                content_type: String::new(),
-                data,
-            }
-        }
-    };
-
-    status = resp.status().as_u16();
-    data = match resp.bytes().await {
-        Ok(b) => b.to_vec(),
-        Err(_) => {
-            return ImageResult {
-                status,
+                status: 502,
                 content_type: String::new(),
                 data: Vec::new(),
             }
         }
     };
+
+    let status = fetched.status;
+    let data = fetched.data;
 
     let content_type = if status == 200 && !data.is_empty() {
         sniff_content_type(&data).to_string()

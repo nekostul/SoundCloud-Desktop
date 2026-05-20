@@ -13,6 +13,7 @@ import {
 } from '../lib/language-detection';
 import { getLikedUrnsSnapshot, initLikedUrns } from '../lib/likes';
 import { rerankTracksWithLLM } from '../lib/llm-rerank';
+import { fetchMediaJson } from '../lib/media-proxy';
 import { requestMertEmbedding } from '../lib/mert-analyser';
 import { fetchCrossPlatformRegionalTracks } from '../lib/popular-sources';
 import { QdrantClient, type QdrantScoredPoint } from '../lib/qdrant';
@@ -337,20 +338,12 @@ const fetchLyricsLanguage = async (track: Track): Promise<string | null> => {
     const q = encodeURIComponent(
       `${track.user.username} ${track.title}`.replace(/\s+/g, ' ').trim(),
     );
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-    const response = await fetch(`https://lrclib.net/api/search?q=${q}`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      lyricsLanguageCache.set(track.id, null);
-      return null;
-    }
-
-    const data = (await response.json()) as Array<{ plainLyrics?: string; syncedLyrics?: string }>;
+    const data = await fetchMediaJson<Array<{ plainLyrics?: string; syncedLyrics?: string }>>(
+      `https://lrclib.net/api/search?q=${q}`,
+      {
+        timeoutMs: 3500,
+      },
+    );
     const first = data?.[0];
     const lyricsText = first?.plainLyrics || first?.syncedLyrics || '';
 

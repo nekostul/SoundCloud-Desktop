@@ -100,6 +100,22 @@ export type ThemeGradientAnimation = 'flow' | 'pulse' | 'breathe';
 export type DiscordRpcMode = 'text' | 'track' | 'artist' | 'activity';
 export type DiscordRpcButtonMode = 'soundcloud' | 'app' | 'both';
 export type ApiMode = 'auto' | 'custom';
+export type MediaProxyMode = 'off' | 'auto' | 'manual';
+export type MediaProxyRouting = 'direct' | 'proxy';
+export type MediaProxyTypeLabel = 'http' | 'https' | 'socks4' | 'socks5';
+
+export interface LastKnownWorkingMediaProxy {
+  mode: MediaProxyMode;
+  routing: MediaProxyRouting;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  proxyType: MediaProxyTypeLabel;
+  latencyMs: number | null;
+  throughputKbps: number | null;
+  lastCheckedAt: number | null;
+}
 
 export type AppIconVariant = 'default' | 'inverted' | 'upstream' | 'wave' | 'custom';
 
@@ -201,6 +217,70 @@ const normalizeAppUiScale = (value: unknown): number => {
   return Math.min(APP_UI_SCALE_MAX, Math.max(APP_UI_SCALE_MIN, Math.round(numeric * 100) / 100));
 };
 
+const normalizeLastKnownWorkingMediaProxy = (
+  value: unknown,
+): LastKnownWorkingMediaProxy | null => {
+  if (!value || typeof value !== 'object') return null;
+
+  const proxy = value as Partial<LastKnownWorkingMediaProxy> & {
+    proxy_type?: unknown;
+    latency_ms?: unknown;
+    throughput_kbps?: unknown;
+    last_checked_at?: unknown;
+  };
+
+  const mode =
+    proxy.mode === 'auto' || proxy.mode === 'manual' || proxy.mode === 'off'
+      ? proxy.mode
+      : null;
+  const routing = proxy.routing === 'proxy' || proxy.routing === 'direct' ? proxy.routing : null;
+  const host = typeof proxy.host === 'string' ? proxy.host.trim() : '';
+  const port = Number(proxy.port);
+  const proxyTypeSource =
+    typeof proxy.proxyType === 'string'
+      ? proxy.proxyType
+      : typeof proxy.proxy_type === 'string'
+        ? proxy.proxy_type
+        : '';
+  const proxyType =
+    proxyTypeSource === 'http' ||
+    proxyTypeSource === 'https' ||
+    proxyTypeSource === 'socks4' ||
+    proxyTypeSource === 'socks5'
+      ? proxyTypeSource
+      : null;
+
+  if (!mode || !routing || !host || !Number.isFinite(port) || port <= 0 || !proxyType) {
+    return null;
+  }
+
+  const latencySource =
+    proxy.latencyMs ??
+    proxy.latency_ms ??
+    null;
+  const throughputSource =
+    proxy.throughputKbps ??
+    proxy.throughput_kbps ??
+    null;
+  const lastCheckedSource =
+    proxy.lastCheckedAt ??
+    proxy.last_checked_at ??
+    null;
+
+  return {
+    mode,
+    routing,
+    host,
+    port,
+    username: typeof proxy.username === 'string' ? proxy.username : '',
+    password: typeof proxy.password === 'string' ? proxy.password : '',
+    proxyType,
+    latencyMs: Number.isFinite(Number(latencySource)) ? Number(latencySource) : null,
+    throughputKbps: Number.isFinite(Number(throughputSource)) ? Number(throughputSource) : null,
+    lastCheckedAt: Number.isFinite(Number(lastCheckedSource)) ? Number(lastCheckedSource) : null,
+  };
+};
+
 export interface SettingsState {
   accentColor: string;
   bgPrimary: string;
@@ -227,6 +307,12 @@ export interface SettingsState {
   eqPreset: string;
   normalizeVolume: boolean;
   highQualityStreaming: boolean;
+  mediaProxyMode: MediaProxyMode;
+  mediaProxyHost: string;
+  mediaProxyPort: string;
+  mediaProxyUsername: string;
+  mediaProxyPassword: string;
+  lastKnownWorkingMediaProxy: LastKnownWorkingMediaProxy | null;
   spotifyClientId: string;
   youtubeClientId: string;
   youtubeClientSecret: string;
@@ -316,6 +402,11 @@ export interface SettingsState {
   setEqBand: (index: number, gain: number) => void;
   setNormalizeVolume: (enabled: boolean) => void;
   setHighQualityStreaming: (enabled: boolean) => void;
+  setMediaProxyMode: (mode: MediaProxyMode) => void;
+  setMediaProxyHost: (host: string) => void;
+  setMediaProxyPort: (port: string) => void;
+  setMediaProxyUsername: (username: string) => void;
+  setMediaProxyPassword: (password: string) => void;
   setSpotifyClientId: (id: string) => void;
   setYoutubeClientId: (id: string) => void;
   setYoutubeClientSecret: (secret: string) => void;
@@ -434,6 +525,12 @@ const DEFAULTS = {
   eqPreset: 'flat',
   normalizeVolume: true,
   highQualityStreaming: false,
+  mediaProxyMode: 'off' as MediaProxyMode,
+  mediaProxyHost: '',
+  mediaProxyPort: '',
+  mediaProxyUsername: '',
+  mediaProxyPassword: '',
+  lastKnownWorkingMediaProxy: null as LastKnownWorkingMediaProxy | null,
   spotifyClientId: '',
   youtubeClientId: '',
   youtubeClientSecret: '',
@@ -564,6 +661,12 @@ export const useSettingsStore = create<SettingsState>()(
         invoke('audio_set_normalization', { enabled: normalizeVolume }).catch(console.error);
       },
       setHighQualityStreaming: (highQualityStreaming) => set({ highQualityStreaming }),
+      setMediaProxyMode: (mediaProxyMode) => set({ mediaProxyMode }),
+      setMediaProxyHost: (mediaProxyHost) => set({ mediaProxyHost }),
+      setMediaProxyPort: (mediaProxyPort) =>
+        set({ mediaProxyPort: mediaProxyPort.replace(/[^\d]/g, '').slice(0, 5) }),
+      setMediaProxyUsername: (mediaProxyUsername) => set({ mediaProxyUsername }),
+      setMediaProxyPassword: (mediaProxyPassword) => set({ mediaProxyPassword }),
       setSpotifyClientId: (spotifyClientId) => set({ spotifyClientId }),
       setYoutubeClientId: (youtubeClientId) => set({ youtubeClientId }),
       setYoutubeClientSecret: (youtubeClientSecret) => set({ youtubeClientSecret }),
@@ -748,6 +851,9 @@ export const useSettingsStore = create<SettingsState>()(
           normalizedKey && normalizedKey !== ENV_QDRANT_KEY ? normalizedKey : DEFAULTS.qdrantKey;
         const qdrantUrl = normalizeQdrantUrl((state.qdrantUrl as string) || DEFAULTS.qdrantUrl);
         const pinnedPlaylists = normalizePinnedPlaylists(state.pinnedPlaylists);
+        const lastKnownWorkingMediaProxy = normalizeLastKnownWorkingMediaProxy(
+          state.lastKnownWorkingMediaProxy,
+        );
         const preferredLanguages = normalizePreferredLanguages(
           Array.isArray(state.preferredLanguages)
             ? state.preferredLanguages
@@ -772,6 +878,7 @@ export const useSettingsStore = create<SettingsState>()(
           qdrantUrl,
           qdrantKey,
           pinnedPlaylists,
+          lastKnownWorkingMediaProxy,
           preferredLanguages,
           appFontSize: normalizeAppFontSize(state.appFontSize),
           appUiScale: normalizeAppUiScale(state.appUiScale),
@@ -799,6 +906,9 @@ export const useSettingsStore = create<SettingsState>()(
           normalizedKey && normalizedKey !== ENV_QDRANT_KEY ? normalizedKey : DEFAULTS.qdrantKey;
         const qdrantUrl = normalizeQdrantUrl((state.qdrantUrl as string) || currentState.qdrantUrl);
         const pinnedPlaylists = normalizePinnedPlaylists(state.pinnedPlaylists);
+        const lastKnownWorkingMediaProxy = normalizeLastKnownWorkingMediaProxy(
+          state.lastKnownWorkingMediaProxy,
+        );
         const preferredLanguages = normalizePreferredLanguages(
           Array.isArray(state.preferredLanguages)
             ? state.preferredLanguages
@@ -823,6 +933,7 @@ export const useSettingsStore = create<SettingsState>()(
           qdrantUrl,
           qdrantKey,
           pinnedPlaylists,
+          lastKnownWorkingMediaProxy,
           preferredLanguages,
           appFontSize: normalizeAppFontSize(state.appFontSize ?? currentState.appFontSize),
           appUiScale: normalizeAppUiScale(state.appUiScale ?? currentState.appUiScale),
@@ -859,6 +970,12 @@ export const useSettingsStore = create<SettingsState>()(
         eqPreset: s.eqPreset,
         normalizeVolume: s.normalizeVolume,
         highQualityStreaming: s.highQualityStreaming,
+        mediaProxyMode: s.mediaProxyMode,
+        mediaProxyHost: s.mediaProxyHost,
+        mediaProxyPort: s.mediaProxyPort,
+        mediaProxyUsername: s.mediaProxyUsername,
+        mediaProxyPassword: s.mediaProxyPassword,
+        lastKnownWorkingMediaProxy: s.lastKnownWorkingMediaProxy,
         spotifyClientId: s.spotifyClientId,
         youtubeClientId: s.youtubeClientId,
         youtubeClientSecret: s.youtubeClientSecret,

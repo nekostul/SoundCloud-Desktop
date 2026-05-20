@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import type { Track } from '../stores/player';
+import { fetchMediaJson } from './media-proxy';
 
 export interface WaveformSamples {
   values: number[];
@@ -25,9 +25,10 @@ async function fetchWaveform(rawUrl: string): Promise<WaveformSamples> {
   const url = normalizeWaveformUrl(rawUrl);
   if (!url) throw new Error('Invalid waveform url');
 
-  const res = await tauriFetch(url, { method: 'GET' });
-  if (!res.ok) throw new Error(`waveform ${res.status}`);
-  const json = (await res.json()) as ScWaveformJson;
+  const json = await fetchMediaJson<ScWaveformJson>(url, {
+    accept: 'application/json,text/plain;q=0.9,*/*;q=0.8',
+    timeoutMs: 8000,
+  });
 
   if (!Array.isArray(json.samples) || json.samples.length === 0) {
     throw new Error('waveform: empty samples');

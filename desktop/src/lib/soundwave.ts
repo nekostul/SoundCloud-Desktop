@@ -21,6 +21,8 @@ export interface IndexingStats {
  */
 const SW_STALE_MS = 0;
 const SW_GC_MS = 1000 * 60 * 5;
+const hydratedTrackCache = new Map<string, Track | null>();
+const hydratedTrackPromiseCache = new Map<string, Promise<Track | null>>();
 
 /**
  * Extract comma-separated, sorted languages for a stable cache key.
@@ -51,13 +53,31 @@ export async function hydrateByIds(recs: RecommendResult[]): Promise<Track[]> {
     .filter((u): u is string => u !== null);
   if (!urns.length) return [];
 
-  const results = await Promise.all(
-    urns.map((urn) =>
-      api<Track>(`/tracks/${encodeURIComponent(urn)}`).catch(() => null as Track | null),
-    ),
-  );
+  const results = await Promise.all(urns.map((urn) => hydrateTrackByUrn(urn)));
 
   return results.filter((t): t is Track => t !== null);
+}
+
+async function hydrateTrackByUrn(urn: string): Promise<Track | null> {
+  if (hydratedTrackCache.has(urn)) {
+    return hydratedTrackCache.get(urn) ?? null;
+  }
+
+  const existingPromise = hydratedTrackPromiseCache.get(urn);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
+  const request = api<Track>(`/tracks/${encodeURIComponent(urn)}`)
+    .catch(() => null as Track | null)
+    .then((track) => {
+      hydratedTrackCache.set(urn, track);
+      hydratedTrackPromiseCache.delete(urn);
+      return track;
+    });
+
+  hydratedTrackPromiseCache.set(urn, request);
+  return request;
 }
 
 export type SoundWaveMode = 'similar' | 'diverse';
@@ -166,7 +186,13 @@ export function useSoundWaveSimilar(opts: {
  */
 export async function fetchWaveTailFromSeed(
   seedTrackId: string,
-  opts: { languages?: string[]; mode: SoundWaveMode; limit?: number },
+  opts: {
+    languages?: string[];
+    mode: SoundWaveMode;
+    limit?: number;
+    excludeTrackIds?: string[];
+    recentTrackIds?: string[];
+  },
 ): Promise<RecommendResult[]> {
   const qs = new URLSearchParams({
     limit: String(opts.limit ?? 20),
@@ -174,6 +200,18 @@ export async function fetchWaveTailFromSeed(
   });
   const languages = normLanguages(opts.languages);
   if (languages) qs.set('languages', languages);
+  if (opts.excludeTrackIds?.length) {
+    qs.set(
+      'exclude',
+      [...new Set(opts.excludeTrackIds.map((value) => value.trim()).filter(Boolean))].join(','),
+    );
+  }
+  if (opts.recentTrackIds?.length) {
+    qs.set(
+      'recent',
+      [...new Set(opts.recentTrackIds.map((value) => value.trim()).filter(Boolean))].join(','),
+    );
+  }
   return api<RecommendResult[]>(
     `/recommendations/wave/${encodeURIComponent(seedTrackId)}?${qs}`,
   ).catch(() => [] as RecommendResult[]);

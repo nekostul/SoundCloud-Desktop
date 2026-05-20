@@ -8,8 +8,256 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23ff5500'/%3E%3Cpath d='M20 36c0-9 6-16 14-16 6 0 10 3 10 8 0 6-4 10-9 10-3 0-6-2-8-5-1 7-6 11-13 11' fill='none' stroke='white' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
     />
     <title>SoundCloud Desktop</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --boot-bg: #111214;
+        --boot-accent-a: #ffe29d;
+        --boot-accent-b: #ffbf59;
+        --boot-accent-c: #ff8d2d;
+        --boot-accent-d: #ff5f1f;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 50% 42%, rgba(255, 118, 31, 0.12), transparent 24%),
+          linear-gradient(180deg, #121315 0%, #101113 100%);
+      }
+
+      body {
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      #root {
+        width: 100%;
+        height: 100%;
+      }
+
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 50% 42%, rgba(255, 118, 31, 0.12), transparent 24%),
+          linear-gradient(180deg, #121315 0%, #101113 100%);
+        user-select: none;
+        pointer-events: none;
+        opacity: 1;
+        transform: scale(1);
+        transition:
+          opacity 220ms cubic-bezier(0.16, 1, 0.3, 1),
+          transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      #boot-splash.is-exiting {
+        opacity: 0;
+        transform: scale(0.99);
+      }
+
+      .boot-splash__backdrop {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at 50% 44%, rgba(255, 170, 96, 0.08), transparent 18%),
+          radial-gradient(circle at 50% 44%, rgba(255, 99, 24, 0.14), transparent 30%);
+        opacity: 0.95;
+      }
+
+      .boot-splash__content {
+        position: relative;
+        display: flex;
+        width: 100%;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        padding: 32px;
+        text-align: center;
+      }
+
+      .boot-splash__logo-wrap {
+        position: relative;
+        width: min(52vw, 280px);
+        max-width: 280px;
+      }
+
+      .boot-splash__glow {
+        position: absolute;
+        inset: 18% 18% 24%;
+        border-radius: 999px;
+        background: radial-gradient(circle, rgba(255, 118, 31, 0.34), rgba(255, 118, 31, 0) 70%);
+        filter: blur(30px);
+        opacity: 0.78;
+        transform: translateZ(0);
+      }
+
+      .boot-splash__logo {
+        position: relative;
+        display: block;
+        width: 100%;
+        height: auto;
+        overflow: visible;
+        filter:
+          drop-shadow(0 0 18px rgba(255, 118, 31, 0.16))
+          drop-shadow(0 18px 34px rgba(0, 0, 0, 0.42));
+      }
+
+      .boot-splash__bar {
+        transform-box: fill-box;
+        transform-origin: center bottom;
+        opacity: var(--bar-opacity);
+        animation: bootSplashBarWave 1360ms cubic-bezier(0.16, 1, 0.3, 1) infinite;
+        animation-delay: var(--bar-delay);
+        will-change: transform, opacity;
+      }
+
+      .boot-splash__sheen {
+        opacity: 0.44;
+        transform-origin: center;
+        animation: bootSplashCloudGlow 2200ms ease-in-out infinite;
+      }
+
+      .boot-splash__title {
+        color: rgba(255, 255, 255, 0.92);
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      .boot-splash__label {
+        color: rgba(255, 255, 255, 0.44);
+        font-size: 12px;
+        line-height: 1.4;
+        letter-spacing: 0.01em;
+      }
+
+      @keyframes bootSplashBarWave {
+        0%,
+        100% {
+          opacity: calc(var(--bar-opacity) * 0.92);
+          transform: translateZ(0) scaleY(0.82);
+        }
+        28% {
+          opacity: calc(var(--bar-opacity) * 1.02);
+          transform: translateZ(0) scaleY(0.98);
+        }
+        52% {
+          opacity: 1;
+          transform: translateZ(0) scaleY(1.2);
+        }
+        76% {
+          opacity: calc(var(--bar-opacity) * 0.94);
+          transform: translateZ(0) scaleY(0.9);
+        }
+      }
+
+      @keyframes bootSplashCloudGlow {
+        0%,
+        100% {
+          opacity: 0.34;
+          transform: translateY(0);
+        }
+        50% {
+          opacity: 0.52;
+          transform: translateY(-1px);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .boot-splash__bar,
+        .boot-splash__sheen,
+        #boot-splash {
+          animation: none !important;
+          transition: none !important;
+          transform: none !important;
+        }
+      }
+    </style>
+    <script>
+      (() => {
+        const onContextMenu = (event) => {
+          event.preventDefault();
+        };
+
+        const onKeyDown = (event) => {
+          const key = String(event.key || '').toLowerCase();
+          const blocked =
+            event.key === 'F12' ||
+            ((event.ctrlKey || event.metaKey) &&
+              event.shiftKey &&
+              (key === 'i' || key === 'j' || key === 'c')) ||
+            ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'u');
+
+          if (!blocked) return;
+
+          event.preventDefault();
+          event.stopPropagation();
+        };
+
+        window.addEventListener('contextmenu', onContextMenu, true);
+        document.addEventListener('contextmenu', onContextMenu, true);
+        window.addEventListener('keydown', onKeyDown, true);
+      })();
+    </script>
   </head>
   <body>
+    <div id="boot-splash" aria-hidden="true">
+      <div class="boot-splash__backdrop"></div>
+      <div class="boot-splash__content">
+        <div class="boot-splash__logo-wrap">
+          <div class="boot-splash__glow"></div>
+          <svg class="boot-splash__logo" viewBox="0 0 520 240" fill="none">
+            <defs>
+              <linearGradient id="boot-bars-gradient" x1="120" y1="28" x2="340" y2="232">
+                <stop offset="0%" stop-color="#ffe29d"></stop>
+                <stop offset="32%" stop-color="#ffbf59"></stop>
+                <stop offset="72%" stop-color="#ff8d2d"></stop>
+                <stop offset="100%" stop-color="#ff5f1f"></stop>
+              </linearGradient>
+              <linearGradient id="boot-cloud-gradient" x1="270" y1="20" x2="474" y2="232">
+                <stop offset="0%" stop-color="#ffeeb8"></stop>
+                <stop offset="38%" stop-color="#ffc86e"></stop>
+                <stop offset="78%" stop-color="#ff8a2c"></stop>
+                <stop offset="100%" stop-color="#ff5b1f"></stop>
+              </linearGradient>
+              <linearGradient id="boot-cloud-highlight" x1="276" y1="44" x2="444" y2="176">
+                <stop offset="0%" stop-color="#ffffff" stop-opacity="0.42"></stop>
+                <stop offset="100%" stop-color="#ffffff" stop-opacity="0"></stop>
+              </linearGradient>
+            </defs>
+            <g>
+              <rect class="boot-splash__bar" style="--bar-delay:0ms;--bar-opacity:.68" x="18" y="168" width="9" height="28" rx="4.5" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:70ms;--bar-opacity:.704" x="36" y="144" width="11" height="52" rx="5.5" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:140ms;--bar-opacity:.728" x="57" y="126" width="12" height="70" rx="6" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:210ms;--bar-opacity:.752" x="80" y="110" width="12" height="86" rx="6" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:280ms;--bar-opacity:.776" x="103" y="94" width="13" height="102" rx="6.5" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:350ms;--bar-opacity:.8" x="127" y="78" width="13" height="118" rx="6.5" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:420ms;--bar-opacity:.824" x="151" y="68" width="13" height="128" rx="6.5" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:490ms;--bar-opacity:.848" x="175" y="60" width="13" height="136" rx="6.5" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:560ms;--bar-opacity:.872" x="199" y="52" width="13" height="144" rx="6.5" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:630ms;--bar-opacity:.896" x="223" y="44" width="13" height="152" rx="6.5" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:700ms;--bar-opacity:.92" x="247" y="36" width="13" height="160" rx="6.5" fill="url(#boot-bars-gradient)"></rect>
+              <rect class="boot-splash__bar" style="--bar-delay:770ms;--bar-opacity:.944" x="271" y="28" width="13" height="168" rx="6.5" fill="url(#boot-bars-gradient)"></rect>
+            </g>
+            <path d="M301 196V64c0-17.673 14.327-32 32-32h16c55.537 0 102.311 38.347 115.169 89.968A59.43 59.43 0 0 1 487 117c33.137 0 60 26.863 60 60s-26.863 60-60 60H301Z" fill="url(#boot-cloud-gradient)"></path>
+            <path class="boot-splash__sheen" d="M322 52c34.372 0 64.994 12.278 86.35 33.67c17.817 17.853 28.687 40.73 31.992 66.251c-25.68 19.331-62.537 31.079-103.591 31.079H301V64c0-6.588 3.695-12 8.25-12H322Z" fill="url(#boot-cloud-highlight)"></path>
+          </svg>
+        </div>
+        <div class="boot-splash__title">SoundCloud Desktop</div>
+        <div class="boot-splash__label">Starting app...</div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

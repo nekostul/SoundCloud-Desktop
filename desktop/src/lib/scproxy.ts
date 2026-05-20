@@ -10,6 +10,7 @@ const WHITELIST = [
 ];
 const IS_WINDOWS = navigator.userAgent.includes('Windows');
 const ENABLED = isTauriRuntime();
+const MEDIA_IMAGE_HOSTS = ['sndcdn.com', 'sndcdn.net', 'soundcloudcdn.com'];
 
 function isWhitelisted(url: string): boolean {
   try {
@@ -20,13 +21,14 @@ function isWhitelisted(url: string): boolean {
   }
 }
 
-function scproxyUrl(url: string): string {
-  const encoded = btoa(url);
-  const proxyPort = getProxyPort();
-  if (IS_WINDOWS && proxyPort) {
-    return `http://127.0.0.1:${proxyPort}/p/${encoded}`;
+function shouldProxyImage(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    return MEDIA_IMAGE_HOSTS.some((value) => host === value || host.endsWith(`.${value}`));
+  } catch {
+    return false;
   }
-  return IS_WINDOWS ? url : `scproxy://localhost/${encoded}`;
 }
 
 // 7.1.0 port: route image requests through the permanent image_cache. Payload
@@ -48,7 +50,7 @@ type ProxyImage = HTMLImageElement & { __origSrc?: string; __origRetryDone?: boo
 const imgSrcDesc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')!;
 Object.defineProperty(HTMLImageElement.prototype, 'src', {
   set(url: string) {
-    if (ENABLED && url?.startsWith('http') && !isWhitelisted(url)) {
+    if (ENABLED && url?.startsWith('http') && !isWhitelisted(url) && shouldProxyImage(url)) {
       const img = this as ProxyImage;
       img.__origSrc = url;
       img.__origRetryDone = false;
@@ -80,46 +82,5 @@ document.addEventListener(
   },
   true,
 );
-
-// Hook fetch()
-const origFetch = window.fetch.bind(window);
-window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-  if (!ENABLED) {
-    return origFetch(input, init);
-  }
-
-  let originalUrl: string | null = null;
-  let proxiedInput: RequestInfo | URL = input;
-  const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
-  const canFallback = method === 'GET' || method === 'HEAD';
-
-  if (typeof input === 'string' && input.startsWith('http') && !isWhitelisted(input)) {
-    originalUrl = input;
-    proxiedInput = scproxyUrl(input);
-  } else if (input instanceof URL && input.protocol.startsWith('http') && !isWhitelisted(input.toString())) {
-    originalUrl = input.toString();
-    proxiedInput = scproxyUrl(originalUrl);
-  } else if (input instanceof Request && input.url.startsWith('http') && !isWhitelisted(input.url)) {
-    originalUrl = input.url;
-    proxiedInput = new Request(scproxyUrl(input.url), input);
-  }
-
-  if (!originalUrl) {
-    return origFetch(input, init);
-  }
-
-  try {
-    const res = await origFetch(proxiedInput, init);
-    if (canFallback && res.status >= 500) {
-      return origFetch(originalUrl, init);
-    }
-    return res;
-  } catch (error) {
-    if (canFallback) {
-      return origFetch(originalUrl, init);
-    }
-    throw error;
-  }
-}) as typeof fetch;
 
 export {};
