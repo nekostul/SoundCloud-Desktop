@@ -497,6 +497,7 @@ export async function fetchDirectSoundCloudMe(
 export async function startDirectOAuthFlow(
   clientId: string,
   clientSecret: string,
+  locale: string,
 ): Promise<DirectOAuthTokens> {
   if (!isTauriRuntime()) {
     throw new Error('Direct SoundCloud OAuth requires Tauri runtime');
@@ -509,6 +510,7 @@ export async function startDirectOAuthFlow(
   }>('soundcloud_oauth_start', {
     clientId,
     clientSecret,
+    locale,
   });
 
   const normalized: DirectOAuthTokens = {

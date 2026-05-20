@@ -19,13 +19,18 @@ use base64::Engine;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{window::Color, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use discord::DiscordState;
 use server::ServerState;
+
+#[derive(Default)]
+struct TrayAvailabilityState {
+    available: AtomicBool,
+}
 
 /// Switch the main window icon AND the tray icon to one of the bundled
 /// variants. PNGs are baked into the binary at compile time via
@@ -661,9 +666,7 @@ pub(crate) fn emit_window_visibility(app: &tauri::AppHandle, visible: bool) {
 }
 
 fn append_bootstrap_error_log(message: &str) {
-    let base_dir = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from));
+    let base_dir = resolve_startup_logs_base_dir();
     let Some(base_dir) = base_dir else {
         eprintln!("{message}");
         return;
@@ -681,6 +684,45 @@ fn append_bootstrap_error_log(message: &str) {
     } else {
         eprintln!("{message}");
     }
+}
+
+fn resolve_startup_logs_base_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library").join("Application Support"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .map(|home| home.join(".local").join("state"))
+            })
+            .or_else(|| {
+                std::env::var_os("XDG_DATA_HOME")
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("HOME")
+                            .map(PathBuf::from)
+                            .map(|home| home.join(".local").join("share"))
+                    })
+            });
+    }
+
+    #[allow(unreachable_code)]
+    None
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -732,6 +774,7 @@ pub fn run() {
                 .expect("failed to resolve app data dir");
             std::fs::create_dir_all(&config_dir).ok();
 
+            app.manage(TrayAvailabilityState::default());
             app.manage(soundcloud_api::OAuthCallbackState::default());
             soundcloud_api::init_deep_link(&app.handle()).map_err(std::io::Error::other)?;
 
@@ -840,12 +883,30 @@ pub fn run() {
             audio_player::start_media_controls(app.handle());
             audio_player::start_visualizer_thread(app.handle());
 
-            tray::setup_tray(app).expect("failed to setup tray");
+            let tray_available = match tray::setup_tray(app) {
+                Ok(()) => true,
+                Err(error) => {
+                    append_bootstrap_error_log(&format!("Tray startup warning: {error}"));
+                    false
+                }
+            };
+            app.state::<TrayAvailabilityState>()
+                .available
+                .store(tray_available, Ordering::Relaxed);
 
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let tray_available = window
+                    .app_handle()
+                    .state::<TrayAvailabilityState>()
+                    .available
+                    .load(Ordering::Relaxed);
+                if !tray_available {
+                    return;
+                }
+
                 api.prevent_close();
                 let _ = window.hide();
                 emit_window_visibility(&window.app_handle(), false);

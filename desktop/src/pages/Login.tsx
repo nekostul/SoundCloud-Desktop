@@ -6,6 +6,7 @@ import {
   mapDirectUserToAuthUser,
   startDirectOAuthFlow,
 } from '../lib/direct-soundcloud-api';
+import { normalizeLanguage } from '../i18n/language';
 import { checkSoundCloudCdnConnectivity } from '../lib/media-connectivity';
 import { Check, Disc3 } from '../lib/icons';
 import { queryClient } from '../main';
@@ -18,7 +19,7 @@ interface LoginProps {
 }
 
 export function Login({ autoStartRequestId = null }: LoginProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [settingsHydrated, setSettingsHydrated] = useState(() => useSettingsStore.persist.hasHydrated());
   const clearReloginRequest = useAuthStore((s) => s.clearReloginRequest);
   const soundcloudClientId = useSettingsStore((s) => s.soundcloudClientId);
@@ -67,6 +68,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
       const tokens = await startDirectOAuthFlow(
         soundcloudClientId.trim(),
         soundcloudClientSecret.trim(),
+        normalizeLanguage(i18n.resolvedLanguage || i18n.language),
       );
 
       if (latestAttemptRef.current !== attemptId) {
@@ -122,6 +124,8 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
     setMediaConnectivityDialogOpen,
     soundcloudClientId,
     soundcloudClientSecret,
+    i18n.language,
+    i18n.resolvedLanguage,
   ]);
 
   useEffect(() => clearLoadingTimeout, [clearLoadingTimeout]);

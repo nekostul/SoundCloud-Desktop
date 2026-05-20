@@ -7,6 +7,7 @@ import { LogIn, LogOut } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { normalizeLanguage } from '../../i18n/language';
 import {
   fetchDirectSoundCloudMe,
   mapDirectUserToAuthUser,
@@ -16,7 +17,7 @@ import { useDirectAuthStore } from '../../stores/direct-auth';
 import { useSettingsStore } from '../../stores/settings';
 
 export function DirectOAuthSection() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [loading, setLoading] = useState(false);
   const { user, isAuthenticated, setTokens, setUser, logout } = useDirectAuthStore();
   const setSoundcloudClientId = useSettingsStore((s) => s.setSoundcloudClientId);
@@ -35,7 +36,11 @@ export function DirectOAuthSection() {
     setLoading(true);
     try {
       console.log('[DirectOAuth] Starting OAuth flow...');
-      const tokens = await startDirectOAuthFlow(clientId, clientSecret);
+      const tokens = await startDirectOAuthFlow(
+        clientId,
+        clientSecret,
+        normalizeLanguage(i18n.resolvedLanguage || i18n.language),
+      );
       const token = tokens.accessToken;
       console.log('[DirectOAuth] Received token:', token?.substring(0, 20) + '...');
 
@@ -58,7 +63,15 @@ export function DirectOAuthSection() {
     } finally {
       setLoading(false);
     }
-  }, [setSoundcloudClientId, setSoundcloudClientSecret, setTokens, setUser, t]);
+  }, [
+    i18n.language,
+    i18n.resolvedLanguage,
+    setSoundcloudClientId,
+    setSoundcloudClientSecret,
+    setTokens,
+    setUser,
+    t,
+  ]);
 
   const handleLogout = useCallback(() => {
     logout();

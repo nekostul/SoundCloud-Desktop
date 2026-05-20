@@ -1190,15 +1190,57 @@ export function setUnauthorizedHandler(handler: (() => void) | null) {
 }
 
 async function requestWithFallback(input: string, init: RequestInit): Promise<Response> {
+  const loopbackAlternative = createLoopbackAlternativeUrl(input);
+
   if (!isTauriRuntime()) {
-    return await fetch(input, init);
+    try {
+      return await fetch(input, init);
+    } catch (error) {
+      if (loopbackAlternative) {
+        return await fetch(loopbackAlternative, init);
+      }
+
+      throw error;
+    }
   }
 
   try {
     return await tauriFetch(input, init);
   } catch {
-    return await fetch(input, init);
+    try {
+      return await fetch(input, init);
+    } catch (error) {
+      if (!loopbackAlternative) {
+        throw error;
+      }
+
+      try {
+        return await tauriFetch(loopbackAlternative, init);
+      } catch {
+        return await fetch(loopbackAlternative, init);
+      }
+    }
   }
+}
+
+function createLoopbackAlternativeUrl(input: string): string | null {
+  try {
+    const url = new URL(input);
+
+    if (url.hostname === 'localhost') {
+      url.hostname = '127.0.0.1';
+      return url.toString();
+    }
+
+    if (url.hostname === '127.0.0.1') {
+      url.hostname = 'localhost';
+      return url.toString();
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function isDirectApiPathSupported(path: string): boolean {

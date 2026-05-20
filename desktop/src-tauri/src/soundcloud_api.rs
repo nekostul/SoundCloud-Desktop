@@ -12,7 +12,7 @@ const SOUNDCLOUD_API_BASE: &str = "https://api.soundcloud.com";
 const SOUNDCLOUD_AUTHORIZE_URL: &str = "https://secure.soundcloud.com/authorize";
 const SOUNDCLOUD_TOKEN_URL: &str = "https://secure.soundcloud.com/oauth/token";
 const SOUNDCLOUD_DESKTOP_SCHEME: &str = "soundcloud-desktop";
-const SOUNDCLOUD_REDIRECT_URI: &str = "https://sc-auth-redirect.web.app";
+const SOUNDCLOUD_REDIRECT_URI: &str = "https://sc-auth-redirect.web.app/oauth/callback";
 
 #[derive(Default)]
 pub struct OAuthCallbackState {
@@ -165,11 +165,16 @@ impl DirectSoundCloudApi {
     pub async fn start_oauth(
         client_id: String,
         client_secret: String,
+        locale: String,
         app: AppHandle,
     ) -> Result<SoundCloudToken, String> {
         let verifier = generate_pkce_verifier();
         let challenge = pkce_challenge(&verifier);
-        let state = generate_random_hex(16);
+        let state = format!(
+            "{}.{}",
+            generate_random_hex(16),
+            normalize_oauth_locale(&locale)
+        );
         let callback_url = Self::wait_for_oauth_callback(&app)?;
 
         let authorize_url = format!(
@@ -795,7 +800,6 @@ impl DirectSoundCloudApi {
 }
 
 pub fn init_deep_link(app: &AppHandle) -> Result<(), String> {
-    #[cfg(any(windows, target_os = "linux"))]
     app.deep_link()
         .register_all()
         .map_err(|error| format!("Failed to register deep links: {error}"))?;
@@ -852,6 +856,18 @@ fn generate_random_hex(byte_len: usize) -> String {
         *byte = rand::random();
     }
     hex::encode(bytes)
+}
+
+fn normalize_oauth_locale(locale: &str) -> &'static str {
+    let normalized = locale.trim().to_ascii_lowercase();
+
+    if normalized == "ru-x-rofl" || normalized == "ru-rofl" {
+        "ru-x-rofl"
+    } else if normalized == "ru" || normalized.starts_with("ru-") {
+        "ru"
+    } else {
+        "en"
+    }
 }
 
 fn pkce_challenge(verifier: &str) -> String {
@@ -1089,9 +1105,16 @@ fn infer_stream_quality(transcoding: &ScTranscoding) -> String {
 pub async fn soundcloud_oauth_start(
     client_id: String,
     client_secret: String,
+    locale: Option<String>,
     app: AppHandle,
 ) -> Result<SoundCloudToken, String> {
-    DirectSoundCloudApi::start_oauth(client_id, client_secret, app).await
+    DirectSoundCloudApi::start_oauth(
+        client_id,
+        client_secret,
+        locale.unwrap_or_else(|| "en".to_string()),
+        app,
+    )
+    .await
 }
 
 #[tauri::command]

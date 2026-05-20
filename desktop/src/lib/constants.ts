@@ -1,5 +1,5 @@
 export const LOCAL_API_BASE = (
-  import.meta.env.VITE_LOCAL_API_BASE || 'http://localhost:3000'
+  import.meta.env.VITE_LOCAL_API_BASE || 'http://127.0.0.1:3000'
 ).replace(/\/$/, '');
 export const DEFAULT_API_BASE = LOCAL_API_BASE;
 
