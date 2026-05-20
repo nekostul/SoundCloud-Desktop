@@ -17,6 +17,11 @@ import { art } from '../../lib/formatters';
 import { getAnimationFrameBudgetMs } from '../../lib/framerate';
 import { invalidateAllLikesCache } from '../../lib/hooks';
 import {
+  TRACK_SWITCH_NEXT_SCOPE,
+  TRACK_SWITCH_PREV_SCOPE,
+  useTrackSwitchCooldown,
+} from '../../lib/useTrackSwitchCooldown';
+import {
   Ban,
   ExternalLink,
   Eye,
@@ -688,32 +693,8 @@ const Controls = React.memo(({ track }: { track: Track }) => {
   const repeat = usePlayerStore((s) => s.repeat);
   const toggleRepeat = usePlayerStore((s) => s.toggleRepeat);
 
-  const [nextLocked, setNextLocked] = useState(false);
-  const [prevLocked, setPrevLocked] = useState(false);
-
-  const onNext = () => {
-    if (nextLocked) return;
-
-    setNextLocked(true);
-
-    next();
-
-    setTimeout(() => {
-      setNextLocked(false);
-    }, 1000);
-  };
-
-  const onPrev = () => {
-    if (prevLocked) return;
-
-    setPrevLocked(true);
-
-    handlePrev();
-
-    setTimeout(() => {
-      setPrevLocked(false);
-    }, 1000);
-  };
+  const nextLocked = useTrackSwitchCooldown(TRACK_SWITCH_NEXT_SCOPE);
+  const prevLocked = useTrackSwitchCooldown(TRACK_SWITCH_PREV_SCOPE);
 
   const ctrl =
     'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer hover:bg-white/[0.06] outline-none';
@@ -755,7 +736,7 @@ const Controls = React.memo(({ track }: { track: Track }) => {
 
       <button
         type="button"
-        onClick={onPrev}
+        onClick={handlePrev}
         disabled={prevLocked}
         className={`${ctrl} ${
           prevLocked
@@ -781,7 +762,7 @@ const Controls = React.memo(({ track }: { track: Track }) => {
 
       <button
         type="button"
-        onClick={onNext}
+        onClick={next}
         disabled={nextLocked}
         className={`${ctrl} ${
           nextLocked
@@ -3560,12 +3541,12 @@ const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
   const next = usePlayerStore((s) => s.next);
   const prevTrack = usePlayerStore((s) => s.prev);
   const shuffle = usePlayerStore((s) => s.shuffle);
-const toggleShuffle = usePlayerStore((s) => s.toggleShuffle);
+  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle);
 
-const repeat = usePlayerStore((s) => s.repeat);
-const toggleRepeat = usePlayerStore((s) => s.toggleRepeat);
-  const [nextLocked, setNextLocked] = useState(false);
-  const [prevLocked, setPrevLocked] = useState(false);
+  const repeat = usePlayerStore((s) => s.repeat);
+  const toggleRepeat = usePlayerStore((s) => s.toggleRepeat);
+  const nextLocked = useTrackSwitchCooldown(TRACK_SWITCH_NEXT_SCOPE);
+  const prevLocked = useTrackSwitchCooldown(TRACK_SWITCH_PREV_SCOPE);
 
   const compactCtrl =
     'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97] disabled:cursor-default disabled:text-white/28';
@@ -3573,20 +3554,6 @@ const toggleRepeat = usePlayerStore((s) => s.toggleRepeat);
     active
       ? `${compactCtrl} theme-accent-soft text-white/96 hover:text-white/96`
       : compactCtrl;
-
-  const onNext = useCallback(() => {
-    if (nextLocked) return;
-    setNextLocked(true);
-    next();
-    window.setTimeout(() => setNextLocked(false), 1000);
-  }, [next, nextLocked]);
-
-  const onPrev = useCallback(() => {
-    if (prevLocked) return;
-    setPrevLocked(true);
-    prevTrack();
-    window.setTimeout(() => setPrevLocked(false), 1000);
-  }, [prevLocked, prevTrack]);
 
   const handleOpenInSoundCloud = useCallback(() => {
     void (async () => {
@@ -3616,7 +3583,7 @@ return (
 
     <button
       type="button"
-      onClick={onPrev}
+      onClick={prevTrack}
       disabled={prevLocked}
       className={compactCtrl}
     >
@@ -3633,7 +3600,7 @@ return (
 
     <button
       type="button"
-      onClick={onNext}
+      onClick={next}
       disabled={nextLocked}
       className={compactCtrl}
     >
@@ -3869,10 +3836,12 @@ const LyricsMiniPlayerArtwork = React.memo(
                   key={`${track.urn}-lyrics-mini-preview-${previewArtSrc ?? displayArtSrc ?? 'fallback'}`}
                   src={previewArtSrc || displayArtSrc || ''}
                   alt=""
-                  className={`absolute inset-0 h-full w-full object-cover scale-105 transition-[opacity,transform] duration-500 ease-[var(--ease-apple)] ${
+                  className={`absolute inset-0 h-full w-full object-cover scale-105 transition-[opacity,transform,filter] duration-500 ease-[var(--ease-apple)] ${
                     loaded ? 'opacity-0' : 'opacity-100'
                   } ${
-                    controlsCollapsed ? '' : 'group-hover/lyrics-mini-art:scale-[1.04]'
+                    controlsCollapsed
+                      ? ''
+                      : 'group-hover/lyrics-mini-art:scale-[1.08] group-hover/lyrics-mini-art:blur-[6px] group-hover/lyrics-mini-art:brightness-[0.72]'
                   }`}
                   loading="eager"
                   decoding="async"
@@ -3883,10 +3852,12 @@ const LyricsMiniPlayerArtwork = React.memo(
                   key={`${track.urn}-lyrics-mini-display-${displayArtSrc ?? previewArtSrc ?? 'fallback'}`}
                   src={displayArtSrc || previewArtSrc || ''}
                   alt={track.title}
-                  className={`absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-500 ease-[var(--ease-apple)] ${
+                  className={`absolute inset-0 h-full w-full object-cover transition-[opacity,transform,filter] duration-500 ease-[var(--ease-apple)] ${
                     loaded ? 'opacity-100' : 'opacity-0'
                   } ${
-                    controlsCollapsed ? '' : 'group-hover/lyrics-mini-art:scale-[1.04]'
+                    controlsCollapsed
+                      ? ''
+                      : 'group-hover/lyrics-mini-art:scale-[1.03] group-hover/lyrics-mini-art:blur-[6px] group-hover/lyrics-mini-art:brightness-[0.72]'
                   }`}
                   loading="eager"
                   decoding="async"
@@ -3897,17 +3868,6 @@ const LyricsMiniPlayerArtwork = React.memo(
                     handleDisplayArtError();
                   }}
                 />
-                {!controlsCollapsed ? (
-                  <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[24px] opacity-0 transition-opacity duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/lyrics-mini-art:opacity-100">
-                    <img
-                      src={displayArtSrc || previewArtSrc || ''}
-                      alt=""
-                      aria-hidden="true"
-                      className="absolute -inset-[10%] h-[120%] w-[120%] max-w-none object-cover blur-[14px] brightness-[0.76] saturate-[1.08]"
-                    />
-                    <div className="absolute inset-0 bg-black/[0.14]" />
-                  </div>
-                ) : null}
               </>
             )}
           </div>

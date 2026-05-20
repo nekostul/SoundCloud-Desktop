@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AudioLines,
@@ -66,7 +66,6 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
   const [isStartingWave, setIsStartingWave] = useState(false);
   const [activeQuery, setActiveQuery] = useState('');
   const searchRef = useRef<VibeSearchBarHandle>(null);
-  const waveSettingsKeyRef = useRef<string | null>(null);
 
   const stableLanguages = useMemo(() => [...selectedLanguages].sort(), [selectedLanguages]);
 
@@ -204,32 +203,6 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
       setIsStartingWave(false);
     }
   };
-
-  useEffect(() => {
-    const nextKey = JSON.stringify({
-      languages: stableLanguages,
-      mode,
-      hideLiked,
-    });
-    const prevKey = waveSettingsKeyRef.current;
-    waveSettingsKeyRef.current = nextKey;
-
-    if (prevKey === null || prevKey === nextKey) return;
-    if (!isWaveQueue || !currentTrack || isStartingWave) return;
-
-    setIsStartingWave(true);
-    void restartWaveFromTrack(currentTrack).finally(() => {
-      setIsStartingWave(false);
-    });
-  }, [
-    stableLanguages,
-    mode,
-    hideLiked,
-    isWaveQueue,
-    currentTrack,
-    isStartingWave,
-    restartWaveFromTrack,
-  ]);
 
   const canStartWave = isWaveQueue || (isPlaying && !!currentTrack) || recTracks.length > 0;
   const playAllLabel = isWaveQueue

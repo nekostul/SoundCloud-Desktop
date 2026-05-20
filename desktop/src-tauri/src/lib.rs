@@ -906,9 +906,10 @@ pub fn run() {
             save_image_to_downloads,
             media_proxy::media_proxy_apply_settings,
             media_proxy::media_proxy_get_status,
-            media_proxy::media_proxy_refresh_auto,
-            media_proxy::media_proxy_report_degraded,
             media_proxy::media_proxy_http_get,
+            media_proxy::media_proxy_http_head,
+            media_proxy::media_proxy_probe_stream,
+            media_proxy::media_proxy_probe_stream_url,
             // 7.1.0 port: direct-from-SC track cache + permanent image cache.
             track_cache::track_ensure_cached,
             track_cache::track_is_cached,

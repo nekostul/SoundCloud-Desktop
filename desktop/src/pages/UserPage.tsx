@@ -918,13 +918,15 @@ export function UserPage() {
         {similarArtists.length > 0 && (
           <section className="space-y-4">
             <SectionHeading title={t('user.similarArtists', 'Похожие исполнители')} />
-            <div className="rounded-[32px] border border-white/[0.06] bg-white/[0.03] p-5 md:p-6 overflow-x-auto">
-              <div className="flex items-start gap-6 min-w-max">
+              <div className="rounded-[32px] border border-white/[0.06] bg-white/[0.03] overflow-hidden">
+                <div className="p-5 md:p-6 overflow-x-auto">
+                  <div className="flex items-start gap-6 min-w-max">
                 {similarArtists.map((artist) => (
                   <SimilarArtistCard key={artist.urn} user={artist} />
                 ))}
               </div>
             </div>
+          </div>
           </section>
         )}
 

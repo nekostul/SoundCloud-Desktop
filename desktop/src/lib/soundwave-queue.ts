@@ -54,10 +54,20 @@ const SCENE_CLUSTERS: Record<string, string[]> = {
   rap: ['rap', 'hiphop', 'hip-hop', 'boom', 'bap'],
 };
 
+const CYRILLIC_REGEX = /[\u0400-\u04FF]/g;
+const UKRAINIAN_REGEX = /[іїєґІЇЄҐ]/g;
+const KAZAKH_REGEX = /[әіңғүұқөһӘІҢҒҮҰҚӨҺ]/g;
+const JAPANESE_REGEX = /[\u3040-\u30FF]/g;
+const KOREAN_REGEX = /[\uAC00-\uD7AF\u1100-\u11FF]/g;
+const CHINESE_REGEX = /[\u4E00-\u9FFF\u3400-\u4DBF]/g;
+const LATIN_REGEX = /[A-Za-z\u00C0-\u024F]/g;
+const RUSSIAN_INDICATOR_REGEX = /[ёыэъЁЫЭЪ]/g;
+
 type WaveLanguageProfile = {
   primary: string | null;
   confidence: number;
   mixed: boolean;
+  matched: Set<string>;
 };
 
 type WaveTrackProfile = {
@@ -76,6 +86,18 @@ type RankedWaveTrack = Track & {
   _waveSafe: number;
   _waveDiscovery: number;
   _waveProfile: WaveTrackProfile;
+  _waveLanguageReason: string;
+  _waveLanguageStrict: boolean;
+  _waveLanguagePenalty: number;
+};
+
+type WaveLanguageFit = {
+  allowed: boolean;
+  strict: boolean;
+  fallback: boolean;
+  score: number;
+  penalty: number;
+  reason: string;
 };
 
 const waveTrackProfileCache = new Map<string, WaveTrackProfile>();
@@ -150,39 +172,48 @@ function inferWaveTrackLanguage(track: Track, tokenSet: Set<string>): WaveLangua
 
   const normalized = rawText.toLowerCase();
   const detected = detectLanguage(rawText);
-  const cyrillicCount = rawText.match(/[\u0400-\u04FF]/g)?.length ?? 0;
-  const latinCount = rawText.match(/[A-Za-z\u00C0-\u024F]/g)?.length ?? 0;
-  const ukrainianCount = rawText.match(/[іїєґІЇЄҐ]/g)?.length ?? 0;
-  const kazakhCount = rawText.match(/[әіңғүұқөһӘІҢҒҮҰҚӨҺ]/g)?.length ?? 0;
-  const japaneseCount = rawText.match(/[\u3040-\u30FF]/g)?.length ?? 0;
-  const koreanCount = rawText.match(/[\uAC00-\uD7AF\u1100-\u11FF]/g)?.length ?? 0;
-  const chineseCount = rawText.match(/[\u4E00-\u9FFF\u3400-\u4DBF]/g)?.length ?? 0;
+  const cyrillicCountStrict = rawText.match(CYRILLIC_REGEX)?.length ?? 0;
+  const latinCountStrict = rawText.match(LATIN_REGEX)?.length ?? 0;
+  const ukrainianCountStrict = rawText.match(UKRAINIAN_REGEX)?.length ?? 0;
+  const kazakhCountStrict = rawText.match(KAZAKH_REGEX)?.length ?? 0;
+  const japaneseCountStrict = rawText.match(JAPANESE_REGEX)?.length ?? 0;
+  const koreanCountStrict = rawText.match(KOREAN_REGEX)?.length ?? 0;
+  const chineseCountStrict = rawText.match(CHINESE_REGEX)?.length ?? 0;
+  const russianIndicatorCount = rawText.match(RUSSIAN_INDICATOR_REGEX)?.length ?? 0;
 
   const primary = detected || null;
   let confidence = 0.48;
   let mixed = false;
+  const matched = new Set<string>();
+
+  if (primary) {
+    matched.add(primary);
+  }
 
   if (primary === 'ru') {
-    confidence = cyrillicCount > 0 ? 0.82 : 0.52;
-    if (ukrainianCount > 0 || kazakhCount > 0) mixed = true;
+    confidence = russianIndicatorCount > 0 ? 0.92 : cyrillicCountStrict > 0 ? 0.82 : 0.52;
+    if (ukrainianCountStrict > 0 || kazakhCountStrict > 0) mixed = true;
   } else if (primary === 'uk') {
-    confidence = ukrainianCount > 0 ? 0.88 : 0.54;
-    mixed = cyrillicCount > ukrainianCount + 10;
+    confidence = ukrainianCountStrict > 0 ? 0.88 : 0.54;
+    mixed = cyrillicCountStrict > ukrainianCountStrict + 10;
   } else if (primary === 'kk') {
-    confidence = kazakhCount > 0 ? 0.9 : 0.5;
-    mixed = cyrillicCount > kazakhCount + 10;
+    confidence = kazakhCountStrict > 0 ? 0.9 : 0.5;
+    mixed = cyrillicCountStrict > kazakhCountStrict + 10;
   } else if (primary === 'ja') {
-    confidence = japaneseCount > 0 ? 0.9 : 0.56;
-    mixed = chineseCount > 0;
+    confidence = japaneseCountStrict > 0 ? 0.9 : 0.56;
+    mixed = chineseCountStrict > 0;
   } else if (primary === 'ko') {
-    confidence = koreanCount > 0 ? 0.9 : 0.56;
+    confidence = koreanCountStrict > 0 ? 0.9 : 0.56;
   } else if (primary === 'zh') {
-    confidence = chineseCount > 0 ? 0.88 : 0.56;
-    mixed = japaneseCount > 0;
+    confidence = chineseCountStrict > 0 ? 0.88 : 0.56;
+    mixed = japaneseCountStrict > 0;
   } else if (primary === 'en') {
-    confidence = latinCount > 0 ? 0.66 : 0.4;
+    confidence = latinCountStrict > 0 ? 0.66 : 0.4;
     const hasStrongOtherLanguage =
-      cyrillicCount > 0 || japaneseCount > 0 || koreanCount > 0 || chineseCount > 0;
+      cyrillicCountStrict > 0 ||
+      japaneseCountStrict > 0 ||
+      koreanCountStrict > 0 ||
+      chineseCountStrict > 0;
     mixed = hasStrongOtherLanguage;
   } else {
     confidence = rawText.trim().length >= 8 ? 0.58 : 0.38;
@@ -197,10 +228,36 @@ function inferWaveTrackLanguage(track: Track, tokenSet: Set<string>): WaveLangua
     mixed = true;
   }
 
+  if (
+    russianIndicatorCount > 0 ||
+    (cyrillicCountStrict > 0 && ukrainianCountStrict === 0 && kazakhCountStrict === 0)
+  ) {
+    matched.add('ru');
+  }
+  if (ukrainianCountStrict > 0) {
+    matched.add('uk');
+  }
+  if (kazakhCountStrict > 0) {
+    matched.add('kk');
+  }
+  if (japaneseCountStrict > 0) {
+    matched.add('ja');
+  }
+  if (koreanCountStrict > 0) {
+    matched.add('ko');
+  }
+  if (chineseCountStrict > 0) {
+    matched.add('zh');
+  }
+  if (latinCountStrict > 0 && matched.size === 0) {
+    matched.add('en');
+  }
+
   return {
     primary,
     confidence,
     mixed,
+    matched,
   };
 }
 
@@ -237,21 +294,36 @@ function computeSetOverlap(a: Set<string>, b: Set<string>): number {
 }
 
 function computeProfileSimilarity(a: WaveTrackProfile, b: WaveTrackProfile): number {
-  const genreMatch = a.genreKey && b.genreKey && a.genreKey === b.genreKey ? 0.24 : 0;
-  const artistMatch = a.artistKey && b.artistKey && a.artistKey === b.artistKey ? 0.1 : 0;
-  const tokenOverlap = computeSetOverlap(a.tokenSet, b.tokenSet) * 0.34;
-  const sceneOverlap = computeSetOverlap(a.sceneSet, b.sceneSet) * 0.22;
-  const energySimilarity = (1 - Math.min(1, Math.abs(a.energy - b.energy))) * 0.2;
+  const genreMatch = a.genreKey && b.genreKey && a.genreKey === b.genreKey ? 0.36 : 0;
+  const artistMatch = a.artistKey && b.artistKey && a.artistKey === b.artistKey ? 0.16 : 0;
+  const tokenOverlap = computeSetOverlap(a.tokenSet, b.tokenSet) * 0.26;
+  const sceneOverlap = computeSetOverlap(a.sceneSet, b.sceneSet) * 0.34;
+  const energySimilarity = (1 - Math.min(1, Math.abs(a.energy - b.energy))) * 0.24;
   const bpmSimilarity =
-    a.bpm && b.bpm ? (1 - Math.min(1, Math.abs(a.bpm - b.bpm) / 48)) * 0.1 : 0;
+    a.bpm && b.bpm ? (1 - Math.min(1, Math.abs(a.bpm - b.bpm) / 42)) * 0.14 : 0;
   const languageSimilarity =
-    a.language.primary && b.language.primary && a.language.primary === b.language.primary ? 0.08 : 0;
+    a.language.primary && b.language.primary && a.language.primary === b.language.primary ? 0.52 : 0;
+  const languageMismatchPenalty =
+    a.language.primary &&
+    b.language.primary &&
+    a.language.primary !== b.language.primary &&
+    a.language.confidence >= 0.4 &&
+    b.language.confidence >= 0.4
+      ? 0.34
+      : 0;
 
   return Math.max(
     0,
     Math.min(
-      1.25,
-      genreMatch + artistMatch + tokenOverlap + sceneOverlap + energySimilarity + bpmSimilarity + languageSimilarity,
+      1.95,
+      genreMatch +
+        artistMatch +
+        tokenOverlap +
+        sceneOverlap +
+        energySimilarity +
+        bpmSimilarity +
+        languageSimilarity -
+        languageMismatchPenalty,
     ),
   );
 }
@@ -282,27 +354,64 @@ function computeWeightedSeedSimilarity(
 function evaluateWaveLanguage(
   profile: WaveLanguageProfile,
   selectedLanguages: string[],
-): { allowed: boolean; score: number } {
+): WaveLanguageFit {
   if (selectedLanguages.length === 0) {
     return {
       allowed: true,
-      score: profile.primary && profile.confidence >= 0.45 ? 0.94 + profile.confidence * 0.08 : 0.72,
+      strict: Boolean(profile.primary && profile.confidence >= 0.45),
+      fallback: !profile.primary,
+      score: profile.primary && profile.confidence >= 0.45 ? 18 + profile.confidence * 10 : 6,
+      penalty: profile.primary ? (profile.mixed ? 8 : 0) : 18,
+      reason: profile.primary ? 'detected-language' : 'unknown-language',
     };
   }
 
-  if (selectedLanguages.length === 1) {
-    const target = selectedLanguages[0];
-    if (profile.primary !== target) return { allowed: false, score: 0 };
-    if (profile.confidence < 0.46) return { allowed: false, score: 0 };
-    if (profile.mixed && profile.confidence < 0.78) return { allowed: false, score: 0 };
-    return { allowed: true, score: 1.16 + Math.min(profile.confidence, 1) * 0.16 };
+  const allowedSet = new Set(selectedLanguages);
+  const exactPrimaryMatch =
+    profile.primary && allowedSet.has(profile.primary) && profile.confidence >= 0.44;
+  if (exactPrimaryMatch) {
+    return {
+      allowed: true,
+      strict: true,
+      fallback: false,
+      score: 120 + Math.min(profile.confidence, 1) * 18,
+      penalty: profile.mixed ? 14 : 0,
+      reason: 'primary-language-match',
+    };
   }
 
-  if (profile.primary && selectedLanguages.includes(profile.primary) && profile.confidence >= 0.4) {
-    return { allowed: true, score: 1.02 + Math.min(profile.confidence, 1) * 0.12 };
+  for (const code of profile.matched) {
+    if (allowedSet.has(code) && profile.confidence >= 0.42) {
+      return {
+        allowed: true,
+        strict: true,
+        fallback: false,
+        score: 96 + Math.min(profile.confidence, 1) * 12,
+        penalty: profile.mixed ? 12 : 6,
+        reason: 'secondary-language-match',
+      };
+    }
   }
 
-  return { allowed: false, score: 0 };
+  if (!profile.primary) {
+    return {
+      allowed: true,
+      strict: false,
+      fallback: true,
+      score: 4,
+      penalty: 96,
+      reason: 'unknown-language-fallback',
+    };
+  }
+
+  return {
+    allowed: true,
+    strict: false,
+    fallback: true,
+    score: -24,
+    penalty: 120 + Math.max(0, 1 - profile.confidence) * 18,
+    reason: `language-mismatch:${profile.primary}`,
+  };
 }
 
 function computeDiscoveryScore(
@@ -400,24 +509,31 @@ function buildRankedWaveTracks(
         [1.62, 1.16, 0.82],
       );
       const discovery = computeDiscoveryScore(profile, seedProfiles, anchorSimilarity, seedAffinity);
-      const mixedPenalty = profile.language.mixed ? 0.75 : 0;
-      const unknownPenalty = profile.language.primary ? 0 : 0.65;
+      const mixedPenalty = profile.language.mixed ? 1.35 : 0;
+      const unknownPenalty = profile.language.primary ? 0 : 1.6;
 
       const safeScore =
-        anchorSimilarity * 0.42 + continuity * 0.26 + seedAffinity * 0.22 + languageFit.score * 0.1;
+        anchorSimilarity * 0.44 +
+        continuity * 0.28 +
+        seedAffinity * 0.18 +
+        Math.max(languageFit.score, 0) * 0.1;
 
       const totalScore =
-        candidate.score * 2.55 +
-        anchorSimilarity * 4.9 +
-        continuity * 3.9 +
-        seedAffinity * 3.1 +
-        languageFit.score * 2.25 +
+        candidate.score * 2.8 +
+        anchorSimilarity * 6.1 +
+        continuity * 5.1 +
+        seedAffinity * 4.6 +
+        Math.max(languageFit.score, 0) * 0.9 +
         discovery * (mode === 'diverse' ? 1.15 : 0.42) -
+        languageFit.penalty -
         mixedPenalty -
         unknownPenalty;
 
       return {
         ...track,
+        _waveLanguagePenalty: languageFit.penalty,
+        _waveLanguageReason: languageFit.reason,
+        _waveLanguageStrict: languageFit.strict,
         _waveDiscovery: discovery,
         _waveProfile: profile,
         _waveSafe: safeScore,
@@ -426,6 +542,21 @@ function buildRankedWaveTracks(
     })
     .filter((track): track is RankedWaveTrack => Boolean(track))
     .sort((a, b) => b._waveScore - a._waveScore);
+}
+
+function summarizeWaveLanguageReasons(tracks: RankedWaveTrack[]): string {
+  if (tracks.length === 0) return 'none';
+
+  const counts = new Map<string, number>();
+  for (const track of tracks) {
+    counts.set(track._waveLanguageReason, (counts.get(track._waveLanguageReason) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(', ');
 }
 
 function orderTracksForContinuity(
@@ -457,6 +588,36 @@ function orderTracksForContinuity(
         Boolean(profile.artistKey && lastAnchor?.artistKey && profile.artistKey === lastAnchor.artistKey);
       const artistPenalty = profile.artistKey ? (artistCounts.get(profile.artistKey) ?? 0) * 1.2 : 0;
       const genrePenalty = profile.genreKey ? (genreCounts.get(profile.genreKey) ?? 0) * 0.68 : 0;
+      const sceneContinuity = lastAnchor ? computeSetOverlap(profile.sceneSet, lastAnchor.sceneSet) : 0;
+      const sceneJumpPenalty =
+        lastAnchor &&
+        profile.sceneSet.size > 0 &&
+        lastAnchor.sceneSet.size > 0 &&
+        sceneContinuity === 0
+          ? mode === 'diverse'
+            ? 0.8
+            : 1.35
+          : 0;
+      const genreJumpPenalty =
+        lastAnchor &&
+        profile.genreKey &&
+        lastAnchor.genreKey &&
+        profile.genreKey !== lastAnchor.genreKey
+          ? mode === 'diverse'
+            ? 0.45
+            : 0.95
+          : 0;
+      const languageJumpPenalty =
+        lastAnchor &&
+        profile.language.primary &&
+        lastAnchor.language.primary &&
+        profile.language.primary !== lastAnchor.language.primary &&
+        profile.language.confidence >= 0.44 &&
+        lastAnchor.language.confidence >= 0.44
+          ? mode === 'diverse'
+            ? 2.2
+            : 3.4
+          : 0;
       const energyJumpPenalty = lastAnchor
         ? Math.max(0, Math.abs(profile.energy - lastAnchor.energy) - 0.28) * 3.2
         : 0;
@@ -469,6 +630,9 @@ function orderTracksForContinuity(
         track._waveSafe * 1.28 -
         artistPenalty -
         genrePenalty -
+        sceneJumpPenalty -
+        genreJumpPenalty -
+        languageJumpPenalty -
         energyJumpPenalty -
         repeatPenalty -
         rankPenalty;
@@ -479,6 +643,9 @@ function orderTracksForContinuity(
         track._waveDiscovery * 3.05 -
         artistPenalty * 0.82 -
         genrePenalty * 0.62 -
+        sceneJumpPenalty * 0.9 -
+        genreJumpPenalty * 0.72 -
+        languageJumpPenalty * 0.86 -
         energyJumpPenalty * 0.72 -
         repeatPenalty * 0.78 -
         rankPenalty;
@@ -567,6 +734,7 @@ export async function buildWaveQueueFromSeeds(
   const recentTrackIds = primaryAnchors.map((track) => getTrackId(track)).filter(Boolean);
   const seedIdSet = new Set(seedIds);
   const candidateScores = new Map<string, { rec: RecommendResult; score: number; hits: number }>();
+  const targetSize = context?.targetSize ?? HOME_WAVE_QUEUE_TARGET;
 
   const anchorWeights = [1.52, 1.18, 0.92, 0.74];
   const baseRecommendationGroups = await Promise.all(
@@ -589,6 +757,10 @@ export async function buildWaveQueueFromSeeds(
       anchorWeights[index] ?? 0.7,
     );
   });
+
+  console.log(
+    `[SoundWave] Wave tail base groups: anchors=${primaryAnchors.length}, groups=${baseRecommendationGroups.length}, raw=${baseRecommendationGroups.reduce((total, group) => total + group.recs.length, 0)}, unique=${candidateScores.size}`,
+  );
 
   const baseHydrated = await hydrateByIds(
     Array.from(candidateScores.values())
@@ -626,6 +798,10 @@ export async function buildWaveQueueFromSeeds(
         0.96 - index * 0.1,
       );
     });
+
+    console.log(
+      `[SoundWave] Wave tail refinement groups: seeds=${refinementSeeds.length}, groups=${refinementGroups.length}, raw=${refinementGroups.reduce((total, group) => total + group.recs.length, 0)}, unique=${candidateScores.size}`,
+    );
   }
 
   const scoredHydrated = await hydrateByIds(
@@ -642,20 +818,58 @@ export async function buildWaveQueueFromSeeds(
     }),
   );
 
-  if (filtered.length === 0) return [];
+  if (filtered.length === 0) {
+    console.warn('[SoundWave] Wave tail hydration produced no playable candidates');
+    return [];
+  }
 
   const seedProfiles = primaryAnchors.map((track) => buildWaveTrackProfile(track));
   const recentProfiles = buildRecentTracksFromQueue(context?.recentTracks ?? primaryAnchors).map((track) =>
     buildWaveTrackProfile(track),
   );
   const ranked = buildRankedWaveTracks(filtered, candidateScores, seedProfiles, recentProfiles, languages, mode);
-  if (ranked.length === 0) return [];
+  if (ranked.length === 0) {
+    console.warn('[SoundWave] Wave tail ranking produced no candidates');
+    return [];
+  }
 
-  const ordered = orderTracksForContinuity(
-    ranked,
-    recentProfiles.length > 0 ? recentProfiles : seedProfiles,
-    mode,
-    context?.targetSize ?? HOME_WAVE_QUEUE_TARGET,
+  const orderingAnchors = recentProfiles.length > 0 ? recentProfiles : seedProfiles;
+  const strictLanguagePool = languages.length > 0 ? ranked.filter((track) => track._waveLanguageStrict) : ranked;
+  const fallbackLanguagePool =
+    languages.length > 0 ? ranked.filter((track) => !track._waveLanguageStrict) : [];
+
+  const primaryPool =
+    languages.length > 0 && strictLanguagePool.length > 0 ? strictLanguagePool : ranked;
+  const orderedPrimary = orderTracksForContinuity(primaryPool, orderingAnchors, mode, targetSize);
+
+  let ordered = orderedPrimary;
+  if (
+    languages.length > 0 &&
+    strictLanguagePool.length > 0 &&
+    orderedPrimary.length < targetSize &&
+    fallbackLanguagePool.length > 0
+  ) {
+    const fallbackAnchors = [...orderingAnchors, ...orderedPrimary.map((track) => track._waveProfile)].slice(-3);
+    const fallbackOrdered = orderTracksForContinuity(
+      fallbackLanguagePool,
+      fallbackAnchors.length > 0 ? fallbackAnchors : orderingAnchors,
+      mode,
+      targetSize - orderedPrimary.length,
+    );
+    ordered = [...orderedPrimary, ...fallbackOrdered];
+  }
+
+  const fallbackSelectedCount =
+    languages.length > 0 ? ordered.filter((track) => !track._waveLanguageStrict).length : 0;
+
+  if (languages.length > 0) {
+    console.log(
+      `[SoundWave] Wave tail language pools [${languages.join(', ')}]: strict=${strictLanguagePool.length}, fallback=${fallbackLanguagePool.length}, selected=${ordered.length}, fallbackSelected=${fallbackSelectedCount}, strictReasons=${summarizeWaveLanguageReasons(strictLanguagePool)}, fallbackReasons=${summarizeWaveLanguageReasons(fallbackLanguagePool)}`,
+    );
+  }
+
+  console.log(
+    `[SoundWave] Wave tail final: hydrated=${filtered.length}, ranked=${ranked.length}, selected=${ordered.length}/${targetSize}, mode=${mode}`,
   );
 
   return ordered.map((track) => track as Track);

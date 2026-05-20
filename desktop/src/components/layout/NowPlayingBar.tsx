@@ -39,6 +39,11 @@ import { invalidateAllLikesCache } from '../../lib/hooks';
 import { useIsMobile } from '../../lib/hooks/useIsMobile';
 import { ARTWORK_CROSSFADE_MS, useCrossfadeBackground } from '../../lib/useCrossfadeBackground';
 import {
+  TRACK_SWITCH_NEXT_SCOPE,
+  TRACK_SWITCH_PREV_SCOPE,
+  useTrackSwitchCooldown,
+} from '../../lib/useTrackSwitchCooldown';
+import {
   audioLines16,
   Ban,
   Heart,
@@ -1033,24 +1038,12 @@ const RepeatBtn = React.memo(() => {
 });
 
 const PrevBtn = React.memo(() => {
-  const [locked, setLocked] = useState(false);
-
-  const handleLockedPrev = () => {
-    if (locked) return;
-
-    setLocked(true);
-
-    handlePrev();
-
-    setTimeout(() => {
-      setLocked(false);
-    }, 1000);
-  };
+  const locked = useTrackSwitchCooldown(TRACK_SWITCH_PREV_SCOPE);
 
   return (
     <button
       type="button"
-      onClick={handleLockedPrev}
+      onClick={handlePrev}
       disabled={locked}
       className={`${btnClass(false, 'default')} ${locked ? 'opacity-40 cursor-default' : ''}`}
     >
@@ -1061,25 +1054,12 @@ const PrevBtn = React.memo(() => {
 
 const NextBtn = React.memo(() => {
   const next = usePlayerStore((s) => s.next);
-
-  const [locked, setLocked] = useState(false);
-
-  const handleNext = () => {
-    if (locked) return;
-
-    setLocked(true);
-
-    next();
-
-    setTimeout(() => {
-      setLocked(false);
-    }, 1000);
-  };
+  const locked = useTrackSwitchCooldown(TRACK_SWITCH_NEXT_SCOPE);
 
   return (
     <button
       type="button"
-      onClick={handleNext}
+      onClick={next}
       disabled={locked}
       className={`${btnClass(false, 'default')} ${locked ? 'opacity-40 cursor-default' : ''}`}
     >

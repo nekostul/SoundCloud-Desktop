@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { tauriStorage } from '../lib/tauri-storage';
+import {
+  runTrackSwitchCooldown,
+  TRACK_SWITCH_NEXT_SCOPE,
+  TRACK_SWITCH_PREV_SCOPE,
+} from '../lib/useTrackSwitchCooldown';
 import { useDislikesStore } from './dislikes';
 
 export const PLAYBACK_RATE_MIN = 0.5;
@@ -370,95 +375,97 @@ export const usePlayerStore = create<PlayerState>()(
         if (currentTrack) set({ isPlaying: !isPlaying });
       },
 
-      next: () => {
-        const {
-          queue,
-          queueIndex,
-          repeat,
-          globalPlaybackRate,
-          trackPlaybackRatesByUrn,
-          trackPlaybackRateEnabledByUrn,
-        } = get();
-        if (queue.length === 0) return;
+      next: () =>
+        runTrackSwitchCooldown(TRACK_SWITCH_NEXT_SCOPE, () => {
+          const {
+            queue,
+            queueIndex,
+            repeat,
+            globalPlaybackRate,
+            trackPlaybackRatesByUrn,
+            trackPlaybackRateEnabledByUrn,
+          } = get();
+          if (queue.length === 0) return;
 
-        let nextIdx = queueIndex + 1;
-        let attempts = 0;
+          let nextIdx = queueIndex + 1;
+          let attempts = 0;
 
-        while (attempts < queue.length) {
-          if (nextIdx >= queue.length) {
-            if (repeat === 'all') nextIdx = 0;
-            else {
-              set({ isPlaying: false });
-              return;
+          while (attempts < queue.length) {
+            if (nextIdx >= queue.length) {
+              if (repeat === 'all') nextIdx = 0;
+              else {
+                set({ isPlaying: false });
+                return;
+              }
             }
+
+            const track = queue[nextIdx];
+            const isDisliked = useDislikesStore.getState().dislikedTrackUrns.includes(track.urn);
+            const isBlocked = (track.access || 'playable') === 'blocked';
+            if (!isDisliked && !isBlocked) break;
+
+            nextIdx++;
+            attempts++;
           }
 
-          const track = queue[nextIdx];
-          const isDisliked = useDislikesStore.getState().dislikedTrackUrns.includes(track.urn);
-          const isBlocked = (track.access || 'playable') === 'blocked';
-          if (!isDisliked && !isBlocked) break;
+          if (attempts >= queue.length) {
+            set({ isPlaying: false });
+            return;
+          }
 
-          nextIdx++;
-          attempts++;
-        }
+          const nextTrack = queue[nextIdx];
+          set({
+            currentTrack: nextTrack,
+            queueIndex: nextIdx,
+            isPlaying: true,
+            playbackRate: resolvePlaybackRateForTrack(
+              nextTrack,
+              globalPlaybackRate,
+              trackPlaybackRateEnabledByUrn,
+              trackPlaybackRatesByUrn,
+            ),
+          });
+        }),
 
-        if (attempts >= queue.length) {
-          set({ isPlaying: false });
-          return;
-        }
-
-        const nextTrack = queue[nextIdx];
-        set({
-          currentTrack: nextTrack,
-          queueIndex: nextIdx,
-          isPlaying: true,
-          playbackRate: resolvePlaybackRateForTrack(
-            nextTrack,
+      prev: () =>
+        runTrackSwitchCooldown(TRACK_SWITCH_PREV_SCOPE, () => {
+          const {
+            queue,
+            queueIndex,
             globalPlaybackRate,
-            trackPlaybackRateEnabledByUrn,
             trackPlaybackRatesByUrn,
-          ),
-        });
-      },
-
-      prev: () => {
-        const {
-          queue,
-          queueIndex,
-          globalPlaybackRate,
-          trackPlaybackRatesByUrn,
-          trackPlaybackRateEnabledByUrn,
-        } = get();
-        if (queue.length === 0) return;
-
-        let prevIdx = queueIndex - 1;
-        let attempts = 0;
-
-        while (attempts < queue.length && prevIdx > 0) {
-          const track = queue[prevIdx];
-          const isDisliked = useDislikesStore.getState().dislikedTrackUrns.includes(track.urn);
-          const isBlocked = (track.access || 'playable') === 'blocked';
-          if (!isDisliked && !isBlocked) break;
-
-          prevIdx--;
-          attempts++;
-        }
-
-        prevIdx = Math.max(0, prevIdx);
-        const prevTrack = queue[prevIdx];
-
-        set({
-          currentTrack: prevTrack,
-          queueIndex: prevIdx,
-          isPlaying: true,
-          playbackRate: resolvePlaybackRateForTrack(
-            prevTrack,
-            globalPlaybackRate,
             trackPlaybackRateEnabledByUrn,
-            trackPlaybackRatesByUrn,
-          ),
-        });
-      },
+          } = get();
+          if (queue.length === 0) return;
+
+          let prevIdx = queueIndex - 1;
+          let attempts = 0;
+
+          while (attempts < queue.length && prevIdx > 0) {
+            const track = queue[prevIdx];
+            const isDisliked = useDislikesStore.getState().dislikedTrackUrns.includes(track.urn);
+            const isBlocked = (track.access || 'playable') === 'blocked';
+            if (!isDisliked && !isBlocked) break;
+
+            prevIdx--;
+            attempts++;
+          }
+
+          prevIdx = Math.max(0, prevIdx);
+          const prevTrack = queue[prevIdx];
+
+          set({
+            currentTrack: prevTrack,
+            queueIndex: prevIdx,
+            isPlaying: true,
+            playbackRate: resolvePlaybackRateForTrack(
+              prevTrack,
+              globalPlaybackRate,
+              trackPlaybackRateEnabledByUrn,
+              trackPlaybackRatesByUrn,
+            ),
+          });
+        }),
 
       setVolume: (v) => {
         const clamped = clampVolume(v);

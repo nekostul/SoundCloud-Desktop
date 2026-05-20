@@ -26,6 +26,10 @@ type RankedCandidate = RecommendationCandidate & {
   safeScore: number;
   discoveryScore: number;
   continuityScore: number;
+  languageReason: string;
+  languageStrict: boolean;
+  languagePenalty: number;
+  languageScore: number;
 };
 
 type TrackLike = ScTrack | { track?: ScTrack | null } | null | undefined;
@@ -61,9 +65,30 @@ type RecommendationProfile = {
   likedArtistKeys: Set<string>;
   followedArtistKeys: Set<string>;
   genreWeights: Map<string, number>;
+  sceneWeights: Map<string, number>;
   tagWeights: Map<string, number>;
   avgEnergy: number;
   dominantLanguage: string | null;
+};
+
+type LanguageFit = {
+  allowed: boolean;
+  strict: boolean;
+  fallback: boolean;
+  score: number;
+  penalty: number;
+  reason: string;
+};
+
+type VibeIntent = {
+  query: string;
+  languages: string[];
+  moodTags: string[];
+  genreTags: string[];
+  atmosphereTags: string[];
+  sceneTags: string[];
+  energyTarget: number | null;
+  searchQueries: string[];
 };
 
 type HomeCandidatePool = {
@@ -153,6 +178,115 @@ const SCENE_CLUSTERS: Record<string, string[]> = {
   rap: ['rap', 'hiphop', 'hip-hop', 'boom bap', 'boom-bap'],
 };
 
+const LANGUAGE_SCRIPT_MATCHERS: Record<string, RegExp> = {
+  ru: /[\u0400-\u04FF]/g,
+  uk: /[іїєґІЇЄҐ]/g,
+  kk: /[әіңғүұқөһӘІҢҒҮҰҚӨҺ]/g,
+  ar: /[\u0600-\u06FF]/g,
+  hi: /[\u0900-\u097F]/g,
+  ja: /[\u3040-\u30FF]/g,
+  ko: /[\uAC00-\uD7AF\u1100-\u11FF]/g,
+  zh: /[\u4E00-\u9FFF\u3400-\u4DBF]/g,
+};
+
+const LANGUAGE_HINT_TERMS: Record<string, string[]> = {
+  en: [' english ', ' uk rap ', ' uk garage ', ' us rap ', ' american ', ' london ', ' remix '],
+  ru: [' русский ', ' русская ', ' russian ', ' russia ', ' moscow ', ' russkiy '],
+  uk: [' україн', ' ukrainian ', ' kyiv ', ' kiev '],
+  kk: [' qazaq ', ' kazakh ', ' қазақ ', ' almaty ', ' astana '],
+  es: [' spanish ', ' espanol ', ' español ', ' latino ', ' latin trap '],
+  de: [' german ', ' deutsch ', ' berlin ', ' deutsche '],
+  fr: [' french ', ' francais ', ' français ', ' paris '],
+  it: [' italian ', ' italiano '],
+  pt: [' portuguese ', ' português ', ' brasil ', ' brazil ', ' brasileiro '],
+  ja: [' japanese ', ' j-pop ', ' jpop ', ' anime '],
+  ko: [' korean ', ' k-pop ', ' kpop '],
+  tr: [' turkish ', ' türkçe ', ' turkce '],
+  pl: [' polish ', ' polski '],
+  ar: [' arabic ', ' arab ', ' الخليج ', ' الشرق '],
+  hi: [' hindi ', ' bollywood ', ' desi '],
+};
+
+const CYRILLIC_REGEX = /[\u0400-\u04FF]/g;
+const UKRAINIAN_REGEX = /[іїєґІЇЄҐ]/g;
+const KAZAKH_REGEX = /[әіңғүұқөһӘІҢҒҮҰҚӨҺ]/g;
+const RUSSIAN_INDICATOR_REGEX = /[ёыэъЁЫЭЪ]/g;
+
+const VIBE_LANGUAGE_HINTS: Record<string, string[]> = {
+  ru: ['russian', 'russkiy', 'русский', 'русская', 'ru'],
+  uk: ['ukrainian', 'украин', 'uk'],
+  kk: ['kazakh', 'qazaq', 'қазақ', 'kk'],
+  en: ['english', 'eng', 'en'],
+  es: ['spanish', 'espanol', 'español', 'latino', 'es'],
+  de: ['german', 'deutsch', 'de'],
+  fr: ['french', 'francais', 'français', 'fr'],
+  pt: ['portuguese', 'brasil', 'brazilian', 'pt'],
+  it: ['italian', 'italiano', 'it'],
+  pl: ['polish', 'polski', 'pl'],
+  tr: ['turkish', 'türkçe', 'turkce', 'tr'],
+  ja: ['japanese', 'jpop', 'j-pop', 'anime', 'ja'],
+  ko: ['korean', 'kpop', 'k-pop', 'ko'],
+  zh: ['chinese', 'mandarin', 'cpop', 'c-pop', 'zh'],
+  ar: ['arabic', 'arab', 'ar'],
+  hi: ['hindi', 'bollywood', 'desi', 'hi'],
+};
+
+const VIBE_MOOD_HINTS: Record<string, string[]> = {
+  dark: ['dark', 'noir', 'shadow', 'gloom', 'grim', 'moody', 'мрач', 'тёмн'],
+  melancholic: ['melancholic', 'melancholy', 'sad', 'heartbreak', 'lonely', 'груст', 'тоск'],
+  emotional: ['emotional', 'feels', 'dramatic', 'cry', 'soulful', 'чувств', 'эмо'],
+  dreamy: ['dreamy', 'dream', 'ethereal', 'float', 'shoegaze', 'дрим'],
+  aggressive: ['aggressive', 'rage', 'hard', 'angry', 'heavy', 'жест', 'злой'],
+  hype: ['hype', 'energetic', 'upbeat', 'turnup', 'lit', 'club', 'кач'],
+  calm: ['calm', 'chill', 'soft', 'peaceful', 'relax', 'спокой', 'мягк'],
+  romantic: ['romantic', 'love', 'passion', 'intimate', 'романт', 'любов'],
+};
+
+const VIBE_ATMOSPHERE_HINTS: Record<string, string[]> = {
+  night: ['night', 'midnight', 'late', 'afterhours', 'nocturnal', 'ноч', 'вечер'],
+  street: ['street', 'hood', 'block', 'asphalt', 'urban', 'двор', 'улиц'],
+  atmospheric: ['atmospheric', 'cinematic', 'spacey', 'floating', 'misty', 'атмосфер'],
+  emotional: ['emotional', 'heartbreak', 'intimate', 'vulnerable', 'чувств', 'душевн'],
+  neon: ['neon', 'city', 'nightdrive', 'night drive', 'cyber', 'город'],
+};
+
+const VIBE_GENRE_HINTS: Record<string, string[]> = {
+  trap: ['trap', 'rage', 'pluggnb'],
+  drift: ['drift', 'drift phonk'],
+  phonk: ['phonk', 'memphis', 'cowbell'],
+  drill: ['drill', 'uk drill'],
+  cloudrap: ['cloudrap', 'cloud rap', 'sadtrap', 'emo rap'],
+  rap: ['rap', 'hiphop', 'hip-hop', 'boom bap', 'boom-bap'],
+  electronic: ['electronic', 'edm', 'electro'],
+  house: ['house', 'deep house'],
+  techno: ['techno'],
+  trance: ['trance'],
+  ambient: ['ambient', 'drone', 'soundscape'],
+  indie: ['indie', 'alternative'],
+  shoegaze: ['shoegaze'],
+  pop: ['pop', 'mainstream'],
+  jersey: ['jersey'],
+};
+
+const LANGUAGE_LABELS: Record<string, string> = {
+  en: 'english',
+  ru: 'russian',
+  uk: 'ukrainian',
+  kk: 'kazakh',
+  de: 'german',
+  fr: 'french',
+  es: 'spanish',
+  pt: 'portuguese',
+  it: 'italian',
+  pl: 'polish',
+  ja: 'japanese',
+  ko: 'korean',
+  zh: 'chinese',
+  tr: 'turkish',
+  ar: 'arabic',
+  hi: 'hindi',
+};
+
 @Injectable()
 export class RecommendationsService {
   private readonly logger = new Logger(RecommendationsService.name);
@@ -188,6 +322,7 @@ export class RecommendationsService {
       profile,
       anchorTracks: profile.seeds.slice(0, 4).map((seed) => seed.descriptor),
       recentTracks: [],
+      debugLabel: 'home',
     });
   }
 
@@ -199,31 +334,49 @@ export class RecommendationsService {
     if (query.length < 2) return [];
 
     const limit = this.clampLimit(opts.limit);
-    const languages = this.parseLanguages(opts.languages);
-    const searchLimit = Math.max(limit * 4, 28);
-    const page = await this.safeSearch(token, {
-      q: query,
-      limit: searchLimit,
-      access: 'playable,preview',
-    });
+    const requestedLanguages = this.parseLanguages(opts.languages);
+    const vibeIntent = this.parseVibeIntent(query, requestedLanguages);
+    const languages = requestedLanguages.length > 0 ? requestedLanguages : vibeIntent.languages;
+    const searchLimit = Math.max(Math.ceil(limit * 2.5), 18);
     const candidates = new Map<string, RecommendationCandidate>();
 
-    this.trackCollectionFromUnknown(page).forEach((track, index, collection) => {
-      const rankBoost = 1.25 - index / Math.max(collection.length * 0.9, 1);
-      this.mergeCandidate(candidates, track, {
-        baseScore: Math.max(rankBoost, 0.12),
-        source: 'search',
+    this.logger.debug(
+      `[Recommendations] search vibe query="${query}" languages=${languages.join('|') || 'auto'} moods=${vibeIntent.moodTags.join('|') || 'none'} genres=${vibeIntent.genreTags.join('|') || 'none'} scenes=${vibeIntent.sceneTags.join('|') || 'none'}`,
+    );
+
+    const searchGroups = await Promise.all(
+      vibeIntent.searchQueries.map((variant, index) =>
+        this.safeSearch(token, {
+          q: variant,
+          limit: searchLimit,
+          access: 'playable,preview',
+        }).then((page) => ({ index, variant, page })),
+      ),
+    );
+
+    searchGroups.forEach(({ index, variant, page }) => {
+      const queryBoost = index === 0 ? 1.48 : 1.22 - index * 0.1;
+      this.trackCollectionFromUnknown(page).forEach((track, trackIndex, collection) => {
+        const rankBoost = queryBoost - trackIndex / Math.max(collection.length * 0.92, 1);
+        this.mergeCandidate(candidates, track, {
+          baseScore: Math.max(rankBoost, 0.12),
+          source: index === 0 ? 'search-literal' : `search-vibe:${variant}`,
+        });
       });
     });
+
+    const vibeDescriptor = this.createVibeDescriptor(vibeIntent, languages);
+    const vibeProfile = this.buildVibeRecommendationProfile(vibeDescriptor);
 
     return this.finalizeCandidates(candidates, {
       limit,
       mode: 'similar',
       languages,
       excludeIds: new Set(),
-      profile: this.emptyRecommendationProfile(),
-      anchorTracks: [],
-      recentTracks: [],
+      profile: vibeProfile,
+      anchorTracks: [vibeDescriptor],
+      recentTracks: [vibeDescriptor],
+      debugLabel: `search:${query}`,
     });
   }
 
@@ -268,6 +421,7 @@ export class RecommendationsService {
       profile,
       anchorTracks: anchorTracks.map((track) => this.describeTrack(track)),
       recentTracks: anchorTracks.map((track) => this.describeTrack(track)),
+      debugLabel: `similar:${trackRef}`,
     });
   }
 
@@ -339,6 +493,7 @@ export class RecommendationsService {
       profile,
       anchorTracks: anchorDescriptors,
       recentTracks: anchorDescriptors.slice(0, 3),
+      debugLabel: `wave:${trackRef}`,
     });
   }
 
@@ -468,6 +623,7 @@ export class RecommendationsService {
     const likedArtistKeys = new Set<string>();
     const followedArtistKeys = new Set<string>();
     const genreWeights = new Map<string, number>();
+    const sceneWeights = new Map<string, number>();
     const tagWeights = new Map<string, number>();
     const languageWeights = new Map<string, number>();
     const seeds: ProfileSeed[] = [];
@@ -495,6 +651,10 @@ export class RecommendationsService {
 
       descriptor.tokenSet.forEach((token) => {
         tagWeights.set(token, (tagWeights.get(token) ?? 0) + weight * 0.6);
+      });
+
+      descriptor.sceneSet.forEach((scene) => {
+        sceneWeights.set(scene, (sceneWeights.get(scene) ?? 0) + weight * 0.75);
       });
 
       if (descriptor.language.primary && descriptor.language.confidence >= 0.48) {
@@ -537,6 +697,7 @@ export class RecommendationsService {
       likedArtistKeys,
       followedArtistKeys,
       genreWeights,
+      sceneWeights,
       tagWeights,
       avgEnergy,
       dominantLanguage,
@@ -550,10 +711,172 @@ export class RecommendationsService {
       likedArtistKeys: new Set(),
       followedArtistKeys: new Set(),
       genreWeights: new Map(),
+      sceneWeights: new Map(),
       tagWeights: new Map(),
       avgEnergy: 0.5,
       dominantLanguage: null,
     };
+  }
+
+  private buildVibeRecommendationProfile(descriptor: TrackDescriptor): RecommendationProfile {
+    const genreWeights = new Map<string, number>();
+    const sceneWeights = new Map<string, number>();
+    const tagWeights = new Map<string, number>();
+
+    if (descriptor.genreKey) {
+      genreWeights.set(descriptor.genreKey, 1.8);
+    }
+
+    descriptor.sceneSet.forEach((scene) => {
+      sceneWeights.set(scene, 1.45);
+    });
+
+    descriptor.tokenSet.forEach((token) => {
+      tagWeights.set(token, 1.05);
+    });
+
+    return {
+      seeds: [{ descriptor, source: 'vibe-query', weight: 1.9 }],
+      recentTrackIds: new Set(),
+      likedArtistKeys: new Set(),
+      followedArtistKeys: new Set(),
+      genreWeights,
+      sceneWeights,
+      tagWeights,
+      avgEnergy: descriptor.energy,
+      dominantLanguage: descriptor.language.primary,
+    };
+  }
+
+  private createVibeDescriptor(intent: VibeIntent, languages: string[]): TrackDescriptor {
+    const tokenSet = new Set<string>([
+      ...intent.genreTags,
+      ...intent.moodTags,
+      ...intent.atmosphereTags,
+      ...intent.sceneTags,
+      ...this.tokenizeText(intent.query),
+    ]);
+    const sceneSet = new Set<string>(intent.sceneTags);
+
+    for (const [scene, cues] of Object.entries(SCENE_CLUSTERS)) {
+      if (cues.some((cue) => tokenSet.has(cue))) {
+        sceneSet.add(scene);
+      }
+    }
+
+    return {
+      id: `vibe:${intent.query.toLowerCase()}`,
+      artistKey: null,
+      genreKey: intent.genreTags[0] ?? null,
+      tokenSet,
+      sceneSet,
+      energy: intent.energyTarget ?? 0.56,
+      bpm: null,
+      socialScore: 0.42,
+      language: {
+        primary: languages[0] ?? null,
+        confidence: languages.length > 0 ? 0.94 : 0,
+        mixed: languages.length > 1,
+        matched: new Set(languages),
+      },
+    };
+  }
+
+  private parseVibeIntent(query: string, requestedLanguages: string[]): VibeIntent {
+    const normalized = query.trim().toLowerCase();
+    const tokens = this.tokenizeText(normalized);
+    const languages =
+      requestedLanguages.length > 0
+        ? requestedLanguages
+        : this.collectIntentTags(tokens, VIBE_LANGUAGE_HINTS);
+    const moodTags = this.collectIntentTags(tokens, VIBE_MOOD_HINTS);
+    const genreTags = this.collectIntentTags(tokens, VIBE_GENRE_HINTS);
+    const atmosphereTags = this.collectIntentTags(tokens, VIBE_ATMOSPHERE_HINTS);
+    const sceneTags = [...new Set(genreTags.flatMap((genre) => this.genreToSceneTags(genre)))];
+    const energyTarget = this.inferIntentEnergy(tokens, moodTags, genreTags);
+    const baseLanguageLabel = languages[0] ? LANGUAGE_LABELS[languages[0]] ?? languages[0] : '';
+    const compactGenreMood = [...genreTags.slice(0, 2), ...moodTags.slice(0, 2)];
+    const compactAtmosphere = [...atmosphereTags.slice(0, 2), ...genreTags.slice(0, 1)];
+    const searchQueries = [
+      query,
+      [baseLanguageLabel, ...compactGenreMood].filter(Boolean).join(' '),
+      [baseLanguageLabel, ...compactAtmosphere].filter(Boolean).join(' '),
+      [baseLanguageLabel, ...sceneTags.slice(0, 2), ...moodTags.slice(0, 1)].filter(Boolean).join(' '),
+    ]
+      .map((value) => value.trim())
+      .filter((value) => value.length >= 2)
+      .filter((value, index, collection) => collection.indexOf(value) === index)
+      .slice(0, 4);
+
+    return {
+      query,
+      languages,
+      moodTags,
+      genreTags,
+      atmosphereTags,
+      sceneTags,
+      energyTarget,
+      searchQueries,
+    };
+  }
+
+  private collectIntentTags(tokens: string[], dictionary: Record<string, string[]>): string[] {
+    const joined = ` ${tokens.join(' ')} `;
+    const matched: string[] = [];
+
+    for (const [tag, hints] of Object.entries(dictionary)) {
+      if (hints.some((hint) => joined.includes(` ${hint} `) || joined.includes(hint))) {
+        matched.push(tag);
+      }
+    }
+
+    return matched;
+  }
+
+  private genreToSceneTags(genre: string): string[] {
+    const matchedScenes: string[] = [];
+    for (const [scene, cues] of Object.entries(SCENE_CLUSTERS)) {
+      if (cues.includes(genre)) {
+        matchedScenes.push(scene);
+      }
+    }
+    return matchedScenes.length > 0 ? matchedScenes : [genre];
+  }
+
+  private inferIntentEnergy(tokens: string[], moodTags: string[], genreTags: string[]): number | null {
+    const tokenSet = new Set(tokens);
+    let energy = 0.52;
+    let signalCount = 0;
+
+    for (const token of tokenSet) {
+      if (HIGH_ENERGY_TOKENS.includes(token)) {
+        energy += 0.12;
+        signalCount += 1;
+      }
+      if (LOW_ENERGY_TOKENS.includes(token)) {
+        energy -= 0.12;
+        signalCount += 1;
+      }
+    }
+
+    if (moodTags.includes('aggressive') || moodTags.includes('hype')) {
+      energy += 0.14;
+      signalCount += 1;
+    }
+    if (moodTags.includes('calm') || moodTags.includes('melancholic')) {
+      energy -= 0.1;
+      signalCount += 1;
+    }
+    if (genreTags.includes('drift') || genreTags.includes('phonk') || genreTags.includes('trap')) {
+      energy += 0.08;
+      signalCount += 1;
+    }
+    if (genreTags.includes('ambient') || genreTags.includes('shoegaze')) {
+      energy -= 0.08;
+      signalCount += 1;
+    }
+
+    return signalCount > 0 ? Math.max(0.08, Math.min(0.95, energy)) : null;
   }
 
   private finalizeCandidates(
@@ -566,6 +889,7 @@ export class RecommendationsService {
       profile: RecommendationProfile;
       anchorTracks: TrackDescriptor[];
       recentTracks: TrackDescriptor[];
+      debugLabel?: string;
     },
   ): RecommendResult[] {
     const ranked: RankedCandidate[] = [];
@@ -589,6 +913,7 @@ export class RecommendationsService {
       );
       const tasteSimilarity = this.computeProfileSimilarity(descriptor, opts.profile.seeds);
       const genreAffinity = this.computeGenreAffinity(descriptor, opts.profile.genreWeights);
+      const sceneAffinity = this.computeSceneAffinity(descriptor, opts.profile.sceneWeights);
       const tagAffinity = this.computeTagAffinity(descriptor, opts.profile.tagWeights);
       const artistAffinity = this.computeArtistAffinity(descriptor, opts.profile);
       const energyAffinity = 1 - Math.min(1, Math.abs(descriptor.energy - opts.profile.avgEnergy));
@@ -599,14 +924,14 @@ export class RecommendationsService {
         opts.profile,
       );
       const heardPenalty = opts.profile.recentTrackIds.has(candidate.id) ? 2.9 : 0;
-      const mixedPenalty = descriptor.language.mixed ? 0.8 : 0;
-      const unknownPenalty = descriptor.language.primary ? 0 : 0.7;
+      const mixedPenalty = descriptor.language.mixed ? 1.4 : 0;
+      const unknownPenalty = descriptor.language.primary ? 0 : 1.8;
 
       const safeScore =
         anchorSimilarity * 0.42 +
         recentContinuity * 0.28 +
         tasteSimilarity * 0.2 +
-        languageFit.score * 0.1;
+        Math.max(languageFit.score, 0) * 0.1;
 
       const discoveryScore = Math.max(
         0,
@@ -617,16 +942,18 @@ export class RecommendationsService {
 
       const score =
         candidate.baseScore * 3.05 +
-        anchorSimilarity * 5.3 +
-        recentContinuity * 4.2 +
-        tasteSimilarity * 3.45 +
-        genreAffinity * 1.55 +
-        tagAffinity * 1.45 +
+        anchorSimilarity * 6.4 +
+        recentContinuity * 5.1 +
+        tasteSimilarity * 4.2 +
+        genreAffinity * 2.05 +
+        sceneAffinity * 2.35 +
+        tagAffinity * 1.7 +
         artistAffinity * 1.1 +
-        energyAffinity * 0.9 +
+        energyAffinity * 1.25 +
         descriptor.socialScore * 0.75 +
-        languageFit.score * 2.6 +
+        languageFit.score * 1.15 +
         noveltyScore * (opts.mode === 'diverse' ? 1.35 : 0.6) -
+        languageFit.penalty -
         heardPenalty -
         mixedPenalty -
         unknownPenalty;
@@ -637,24 +964,64 @@ export class RecommendationsService {
         continuityScore: recentContinuity,
         safeScore,
         discoveryScore,
+        languagePenalty: languageFit.penalty,
+        languageReason: languageFit.reason,
+        languageScore: languageFit.score,
+        languageStrict: languageFit.strict,
         score,
       });
     }
 
     ranked.sort((a, b) => b.score - a.score);
 
-    const selected = this.selectCandidates(ranked, {
+    const strictLanguagePool = ranked.filter((candidate) => candidate.languageStrict);
+    const fallbackLanguagePool = ranked.filter((candidate) => !candidate.languageStrict);
+    const primaryPool =
+      opts.languages.length > 0 && strictLanguagePool.length > 0 ? strictLanguagePool : ranked;
+
+    const selected = this.selectCandidates(primaryPool, {
       limit: opts.limit,
       mode: opts.mode,
       anchors: opts.anchorTracks.length > 0 ? opts.anchorTracks : opts.recentTracks,
     });
+    const remainingSlots = Math.max(0, opts.limit - selected.length);
 
-    return selected.map((candidate) => ({
+    const withFallback =
+      remainingSlots > 0
+        ? [
+            ...selected,
+            ...this.selectCandidates(fallbackLanguagePool, {
+              limit: remainingSlots,
+              mode: opts.mode,
+              anchors: [
+                ...selected.map((candidate) => candidate.descriptor),
+                ...(opts.anchorTracks.length > 0 ? opts.anchorTracks : opts.recentTracks),
+              ],
+            }),
+          ]
+        : selected;
+
+    const finalSelected = withFallback.slice(0, opts.limit);
+
+    if (opts.languages.length > 0) {
+      const fallbackSelectedCount = finalSelected.filter((candidate) => !candidate.languageStrict).length;
+      this.logger.debug(
+        `[Recommendations] ${opts.debugLabel ?? 'wave'} language strict=${strictLanguagePool.length} fallback=${fallbackLanguagePool.length} selected=${finalSelected.length} fallbackSelected=${fallbackSelectedCount}`,
+      );
+    }
+
+    return finalSelected.map((candidate) => ({
       id: candidate.id,
       score: Number(candidate.score.toFixed(4)),
       payload: {
         source: candidate.source,
         hits: candidate.hits,
+        language: {
+          reason: candidate.languageReason,
+          strict: candidate.languageStrict,
+          score: Number(candidate.languageScore.toFixed(2)),
+          penalty: Number(candidate.languagePenalty.toFixed(2)),
+        },
       },
     }));
   }
@@ -813,7 +1180,7 @@ export class RecommendationsService {
       bpm,
       energy: this.estimateTrackEnergy(tokenSet, bpm),
       socialScore: this.computeSocialScore(track),
-      language: this.detectTrackLanguage(text),
+      language: this.detectTrackLanguageV2(text),
     };
 
     this.descriptorCache.set(id, descriptor);
@@ -867,14 +1234,14 @@ export class RecommendationsService {
       scores.set(code, (scores.get(code) ?? 0) + score);
     };
 
-    for (const [code, regex] of Object.entries(SCRIPT_MATCHERS)) {
+    for (const [code, regex] of Object.entries(LANGUAGE_SCRIPT_MATCHERS)) {
       const count = (text.match(regex) ?? []).length;
       if (count > 0) {
         addScore(code, Math.min(1.2, 0.18 + count / 18));
       }
     }
 
-    for (const [code, hints] of Object.entries(LANGUAGE_HINTS)) {
+    for (const [code, hints] of Object.entries(LANGUAGE_HINT_TERMS)) {
       let hitCount = 0;
       for (const hint of hints) {
         if (normalized.includes(hint)) hitCount += 1;
@@ -885,7 +1252,7 @@ export class RecommendationsService {
     }
 
     const latinChars = text.match(/[A-Za-z\u00C0-\u024F]/g)?.length ?? 0;
-    const cyrillicChars = text.match(/[\u0400-\u04FF]/g)?.length ?? 0;
+    const cyrillicChars = text.match(CYRILLIC_REGEX)?.length ?? 0;
 
     if (latinChars > 0 && cyrillicChars === 0) {
       const hasStrongLatinLanguage = ['es', 'de', 'fr', 'it', 'pt', 'tr', 'pl'].some(
@@ -931,44 +1298,164 @@ export class RecommendationsService {
     };
   }
 
+  private detectTrackLanguageV2(text: string): TrackLanguageProfile {
+    const normalized = ` ${text.toLowerCase()} `;
+    if (!normalized.trim()) {
+      return { primary: null, confidence: 0, mixed: false, matched: new Set() };
+    }
+
+    const scores = new Map<string, number>();
+    const addScore = (code: string, score: number) => {
+      if (score <= 0) return;
+      scores.set(code, (scores.get(code) ?? 0) + score);
+    };
+
+    for (const [code, regex] of Object.entries(LANGUAGE_SCRIPT_MATCHERS)) {
+      const count = (text.match(regex) ?? []).length;
+      if (count > 0) {
+        addScore(code, Math.min(1.2, 0.18 + count / 18));
+      }
+    }
+
+    for (const [code, hints] of Object.entries(LANGUAGE_HINT_TERMS)) {
+      let hitCount = 0;
+      for (const hint of hints) {
+        if (normalized.includes(hint)) hitCount += 1;
+      }
+      if (hitCount > 0) {
+        addScore(code, Math.min(1.15, hitCount * 0.32));
+      }
+    }
+
+    const latinChars = text.match(/[A-Za-z\u00C0-\u024F]/g)?.length ?? 0;
+    const cyrillicChars = text.match(CYRILLIC_REGEX)?.length ?? 0;
+
+    if (latinChars > 0 && cyrillicChars === 0) {
+      const hasStrongLatinLanguage = ['es', 'de', 'fr', 'it', 'pt', 'tr', 'pl'].some(
+        (code) => (scores.get(code) ?? 0) >= 0.58,
+      );
+      if (!hasStrongLatinLanguage) {
+        addScore('en', Math.min(0.95, 0.38 + latinChars / 40));
+      }
+    }
+
+    if (cyrillicChars > 0) {
+      const ukrainianChars = text.match(UKRAINIAN_REGEX)?.length ?? 0;
+      const kazakhChars = text.match(KAZAKH_REGEX)?.length ?? 0;
+      const russianChars = text.match(RUSSIAN_INDICATOR_REGEX)?.length ?? 0;
+      if (ukrainianChars > 0) addScore('uk', ukrainianChars * 0.32);
+      if (kazakhChars > 0) addScore('kk', kazakhChars * 0.34);
+      if (russianChars > 0) addScore('ru', russianChars * 0.22);
+      if (ukrainianChars === 0 && kazakhChars === 0 && russianChars === 0) {
+        addScore('ru', 0.58);
+      }
+    }
+
+    const ordered = [...scores.entries()].sort((a, b) => b[1] - a[1]);
+    const primary = ordered[0]?.[0] ?? null;
+    const primaryScore = ordered[0]?.[1] ?? 0;
+    const secondScore = ordered[1]?.[1] ?? 0;
+    const confidence = primary
+      ? Math.max(0, Math.min(1, primaryScore - secondScore * 0.26))
+      : 0;
+    const mixed =
+      Boolean(primary) &&
+      secondScore >= 0.42 &&
+      secondScore / Math.max(primaryScore, 0.01) >= 0.62;
+    const matched = new Set(
+      ordered.filter(([, score]) => score >= 0.52).map(([code]) => code),
+    );
+
+    return {
+      primary,
+      confidence,
+      mixed,
+      matched,
+    };
+  }
+
   private evaluateLanguageFit(
     profile: TrackLanguageProfile,
     selectedLanguages: string[],
     dominantProfileLanguage: string | null,
-  ): { allowed: boolean; score: number } {
+  ): LanguageFit {
     if (selectedLanguages.length === 0) {
       if (dominantProfileLanguage && profile.primary === dominantProfileLanguage) {
-        return { allowed: true, score: 1.08 + Math.min(profile.confidence, 1) * 0.12 };
+        return {
+          allowed: true,
+          strict: true,
+          fallback: false,
+          score: 44 + Math.min(profile.confidence, 1) * 18,
+          penalty: profile.mixed ? 10 : 0,
+          reason: 'dominant-profile-language',
+        };
+      }
+      if (profile.primary && profile.confidence >= 0.4) {
+        return {
+          allowed: true,
+          strict: false,
+          fallback: false,
+          score: 18 + Math.min(profile.confidence, 1) * 10,
+          penalty: profile.mixed ? 8 : 0,
+          reason: 'detected-language',
+        };
       }
       return {
         allowed: true,
-        score:
-          profile.primary && profile.confidence >= 0.45
-            ? 0.9 + profile.confidence * 0.08
-            : 0.72,
+        strict: false,
+        fallback: true,
+        score: 6,
+        penalty: 18,
+        reason: 'unknown-language',
       };
     }
 
     const allowedSet = new Set(selectedLanguages);
-    if (selectedLanguages.length === 1) {
-      const target = selectedLanguages[0];
-      if (profile.primary !== target) return { allowed: false, score: 0 };
-      if (profile.confidence < 0.46) return { allowed: false, score: 0 };
-      if (profile.mixed && profile.confidence < 0.78) return { allowed: false, score: 0 };
-      return { allowed: true, score: 1.18 + Math.min(profile.confidence, 1) * 0.18 };
-    }
-
-    if (profile.primary && allowedSet.has(profile.primary) && profile.confidence >= 0.4) {
-      return { allowed: true, score: 1.04 + Math.min(profile.confidence, 1) * 0.14 };
+    const exactPrimaryMatch =
+      profile.primary && allowedSet.has(profile.primary) && profile.confidence >= 0.44;
+    if (exactPrimaryMatch) {
+      return {
+        allowed: true,
+        strict: true,
+        fallback: false,
+        score: 120 + Math.min(profile.confidence, 1) * 18,
+        penalty: profile.mixed ? 14 : 0,
+        reason: 'primary-language-match',
+      };
     }
 
     for (const code of profile.matched) {
       if (allowedSet.has(code) && profile.confidence >= 0.42) {
-        return { allowed: true, score: 0.96 };
+        return {
+          allowed: true,
+          strict: true,
+          fallback: false,
+          score: 96 + Math.min(profile.confidence, 1) * 12,
+          penalty: profile.mixed ? 12 : 6,
+          reason: 'secondary-language-match',
+        };
       }
     }
 
-    return { allowed: false, score: 0 };
+    if (!profile.primary) {
+      return {
+        allowed: true,
+        strict: false,
+        fallback: true,
+        score: 4,
+        penalty: 96,
+        reason: 'unknown-language-fallback',
+      };
+    }
+
+    return {
+      allowed: true,
+      strict: false,
+      fallback: true,
+      score: -24,
+      penalty: 120 + Math.max(0, 1 - profile.confidence) * 18,
+      reason: `language-mismatch:${profile.primary}`,
+    };
   }
 
   private computeSeedSimilarity(
@@ -1018,26 +1505,41 @@ export class RecommendationsService {
 
   private computeDescriptorSimilarity(a: TrackDescriptor, b: TrackDescriptor): number {
     const genreMatch =
-      a.genreKey && b.genreKey && a.genreKey === b.genreKey ? 0.24 : 0;
+      a.genreKey && b.genreKey && a.genreKey === b.genreKey ? 0.3 : 0;
     const artistMatch =
-      a.artistKey && b.artistKey && a.artistKey === b.artistKey ? 0.1 : 0;
-    const tokenOverlap = this.computeSetOverlap(a.tokenSet, b.tokenSet) * 0.34;
-    const sceneOverlap = this.computeSetOverlap(a.sceneSet, b.sceneSet) * 0.22;
-    const energySimilarity = (1 - Math.min(1, Math.abs(a.energy - b.energy))) * 0.2;
+      a.artistKey && b.artistKey && a.artistKey === b.artistKey ? 0.14 : 0;
+    const tokenOverlap = this.computeSetOverlap(a.tokenSet, b.tokenSet) * 0.28;
+    const sceneOverlap = this.computeSetOverlap(a.sceneSet, b.sceneSet) * 0.32;
+    const energySimilarity = (1 - Math.min(1, Math.abs(a.energy - b.energy))) * 0.18;
     const bpmSimilarity =
       a.bpm && b.bpm
-        ? (1 - Math.min(1, Math.abs(a.bpm - b.bpm) / 48)) * 0.1
+        ? (1 - Math.min(1, Math.abs(a.bpm - b.bpm) / 42)) * 0.14
         : 0;
     const languageSimilarity =
       a.language.primary && b.language.primary && a.language.primary === b.language.primary
-        ? 0.08
+        ? 0.42
+        : 0;
+    const languageMismatchPenalty =
+      a.language.primary &&
+      b.language.primary &&
+      a.language.primary !== b.language.primary &&
+      a.language.confidence >= 0.4 &&
+      b.language.confidence >= 0.4
+        ? 0.26
         : 0;
 
     return Math.max(
       0,
       Math.min(
-        1.25,
-        genreMatch + artistMatch + tokenOverlap + sceneOverlap + energySimilarity + bpmSimilarity + languageSimilarity,
+        1.8,
+        genreMatch +
+          artistMatch +
+          tokenOverlap +
+          sceneOverlap +
+          energySimilarity +
+          bpmSimilarity +
+          languageSimilarity -
+          languageMismatchPenalty,
       ),
     );
   }
@@ -1049,6 +1551,17 @@ export class RecommendationsService {
     if (!descriptor.genreKey) return 0;
     const raw = weights.get(descriptor.genreKey) ?? 0;
     return Math.min(1.3, raw * 0.18);
+  }
+
+  private computeSceneAffinity(
+    descriptor: TrackDescriptor,
+    weights: Map<string, number>,
+  ): number {
+    let score = 0;
+    for (const scene of descriptor.sceneSet) {
+      score += Math.min(0.36, (weights.get(scene) ?? 0) * 0.14);
+    }
+    return Math.min(1.4, score);
   }
 
   private computeTagAffinity(

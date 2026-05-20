@@ -229,6 +229,49 @@ export function calculateLanguageDistribution(tracks: TrackLanguageProfile[]): L
   return { distribution, percentages, totalTracks };
 }
 
+function getLanguageMatchScore(
+  profile: TrackLanguageProfile | undefined,
+  preferredLanguages: string[],
+): number {
+  if (!profile || preferredLanguages.length === 0) return 0;
+
+  const preferredLanguageSet = new Set(preferredLanguages);
+  const primaryLanguage = profile.primaryLanguage?.trim().toLowerCase() || '';
+  const primaryCount = primaryLanguage ? profile.languages[primaryLanguage] || 0 : 0;
+
+  if (primaryLanguage && preferredLanguageSet.has(primaryLanguage)) {
+    if (profile.confidence >= 0.44) {
+      return 120 + Math.min(profile.confidence, 1) * 18 + primaryCount * 2.4;
+    }
+    if (profile.confidence >= 0.32) {
+      return 92 + Math.min(profile.confidence, 1) * 14 + primaryCount * 1.8;
+    }
+  }
+
+  let bestSecondaryScore = 0;
+  for (const preferredLanguage of preferredLanguageSet) {
+    const languageCount = profile.languages[preferredLanguage] || 0;
+    if (languageCount <= 0) continue;
+
+    const countRatio = primaryCount > 0 ? languageCount / primaryCount : 1;
+    if (countRatio >= 0.72) {
+      bestSecondaryScore = Math.max(
+        bestSecondaryScore,
+        96 + Math.min(profile.confidence, 1) * 12 + languageCount * 9,
+      );
+      continue;
+    }
+    if (countRatio >= 0.48 && profile.confidence <= 0.62) {
+      bestSecondaryScore = Math.max(
+        bestSecondaryScore,
+        72 + Math.min(profile.confidence, 1) * 9 + languageCount * 7,
+      );
+    }
+  }
+
+  return bestSecondaryScore;
+}
+
 export function filterByLanguage<T extends { id: number }>(
   tracks: T[],
   languageProfiles: Map<number, TrackLanguageProfile>,
@@ -246,11 +289,12 @@ export function filterByLanguage<T extends { id: number }>(
     return tracks;
   }
 
-  const preferredLanguageSet = new Set(preferredLanguages);
-
-  return tracks.filter((track) => {
-    const profile = languageProfiles.get(track.id);
-    if (!profile) return false;
-    return preferredLanguageSet.has(profile.primaryLanguage);
-  });
+  return tracks
+    .map((track) => ({
+      track,
+      score: getLanguageMatchScore(languageProfiles.get(track.id), preferredLanguages),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(({ track }) => track);
 }

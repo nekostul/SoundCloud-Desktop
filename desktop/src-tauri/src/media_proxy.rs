@@ -8,7 +8,7 @@ use regex::Regex;
 use reqwest::header::{
     HeaderName, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, RANGE, USER_AGENT,
 };
-use reqwest::{Client, Response, StatusCode};
+use reqwest::{Client, Response, StatusCode, Url};
 use tauri::Emitter;
 use tokio::{net::TcpStream, sync::RwLock};
 
@@ -30,9 +30,9 @@ const TOPROXYLAB_AJAX_ACTION: &str = "fpl_get_proxies";
 const TOPROXYLAB_MAX_PAGES: usize = 5;
 const TOPROXYLAB_PAGE_DELAY_MS: u64 = 250;
 const AUTO_MAX_CANDIDATES: usize = 42;
-const VALIDATION_MEDIA_RANGE_HEADER: &str = "bytes=0-65535";
-const VALIDATION_MIN_MEDIA_BYTES: usize = 8 * 1024;
-const VALIDATION_TARGET_MEDIA_BYTES: usize = 24 * 1024;
+const VALIDATION_MEDIA_RANGE_HEADER: &str = "bytes=0-49151";
+const VALIDATION_MIN_MEDIA_BYTES: usize = 48 * 1024;
+const VALIDATION_TARGET_MEDIA_BYTES: usize = 48 * 1024;
 const VALIDATION_TCP_TIMEOUT_MS: u64 = 6500;
 const VALIDATION_CONNECT_TIMEOUT_MS: u64 = 5500;
 const VALIDATION_READ_TIMEOUT_SECS: u64 = 30;
@@ -130,6 +130,13 @@ pub struct MediaHttpResponse {
     pub status: u16,
     pub content_type: String,
     pub body: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct MediaStreamProbeResponse {
+    pub url: String,
+    pub status: u16,
+    pub bytes_read: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -330,104 +337,6 @@ impl MediaProxyState {
             }
         }
 
-        let status = self.build_status().await;
-        self.emit_status("media-proxy:status", &status);
-        Ok(status)
-    }
-
-    async fn refresh_auto_inner(self: &Arc<Self>) -> Result<MediaProxyStatus, String> {
-        {
-            let inner = self.inner.read().await;
-            if inner.config.mode != MediaProxyMode::Auto {
-                return Ok(self.build_status().await);
-            }
-        }
-
-        let scan_epoch = self.bump_auto_scan_epoch();
-        if let AutoPoolRefreshResult::Selected(proxy) =
-            self.refresh_auto_pool_inner(None, scan_epoch).await?
-        {
-            let endpoint = proxy.candidate.endpoint_label();
-            {
-                let mut inner = self.inner.write().await;
-                if self.is_auto_scan_epoch_active(scan_epoch) {
-                    inner.routing = ProxyRouting::Proxy;
-                    inner.active_proxy = Some(proxy.clone());
-                    inner.standby_proxy = Some(proxy);
-                    inner.last_checked_at = Some(now_secs());
-                    inner.message = None;
-                    inner.message_key = None;
-                    inner.message_args = None;
-                }
-            }
-            log_auto_proxy(format!(
-                "Manual refresh connected proxy {endpoint}"
-            ));
-        }
-        let status = self.build_status().await;
-        self.emit_status("media-proxy:status", &status);
-        Ok(status)
-    }
-
-    async fn report_degraded_inner(
-        self: &Arc<Self>,
-        reason: String,
-    ) -> Result<MediaProxyStatus, String> {
-        let active_proxy = {
-            let mut inner = self.inner.write().await;
-            if inner.config.mode != MediaProxyMode::Auto {
-                return Ok(self.build_status().await);
-            }
-
-            let active = inner.active_proxy.clone();
-            if let Some(proxy) = active.as_ref() {
-                log_auto_proxy(format!("Proxy marked degraded: {reason}"));
-                log_auto_proxy(format!("Blacklisted endpoint {}", proxy.candidate.endpoint_label()));
-                inner.blacklisted_endpoints.insert(proxy.endpoint_key());
-                inner.active_proxy = None;
-                inner.standby_proxy = None;
-                inner.routing = ProxyRouting::Direct;
-                inner.last_checked_at = Some(now_secs());
-            }
-            active
-        };
-
-        if let Some(proxy) = active_proxy.as_ref() {
-            log_auto_proxy(format!(
-                "Active proxy disconnected {}",
-                proxy.candidate.endpoint_label()
-            ));
-        }
-        log_auto_proxy("Searching replacement proxy");
-
-        let scan_epoch = self.bump_auto_scan_epoch();
-        let replacement = self.refresh_auto_pool_inner(None, scan_epoch).await?;
-        if let AutoPoolRefreshResult::Selected(proxy) = replacement {
-            {
-                let mut inner = self.inner.write().await;
-                inner.routing = ProxyRouting::Proxy;
-                inner.active_proxy = Some(proxy.clone());
-                inner.standby_proxy = Some(proxy.clone());
-                inner.last_checked_at = Some(now_secs());
-                inner.message = None;
-                inner.message_key = Some(MSG_AUTO_FALLBACK_NOTICE.to_string());
-                inner.message_args = None;
-            }
-            log_auto_proxy(format!(
-                "Active proxy locked {}",
-                proxy.candidate.endpoint_label()
-            ));
-            let status = self.build_status().await;
-            self.emit_status("media-proxy:auto-fallback", &status);
-            self.emit_status("media-proxy:status", &status);
-            return Ok(status);
-        }
-
-        self.set_message(
-            Some(MSG_AUTO_NO_REPLACEMENT),
-            Some(message_args([("reason", reason.clone())])),
-        )
-        .await;
         let status = self.build_status().await;
         self.emit_status("media-proxy:status", &status);
         Ok(status)
@@ -917,10 +826,6 @@ impl ValidatedProxy {
         format!("{}:{} ({})", self.candidate.host, self.candidate.port, self.proxy_type.as_label())
     }
 
-    fn endpoint_key(&self) -> String {
-        self.candidate.endpoint_key()
-    }
-
     fn to_snapshot(
         &self,
         mode: MediaProxyMode,
@@ -1128,16 +1033,6 @@ pub async fn media_proxy_get_status() -> Result<MediaProxyStatus, String> {
 }
 
 #[tauri::command]
-pub async fn media_proxy_refresh_auto() -> Result<MediaProxyStatus, String> {
-    shared()?.refresh_auto_inner().await
-}
-
-#[tauri::command]
-pub async fn media_proxy_report_degraded(reason: String) -> Result<MediaProxyStatus, String> {
-    shared()?.report_degraded_inner(reason).await
-}
-
-#[tauri::command]
 pub async fn media_proxy_http_get(
     url: String,
     accept: Option<String>,
@@ -1234,6 +1129,232 @@ pub async fn media_proxy_http_get(
         content_type,
         body,
     })
+}
+
+#[tauri::command]
+pub async fn media_proxy_http_head(
+    url: String,
+    headers: Option<HashMap<String, String>>,
+    timeout_ms: Option<u64>,
+) -> Result<MediaHttpResponse, String> {
+    let timeout_ms = timeout_ms.filter(|value| *value >= 1000);
+    let extra_headers = headers
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<Vec<(String, String)>>();
+    let (response, decision, latency_ms) = if let Some(timeout_ms) = timeout_ms {
+        let state = shared()?;
+        let mut decision = state.select_decision().await;
+        let mut response_slot = None;
+        for attempt in 0..2 {
+            let client = build_http_client(
+                ClientProfile::Generic,
+                decision.proxy.as_ref(),
+                Some(Duration::from_millis(timeout_ms)),
+            )?;
+            let started = Instant::now();
+            let mut request = client
+                .head(&url)
+                .header(USER_AGENT, DEFAULT_USER_AGENT)
+                .header(ACCEPT_LANGUAGE, DEFAULT_ACCEPT_LANGUAGE);
+            for (name, value) in &extra_headers {
+                let header_name =
+                    HeaderName::from_bytes(name.as_bytes()).map_err(|error| error.to_string())?;
+                let header_value =
+                    HeaderValue::from_str(value).map_err(|error| error.to_string())?;
+                request = request.header(header_name, header_value);
+            }
+            match request.send().await {
+                Ok(response) => {
+                    let latency_ms = started.elapsed().as_millis() as u64;
+                    if response.status().is_success()
+                        || response.status() == StatusCode::PARTIAL_CONTENT
+                        || response.status().is_redirection()
+                        || response.status().is_client_error()
+                    {
+                        state.note_success(&decision, latency_ms, None).await;
+                        response_slot = Some((response, decision, latency_ms));
+                        break;
+                    }
+                    if attempt == 0 {
+                        let reason = format!("HTTP {}", response.status());
+                        if let Some(next) = state.handle_failure(&decision, reason).await? {
+                            decision = next;
+                            continue;
+                        }
+                    }
+                    response_slot = Some((response, decision, latency_ms));
+                    break;
+                }
+                Err(error) => {
+                    let formatted = format_reqwest_error(&error);
+                    if attempt == 0 {
+                        if let Some(next) = state.handle_failure(&decision, formatted.clone()).await?
+                        {
+                            decision = next;
+                            continue;
+                        }
+                    }
+                    return Err(formatted);
+                }
+            }
+        }
+        response_slot.ok_or_else(|| "media request failed".to_string())?
+    } else {
+        let state = shared()?;
+        let decision = state.select_decision().await;
+        let client = decision.build_client(ClientProfile::Generic)?;
+        let mut request = client
+            .head(&url)
+            .header(USER_AGENT, DEFAULT_USER_AGENT)
+            .header(ACCEPT_LANGUAGE, DEFAULT_ACCEPT_LANGUAGE);
+        for (name, value) in &extra_headers {
+            let header_name =
+                HeaderName::from_bytes(name.as_bytes()).map_err(|error| error.to_string())?;
+            let header_value = HeaderValue::from_str(value).map_err(|error| error.to_string())?;
+            request = request.header(header_name, header_value);
+        }
+        let started = Instant::now();
+        let response = request
+            .send()
+            .await
+            .map_err(|error| format_reqwest_error(&error))?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        (response, decision, latency_ms)
+    };
+
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    shared()?.note_success(&decision, latency_ms, None).await;
+
+    Ok(MediaHttpResponse {
+        status,
+        content_type,
+        body: String::new(),
+    })
+}
+
+async fn probe_stream_url_inner(
+    state: &Arc<MediaProxyState>,
+    url: String,
+    timeout_ms: u64,
+) -> Result<MediaStreamProbeResponse, String> {
+    let range_header = format!("bytes=0-{}", VALIDATION_MIN_MEDIA_BYTES.saturating_sub(1));
+    let mut decision = state.select_decision().await;
+
+    for attempt in 0..2 {
+        let client = build_http_client(
+            ClientProfile::Validation,
+            decision.proxy.as_ref(),
+            Some(Duration::from_millis(timeout_ms)),
+        )?;
+        let started = Instant::now();
+        let response = client
+            .get(&url)
+            .header(USER_AGENT, DEFAULT_USER_AGENT)
+            .header(ACCEPT_LANGUAGE, DEFAULT_ACCEPT_LANGUAGE)
+            .header(ACCEPT, "audio/*,*/*;q=0.8")
+            .header(RANGE, &range_header)
+            .send()
+            .await;
+
+        match response {
+            Ok(response) => {
+                let latency_ms = started.elapsed().as_millis() as u64;
+                let status = response.status();
+
+                if !(status.is_success() || status == StatusCode::PARTIAL_CONTENT) {
+                    if attempt == 0 {
+                        let reason = format!("HTTP {}", status);
+                        if let Some(next) = state.handle_failure(&decision, reason).await? {
+                            decision = next;
+                            continue;
+                        }
+                    }
+
+                    return Ok(MediaStreamProbeResponse {
+                        url,
+                        status: status.as_u16(),
+                        bytes_read: 0,
+                    });
+                }
+
+                let mut bytes_stream = response.bytes_stream();
+                let mut total_bytes = 0usize;
+
+                while let Some(chunk) = bytes_stream.next().await {
+                    let chunk =
+                        chunk.map_err(|error| format!("media chunk read failed: {}", format_reqwest_error(&error)))?;
+                    total_bytes += chunk.len();
+                    if total_bytes >= VALIDATION_MIN_MEDIA_BYTES {
+                        break;
+                    }
+                }
+
+                if total_bytes >= VALIDATION_MIN_MEDIA_BYTES {
+                    state.note_success(&decision, latency_ms.max(1), None).await;
+                } else if attempt == 0 {
+                    let reason = format!("cache did not progress enough: {} bytes", total_bytes);
+                    if let Some(next) = state.handle_failure(&decision, reason).await? {
+                        decision = next;
+                        continue;
+                    }
+                }
+
+                return Ok(MediaStreamProbeResponse {
+                    url,
+                    status: status.as_u16(),
+                    bytes_read: total_bytes,
+                });
+            }
+            Err(error) => {
+                let formatted = format_reqwest_error(&error);
+                if attempt == 0 {
+                    if let Some(next) = state.handle_failure(&decision, formatted.clone()).await? {
+                        decision = next;
+                        continue;
+                    }
+                }
+                return Err(formatted);
+            }
+        }
+    }
+
+    Err("media request failed".to_string())
+}
+
+#[tauri::command]
+pub async fn media_proxy_probe_stream(timeout_ms: Option<u64>) -> Result<MediaStreamProbeResponse, String> {
+    let timeout_ms = timeout_ms.filter(|value| *value >= 1000).unwrap_or(6500);
+    let state = shared()?;
+    let url = {
+        let inner = state.inner.read().await;
+        inner
+            .last_media_url
+            .clone()
+            .ok_or_else(|| "no remembered media URL available for stream probe".to_string())?
+    };
+    probe_stream_url_inner(&state, url, timeout_ms).await
+}
+
+#[tauri::command]
+pub async fn media_proxy_probe_stream_url(
+    url: String,
+    timeout_ms: Option<u64>,
+) -> Result<MediaStreamProbeResponse, String> {
+    let timeout_ms = timeout_ms.filter(|value| *value >= 1000).unwrap_or(6500);
+    let trimmed_url = url.trim();
+    if trimmed_url.is_empty() {
+        return Err("stream probe URL is empty".to_string());
+    }
+
+    let state = shared()?;
+    probe_stream_url_inner(&state, trimmed_url.to_string(), timeout_ms).await
 }
 
 fn format_reqwest_error(error: &reqwest::Error) -> String {
@@ -2296,11 +2417,11 @@ async fn validate_auto_source(
         .collect::<Vec<_>>();
 
     let pool_size = available.len();
-    if validation_url.is_none() {
+    let allow_handshake_only = validation_url.is_none();
+    if allow_handshake_only {
         log_auto_proxy(
-            "No remembered media URL available yet; auto proxy selection deferred until real playback/cache traffic exists",
+            "No remembered media URL available yet; onboarding helper will use handshake-only proxy validation",
         );
-        return (None, pool_size);
     }
 
     for candidate in available {
@@ -2308,7 +2429,14 @@ async fn validate_auto_source(
             return (None, pool_size);
         }
         if let Some(proxy) =
-            validate_proxy_candidate(state, candidate, scan_epoch, validation_url, false).await
+            validate_proxy_candidate(
+                state,
+                candidate,
+                scan_epoch,
+                validation_url,
+                allow_handshake_only,
+            )
+            .await
         {
             if !exclude_key.is_empty() && proxy.cache_key() == exclude_key {
                 log_auto_proxy(format!(
@@ -2335,15 +2463,34 @@ async fn validate_auto_source(
 
 fn looks_like_media_stream_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
-    lower.contains("sndcdn.com/")
-        || lower.contains("/media/")
+    let has_media_hint = lower.contains("/media/")
         || lower.contains("/stream/")
         || lower.contains(".mp3")
         || lower.contains(".m4a")
         || lower.contains(".aac")
         || lower.contains(".ogg")
         || lower.contains(".opus")
-        || lower.contains(".m3u8")
+        || lower.contains(".m3u8");
+
+    let parsed = match Url::parse(url) {
+        Ok(parsed) => parsed,
+        Err(_) => return has_media_hint,
+    };
+
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let path = parsed.path().trim();
+    if path.is_empty() || path == "/" {
+        return false;
+    }
+
+    let is_direct_media_host = host.contains("cf-media.sndcdn.com")
+        || host.contains("cf-preview-media.sndcdn.com")
+        || host.contains("preview-media.sndcdn.com")
+        || host.contains("cf-hls-media.sndcdn.com")
+        || host.contains("hls-media.sndcdn.com")
+        || host.contains("media-streaming.soundcloud.cloud");
+
+    is_direct_media_host && (has_media_hint || path.len() > 1)
 }
 
 

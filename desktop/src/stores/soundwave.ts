@@ -17,6 +17,7 @@ import { fetchMediaJson } from '../lib/media-proxy';
 import { requestMertEmbedding } from '../lib/mert-analyser';
 import { fetchCrossPlatformRegionalTracks } from '../lib/popular-sources';
 import { QdrantClient, type QdrantScoredPoint } from '../lib/qdrant';
+import { buildWaveQueueFromPlayerContext } from '../lib/soundwave-queue';
 import { useAuthStore } from './auth';
 import { useDislikesStore } from './dislikes';
 import { type Track, usePlayerStore } from './player';
@@ -38,6 +39,8 @@ export interface SoundWaveLaunchContext {
   title?: string;
   subtitle?: string;
 }
+
+type SoundWaveContinuationStrategy = 'preset-batch' | 'contextual-tail';
 
 export const ACTIVITY_PRESETS: Record<string, SoundWavePreset> = {
   wakeup: {
@@ -1412,6 +1415,7 @@ const SOUNDWAVE_HIDE_LIKED_POOL_TARGET = 40;
 const SOUNDWAVE_HIDE_LIKED_QDRANT_LIMIT = 180;
 const SOUNDWAVE_HIDE_LIKED_LEGACY_SEED_COUNT = 10;
 const SOUNDWAVE_HIDE_LIKED_RELATED_LIMIT = 40;
+const CONTEXTUAL_WAVE_REFRESH_TARGET = 18;
 
 const isHiddenLikedTrack = (track: Track, likedUrns: Set<string>): boolean => {
   const rankedTrack = track as Partial<RankedTrack>;
@@ -1444,6 +1448,18 @@ const buildExcludedSoundWaveUrns = (playedUrns: Set<string>): Set<string> => {
 
   return excludedUrns;
 };
+
+const getContextualWaveQueueSettings = () => {
+  const settings = useSettingsStore.getState();
+
+  return {
+    languages: [...settings.soundwaveLanguages].sort(),
+    mode: settings.soundwaveMode,
+    hideLiked: settings.soundwaveHideLiked,
+  };
+};
+
+let soundWaveUpcomingRefreshSeq = 0;
 
 const mergeTrackLanguageProfiles = (
   base: Map<number, TrackLanguageProfile> | null,
@@ -1586,6 +1602,7 @@ const topUpCandidatesAfterHideLiked = async ({
 interface SoundWaveState {
   isActive: boolean;
   isSuspended: boolean;
+  continuationStrategy: SoundWaveContinuationStrategy | null;
   isInitialLoading: boolean;
   startupProgress: number;
   startupVisible: boolean;
@@ -1623,6 +1640,7 @@ interface SoundWaveState {
   ingestPlayedTrackFeatures: (track: Track | null | undefined) => void;
   markTrackPlayed: (track: Track | null | undefined) => void;
   generateBatch: (options?: { startup?: boolean }) => Promise<Track[]>;
+  refreshUpcomingQueue: (options?: { reason?: string; targetSize?: number }) => Promise<Track[]>;
   recordFeedback: (track: Track, type: 'positive' | 'negative') => void;
   trainTrackMood: (track: Track, mood: MoodLabel) => void;
 }
@@ -1630,6 +1648,7 @@ interface SoundWaveState {
 export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
   isActive: false,
   isSuspended: false,
+  continuationStrategy: null,
   isInitialLoading: false,
   startupProgress: 0,
   startupVisible: false,
@@ -1916,6 +1935,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     set({
       isActive: true,
       isSuspended: false,
+      continuationStrategy: 'preset-batch',
       currentPreset: preset,
       launchContext: null,
       playedUrns: new Set(),
@@ -1953,7 +1973,13 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       }
     } catch (e) {
       console.error('[SoundWave] Start failed', e);
-      set({ isActive: false, startupVisible: false, startupProgress: 0, startupStage: 'idle' });
+      set({
+        isActive: false,
+        continuationStrategy: null,
+        startupVisible: false,
+        startupProgress: 0,
+        startupStage: 'idle',
+      });
     }
   },
 
@@ -2010,6 +2036,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     set({
       isActive: true,
       isSuspended: false,
+      continuationStrategy: 'contextual-tail',
       currentPreset: preset,
       launchContext,
       playedUrns: new Set(),
@@ -2040,6 +2067,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     set({
       isActive: false,
       isSuspended: false,
+      continuationStrategy: null,
       startupVisible: false,
       startupProgress: 0,
       startupStage: 'idle',
@@ -2180,6 +2208,101 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       playedUrns.add(track.urn);
       return { playedUrns };
     });
+  },
+
+  refreshUpcomingQueue: async (options) => {
+    const reason = options?.reason || 'manual';
+    const targetSize = Math.max(8, options?.targetSize ?? CONTEXTUAL_WAVE_REFRESH_TARGET);
+    const { isActive, isSuspended, continuationStrategy } = get();
+    const player = usePlayerStore.getState();
+    const { currentTrack, queue, queueIndex, queueSource } = player;
+
+    if (
+      !isActive ||
+      isSuspended ||
+      !continuationStrategy ||
+      queueSource !== 'soundwave' ||
+      !currentTrack ||
+      queueIndex < 0
+    ) {
+      return [];
+    }
+
+    const requestId = ++soundWaveUpcomingRefreshSeq;
+    const anchorUrn = currentTrack.urn;
+    const queueHead = queue.slice(0, queueIndex + 1);
+
+    if (continuationStrategy === 'contextual-tail') {
+      console.log(
+        `[SoundWave] Refreshing contextual queue tail: reason=${reason}, current=${anchorUrn}, target=${targetSize}`,
+      );
+
+      const tail = await buildWaveQueueFromPlayerContext({
+        ...getContextualWaveQueueSettings(),
+        targetSize,
+      });
+
+      const latestPlayer = usePlayerStore.getState();
+      const latestState = get();
+      if (
+        requestId !== soundWaveUpcomingRefreshSeq ||
+        latestState.continuationStrategy !== 'contextual-tail' ||
+        latestPlayer.queueSource !== 'soundwave' ||
+        latestPlayer.currentTrack?.urn !== anchorUrn
+      ) {
+        console.log(
+          `[SoundWave] Discarded stale contextual queue refresh: reason=${reason}, current=${anchorUrn}`,
+        );
+        return [];
+      }
+
+      if (tail.length === 0) {
+        console.warn(
+          `[SoundWave] Contextual queue refresh produced no tracks: reason=${reason}, current=${anchorUrn}`,
+        );
+        return [];
+      }
+
+      const nextQueue = dedupeTracksByUrn([...queueHead, ...tail]);
+      usePlayerStore.getState().replaceQueueKeepingCurrent(nextQueue, 'soundwave');
+      console.log(
+        `[SoundWave] Contextual queue tail refreshed: reason=${reason}, tail=${tail.length}, queue=${nextQueue.length}`,
+      );
+      return tail;
+    }
+
+    console.log(
+      `[SoundWave] Refreshing preset queue tail: reason=${reason}, current=${anchorUrn}, target=${targetSize}`,
+    );
+    const batch = await get().generateBatch();
+
+    const latestPlayer = usePlayerStore.getState();
+    const latestState = get();
+    if (
+      requestId !== soundWaveUpcomingRefreshSeq ||
+      latestState.continuationStrategy !== 'preset-batch' ||
+      latestPlayer.queueSource !== 'soundwave' ||
+      latestPlayer.currentTrack?.urn !== anchorUrn
+    ) {
+      console.log(
+        `[SoundWave] Discarded stale preset queue refresh: reason=${reason}, current=${anchorUrn}`,
+      );
+      return [];
+    }
+
+    if (batch.length === 0) {
+      console.warn(
+        `[SoundWave] Preset queue refresh produced no tracks: reason=${reason}, current=${anchorUrn}`,
+      );
+      return [];
+    }
+
+    const nextQueue = dedupeTracksByUrn([...queueHead, ...batch]);
+    usePlayerStore.getState().replaceQueueKeepingCurrent(nextQueue, 'soundwave');
+    console.log(
+      `[SoundWave] Preset queue tail refreshed: reason=${reason}, tail=${batch.length}, queue=${nextQueue.length}`,
+    );
+    return batch;
   },
 
   recordFeedback: (track: Track, type: 'positive' | 'negative') => {

@@ -10,7 +10,6 @@ import {
   Loader2,
   Moon,
   Music,
-  RefreshCw,
   Sparkles,
   Sun,
   Waves,
@@ -137,7 +136,6 @@ export const SoundWaveHero: React.FC = () => {
     left: number;
   } | null>(null);
   const [isAwaitingFirstTrack, setIsAwaitingFirstTrack] = useState(false);
-  const [showRestartAfterLanguageChange, setShowRestartAfterLanguageChange] = useState(false);
 
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
@@ -218,11 +216,6 @@ export const SoundWaveHero: React.FC = () => {
       awaitingFirstPlayableRef.current = false;
     }
   }, [isAwaitingFirstTrack, isActive, currentTrack?.urn, currentTrack?.streamQuality]);
-
-  useEffect(() => {
-    if (isActive) return;
-    setShowRestartAfterLanguageChange(false);
-  }, [isActive]);
 
   useEffect(() => {
     if (!isGenreMenuOpen) {
@@ -513,7 +506,6 @@ export const SoundWaveHero: React.FC = () => {
   const runWaveWithLoading = (preset: SoundWavePreset) => {
     awaitingFirstPlayableRef.current = false;
     setIsAwaitingFirstTrack(true);
-    setShowRestartAfterLanguageChange(false);
     void startWave(preset);
   };
 
@@ -528,7 +520,6 @@ export const SoundWaveHero: React.FC = () => {
       stopWave();
     }
 
-    setShowRestartAfterLanguageChange(false);
   };
 
   const handleToggleWave = () => {
@@ -555,9 +546,6 @@ export const SoundWaveHero: React.FC = () => {
   const handleLanguageToggle = () => {
     const nextEnabled = !languageFilterEnabled;
     setLanguageFilterEnabled(nextEnabled);
-    if (isActive) {
-      setShowRestartAfterLanguageChange(true);
-    }
   };
 
   const handleLanguageSelect = (nextLanguage: string) => {
@@ -569,24 +557,15 @@ export const SoundWaveHero: React.FC = () => {
               ? !preferredLanguages.includes(langCode)
               : preferredLanguages.includes(langCode),
           );
-    const hasLanguageChanged =
-      nextLanguages.length !== preferredLanguages.length ||
-      nextLanguages.some((langCode, index) => langCode !== preferredLanguages[index]);
     const shouldEnable = nextLanguage !== 'all' && !languageFilterEnabled;
     setPreferredLanguages(nextLanguages);
     if (shouldEnable) {
       setLanguageFilterEnabled(true);
     }
-    if (isActive && (hasLanguageChanged || shouldEnable)) {
-      setShowRestartAfterLanguageChange(true);
-    }
   };
 
   const handleToggleGenreStrict = () => {
     setSoundwaveGenreStrict(!soundwaveGenreStrict);
-    if (isActive) {
-      setShowRestartAfterLanguageChange(true);
-    }
   };
 
   const handleToggleGenre = (genre: string) => {
@@ -595,24 +574,15 @@ export const SoundWaveHero: React.FC = () => {
       ? soundwaveSelectedGenres.filter((value) => value !== genre)
       : [...soundwaveSelectedGenres, genre];
     setSoundwaveSelectedGenres(next);
-    if (isActive) {
-      setShowRestartAfterLanguageChange(true);
-    }
   };
 
   const handleClearGenres = () => {
     if (soundwaveSelectedGenres.length === 0) return;
     setSoundwaveSelectedGenres([]);
-    if (isActive) {
-      setShowRestartAfterLanguageChange(true);
-    }
   };
 
   const handleToggleHideLiked = () => {
     setSoundwaveHideLiked(!soundwaveHideLiked);
-    if (isActive) {
-      setShowRestartAfterLanguageChange(true);
-    }
   };
 
   const selectedLanguages = SUPPORTED_LANGUAGES.filter((lang) =>
@@ -748,16 +718,6 @@ export const SoundWaveHero: React.FC = () => {
             </button>
           </div>
 
-          {showRestartAfterLanguageChange && isActive && (
-            <button
-              type="button"
-              onClick={() => runWaveWithLoading(selectedPreset)}
-              className="theme-accent-fill theme-accent-animated flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold transition-all duration-300 active:scale-95"
-            >
-              <RefreshCw size={14} />
-              <span>{t('settings.restartWave')}</span>
-            </button>
-          )}
         </div>
       </div>
 

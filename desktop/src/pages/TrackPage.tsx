@@ -393,16 +393,52 @@ export const TrackPage = React.memo(() => {
 
   // Seed liked status from API
   useEffect(() => {
-    if (track?.user_favorite && track.urn) setLikedUrn(track.urn, true);
+    if (track?.user_favorite && track.urn) {
+      setLikedUrn(track.urn, true);
+    }
   }, [track?.urn, track?.user_favorite]);
 
   const isThis = usePlayerStore((s) => !!trackUrn && s.currentTrack?.urn === trackUrn);
+
   const isThisPlaying = usePlayerStore(
     (s) => !!trackUrn && s.currentTrack?.urn === trackUrn && s.isPlaying,
   );
 
-  const relatedTracks = useMemo(() => relatedData?.collection ?? [], [relatedData]);
-  const favoriters = useMemo(() => favoritersData?.collection ?? [], [favoritersData]);
+  const relatedTracks = useMemo(
+    () => relatedData?.collection ?? [],
+    [relatedData],
+  );
+
+  const favoriters = useMemo(
+    () => favoritersData?.collection ?? [],
+    [favoritersData],
+  );
+
+  const trackContextProps = useContextMenuTarget(
+    useMemo(() => {
+      if (!track) return null;
+
+      return {
+        type: 'track' as const,
+        track,
+        queue: relatedTracks.length > 0
+          ? [track, ...relatedTracks]
+          : [track],
+      };
+    }, [relatedTracks, track]),
+  );
+
+  const artistContextProps = useContextMenuTarget(
+    useMemo(() => {
+      if (!track) return null;
+
+      const user = toContextMenuUserEntity(track.user);
+
+      return user
+        ? { type: 'user' as const, user }
+        : null;
+    }, [track]),
+  );
 
   if (isLoading || !track) {
     return (
@@ -416,22 +452,6 @@ export const TrackPage = React.memo(() => {
   const tags = parseTags(track.tag_list);
   const desc = track.description?.trim();
   const descLong = desc && desc.length > 200;
-  const trackContextProps = useContextMenuTarget(
-    useMemo(
-      () => ({
-        type: 'track' as const,
-        track,
-        queue: relatedTracks.length > 0 ? [track, ...relatedTracks] : [track],
-      }),
-      [relatedTracks, track],
-    ),
-  );
-  const artistContextProps = useContextMenuTarget(
-    useMemo(() => {
-      const user = toContextMenuUserEntity(track.user);
-      return user ? { type: 'user' as const, user } : null;
-    }, [track.user]),
-  );
 
   const handlePlay = () => {
     const { play, pause, resume } = usePlayerStore.getState();

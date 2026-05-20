@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getEffectivePitchSemitones, type Track, usePlayerStore } from '../stores/player';
 import { useSettingsStore } from '../stores/settings';
-import { useSoundWaveStore } from '../stores/soundwave';
+import { CHARACTER_PRESETS, useSoundWaveStore } from '../stores/soundwave';
 import {
   api,
   getBackendProgressiveTrackStreamSource,
@@ -21,6 +21,8 @@ import {
 } from './cache';
 import { art } from './formatters';
 import { isTauriRuntime } from './runtime';
+import { buildWaveQueueFromPlayerContext, dedupeTracksByUrn } from './soundwave-queue';
+import { getTrackWaveform } from './waveform';
 
 /* ── Audio engine state ──────────────────────────────────────── */
 
@@ -34,6 +36,8 @@ const API_PREVIEW_DURATION_MS = 30_000;
 let lastTickAt = 0;
 let isCrossfadingOut = false;
 let crossfadeInProgress = false;
+let pendingCrossfadeTrackUrn: string | null = null;
+let pendingCrossfadeDurationSecs: number | null = null;
 let lastSmoothTime = 0;
 let stallProbeInFlight = false;
 let stallRecoveryInFlight = false;
@@ -54,6 +58,8 @@ let startupProgressDeadline = 0;
 let latestSeekRequestId = 0;
 let nativeSeekPausedForBuffering = false;
 let nativeSeekResumeAfterBufferedSeek = false;
+let nativeStartupPausedForBuffering = false;
+let nativeStartupResumeAfterBuffering = false;
 let startupBufferedSecs = 0;
 let waitForReadyBuffer = true;
 let readyBufferPromise: Promise<void> | null = null;
@@ -75,6 +81,11 @@ let notifyPending = false;
 const MAX_PLAYBACK_NOTIFY_HZ = 30; // Limit notification frequency to 30/sec max during playback
 
 const SEEK_DEBOUNCE_MS = 120;
+const CONTEXTUAL_AUTOPLAY_TAIL_TARGET = 18;
+const SOUNDWAVE_REFRESH_DEBOUNCE_MS = 180;
+let backgroundContinuationInFlight = false;
+let backgroundContinuationPreparedUrn: string | null = null;
+let queuedSoundWaveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 const SEEK_BUSY_RETRY_MS = 80;
 const SEEK_NO_SOURCE_RETRY_MS = 220;
 const SEEK_UNBUFFERED_RETRY_MS = 260;
@@ -116,6 +127,16 @@ type BufferStrategy = {
   preferHttpStream: boolean;
 };
 
+type TrackTransitionProfile = {
+  introAudibleSecs: number;
+  introStrongSecs: number;
+  outroAudibleTailSecs: number;
+  outroStrongTailSecs: number;
+  trailingSilenceSecs: number;
+  introEnergy: number;
+  outroEnergy: number;
+};
+
 let playbackBufferSnapshot: PlaybackBufferSnapshot = {
   phase: 'idle',
   progress: null,
@@ -132,6 +153,8 @@ let lastDownloadProgressAt = 0;
 let activeRangedSeekLoad = false;
 let estimatedStreamTotalBytes: number | null = null;
 let currentPlaybackSource: PlaybackSourceKind = 'none';
+const transitionProfileCache = new Map<string, TrackTransitionProfile | null>();
+const transitionProfilePromiseCache = new Map<string, Promise<TrackTransitionProfile | null>>();
 const MAX_SMOOTH_TIME_EXTRAPOLATION_SECS = 5;
 
 let lastNotifyTime = 0;
@@ -305,6 +328,226 @@ function hasActiveSeekTransition(trackUrn?: string | null) {
   );
 }
 
+function hasPendingCrossfadeLoad(trackUrn?: string | null) {
+  const activeTrackUrn = trackUrn ?? usePlayerStore.getState().currentTrack?.urn ?? null;
+  return pendingCrossfadeTrackUrn != null && pendingCrossfadeTrackUrn === activeTrackUrn;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function findFirstSustainedIndex(values: number[], threshold: number, minRun = 3) {
+  let run = 0;
+  for (let i = 0; i < values.length; i += 1) {
+    if (values[i] >= threshold) {
+      run += 1;
+      if (run >= minRun) {
+        return i - minRun + 1;
+      }
+    } else {
+      run = 0;
+    }
+  }
+  return -1;
+}
+
+function findLastSustainedIndex(values: number[], threshold: number, minRun = 3) {
+  let run = 0;
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    if (values[i] >= threshold) {
+      run += 1;
+      if (run >= minRun) {
+        return i + minRun - 1;
+      }
+    } else {
+      run = 0;
+    }
+  }
+  return -1;
+}
+
+function buildTrackTransitionProfile(
+  track: Track,
+  values: number[],
+): TrackTransitionProfile | null {
+  const durationSecs = track.duration > 0 ? track.duration / 1000 : 0;
+  if (!Number.isFinite(durationSecs) || durationSecs <= 1 || values.length < 8) {
+    return null;
+  }
+
+  const maxValue = Math.max(...values);
+  if (!Number.isFinite(maxValue) || maxValue <= 0) {
+    return null;
+  }
+
+  const normalized = values.map((value) => clampNumber(value / maxValue, 0, 1));
+  const smoothed = normalized.map((_, index) => {
+    let sum = 0;
+    let count = 0;
+    for (let offset = -2; offset <= 2; offset += 1) {
+      const sample = normalized[index + offset];
+      if (sample != null) {
+        sum += sample;
+        count += 1;
+      }
+    }
+    return count > 0 ? sum / count : normalized[index];
+  });
+
+  const sampleToSecs = (index: number) =>
+    clampNumber((index / Math.max(1, smoothed.length - 1)) * durationSecs, 0, durationSecs);
+
+  const introAudibleIndex = findFirstSustainedIndex(smoothed, 0.06, 3);
+  const introStrongIndex = findFirstSustainedIndex(smoothed, 0.22, 3);
+  const outroAudibleIndex = findLastSustainedIndex(smoothed, 0.06, 3);
+  const outroStrongIndex = findLastSustainedIndex(smoothed, 0.22, 3);
+
+  const introWindow = smoothed.slice(0, Math.max(4, Math.floor(smoothed.length * 0.12)));
+  const outroWindow = smoothed.slice(
+    Math.max(0, smoothed.length - Math.max(4, Math.floor(smoothed.length * 0.12))),
+  );
+  const introEnergy =
+    introWindow.reduce((sum, value) => sum + value, 0) / Math.max(1, introWindow.length);
+  const outroEnergy =
+    outroWindow.reduce((sum, value) => sum + value, 0) / Math.max(1, outroWindow.length);
+
+  const introAudibleSecs = introAudibleIndex >= 0 ? sampleToSecs(introAudibleIndex) : 0;
+  const introStrongSecs = introStrongIndex >= 0 ? sampleToSecs(introStrongIndex) : introAudibleSecs;
+  const outroAudibleTailSecs =
+    outroAudibleIndex >= 0 ? Math.max(0, durationSecs - sampleToSecs(outroAudibleIndex)) : 0;
+  const outroStrongTailSecs =
+    outroStrongIndex >= 0 ? Math.max(0, durationSecs - sampleToSecs(outroStrongIndex)) : 0;
+  const trailingSilenceSecs =
+    outroAudibleIndex >= 0 ? Math.max(0, durationSecs - sampleToSecs(outroAudibleIndex)) : 0;
+
+  return {
+    introAudibleSecs,
+    introStrongSecs,
+    outroAudibleTailSecs,
+    outroStrongTailSecs,
+    trailingSilenceSecs,
+    introEnergy,
+    outroEnergy,
+  };
+}
+
+async function getTrackTransitionProfile(
+  track: Track | null,
+): Promise<TrackTransitionProfile | null> {
+  const urn = track?.urn;
+  if (!urn) return null;
+
+  if (transitionProfileCache.has(urn)) {
+    return transitionProfileCache.get(urn) ?? null;
+  }
+
+  const existing = transitionProfilePromiseCache.get(urn);
+  if (existing) {
+    return existing;
+  }
+
+  const request = getTrackWaveform(track)
+    .then((waveform) => {
+      const profile =
+        waveform && Array.isArray(waveform.values)
+          ? buildTrackTransitionProfile(track, waveform.values)
+          : null;
+      transitionProfileCache.set(urn, profile);
+      return profile;
+    })
+    .catch(() => {
+      transitionProfileCache.set(urn, null);
+      return null;
+    })
+    .finally(() => {
+      transitionProfilePromiseCache.delete(urn);
+    });
+
+  transitionProfilePromiseCache.set(urn, request);
+  return request;
+}
+
+function warmTrackTransitionProfile(track: Track | null | undefined) {
+  if (!track?.urn) return;
+  void getTrackTransitionProfile(track);
+}
+
+function getNextTrackForCrossfade(state = usePlayerStore.getState()) {
+  const { queue, queueIndex, repeat } = state;
+  if (queue.length === 0 || queueIndex < 0) return null;
+
+  let nextIndex = queueIndex + 1;
+  if (nextIndex >= queue.length) {
+    if (repeat !== 'all') return null;
+    nextIndex = 0;
+  }
+
+  return queue[nextIndex] ?? null;
+}
+
+function getSmartCrossfadeDurationForTracks(currentTrack: Track | null, positionSecs: number) {
+  const durationSecs =
+    currentTrack?.duration && currentTrack.duration > 0
+      ? currentTrack.duration / 1000
+      : cachedDuration;
+  const fallback = getSmartCrossfadeDuration(durationSecs, positionSecs);
+  if (!currentTrack?.urn) return fallback;
+
+  const currentProfile = transitionProfileCache.get(currentTrack.urn) ?? null;
+  const nextTrack = getNextTrackForCrossfade();
+  const nextProfile = nextTrack ? (transitionProfileCache.get(nextTrack.urn) ?? null) : null;
+  if (!currentProfile && !nextProfile) return fallback;
+
+  const desiredFromNext = nextProfile
+    ? clampNumber(
+        Math.max(
+          nextProfile.introStrongSecs,
+          nextProfile.introAudibleSecs + (nextProfile.introEnergy < 0.18 ? 1.6 : 0.9),
+        ),
+        2,
+        12,
+      )
+    : fallback;
+
+  const currentCeiling = currentProfile
+    ? clampNumber(
+        Math.max(
+          2,
+          currentProfile.outroStrongTailSecs +
+            currentProfile.trailingSilenceSecs * 0.85 +
+            (currentProfile.outroEnergy < 0.22 ? 1.2 : 0.4),
+        ),
+        2,
+        12,
+      )
+    : 12;
+
+  const currentFloor = currentProfile
+    ? clampNumber(
+        Math.max(
+          2,
+          currentProfile.outroAudibleTailSecs + Math.min(1.5, currentProfile.trailingSilenceSecs),
+        ),
+        2,
+        8,
+      )
+    : 2;
+
+  const recommended = clampNumber(
+    Math.max(currentFloor, Math.max(fallback, desiredFromNext)),
+    2,
+    currentCeiling,
+  );
+
+  return clampNumber(Math.round(recommended), 2, 12);
+}
+
+function warmUpcomingTransitionProfiles() {
+  const state = usePlayerStore.getState();
+  warmTrackTransitionProfile(state.currentTrack);
+  warmTrackTransitionProfile(getNextTrackForCrossfade(state));
+}
 
 function isCrossfadeOffMode(mode: 'off' | 'smart' | 'manual') {
   return mode === 'off';
@@ -518,7 +761,6 @@ function finalizePlaybackBufferAsCached() {
 
 function shouldResolveStartupBuffer(progress: number | null, fullyCached: boolean) {
   if (fullyCached) return true;
-  if (!startupPlaybackTickReceived) return false;
   if (
     currentBufferStrategy.startupProgress != null &&
     bufferProgressKnown &&
@@ -526,6 +768,10 @@ function shouldResolveStartupBuffer(progress: number | null, fullyCached: boolea
     progress >= currentBufferStrategy.startupProgress
   ) {
     return true;
+  }
+
+  if (!startupPlaybackTickReceived && !nativeStartupPausedForBuffering) {
+    return false;
   }
 
   return startupBufferedSecs >= currentBufferStrategy.startupBufferSecs;
@@ -556,6 +802,7 @@ function resolveReadyBuffer(reason: string) {
   if (resolve) {
     resolve();
   }
+  resumeNativeAfterStartupBuffer();
   syncPlaybackBufferPhase(true);
   console.log(`[Audio] Startup buffer ready (${reason})`);
 }
@@ -673,6 +920,8 @@ function primeStartupRecoveryWindow(trackUrn: string) {
 
 async function recoverFromStartupHang(reason: string) {
   if (startupRecoveryInFlight) return;
+  if (hasPendingCrossfadeLoad()) return;
+  if (nativeStartupPausedForBuffering) return;
 
   const state = usePlayerStore.getState();
   const track = state.currentTrack;
@@ -773,6 +1022,11 @@ function clearBufferedSeekPauseState() {
   nativeSeekResumeAfterBufferedSeek = false;
 }
 
+function clearStartupBufferPauseState() {
+  nativeStartupPausedForBuffering = false;
+  nativeStartupResumeAfterBuffering = false;
+}
+
 function pauseNativeForBufferedSeek() {
   if (!isTauriRuntime() || nativeSeekPausedForBuffering) return;
 
@@ -799,6 +1053,35 @@ function resumeNativeAfterBufferedSeek() {
 
   invoke('audio_play').catch((error) => {
     console.warn('[Audio] Failed to resume native playback after buffered seek', error);
+  });
+}
+
+function pauseNativeForStartupBuffer() {
+  if (!isTauriRuntime() || nativeStartupPausedForBuffering) return;
+
+  nativeStartupPausedForBuffering = true;
+  nativeStartupResumeAfterBuffering = usePlayerStore.getState().isPlaying;
+  suppressStallDetection(5000);
+  invoke('audio_pause').catch((error) => {
+    console.warn('[Audio] Failed to pause native playback during startup buffering', error);
+  });
+}
+
+function resumeNativeAfterStartupBuffer() {
+  if (!isTauriRuntime()) {
+    clearStartupBufferPauseState();
+    return;
+  }
+
+  const shouldResume = nativeStartupPausedForBuffering && nativeStartupResumeAfterBuffering;
+  clearStartupBufferPauseState();
+
+  if (!shouldResume || !usePlayerStore.getState().isPlaying) {
+    return;
+  }
+
+  invoke('audio_play').catch((error) => {
+    console.warn('[Audio] Failed to resume native playback after startup buffering', error);
   });
 }
 
@@ -1113,6 +1396,7 @@ export function seek(seconds: number, allowRecovery = true, force = false) {
 
   isCrossfadingOut = false;
   crossfadeInProgress = false;
+  pendingCrossfadeDurationSecs = null;
 
   const duration = getDuration();
   const maxSeek = duration > 0 ? Math.max(0, duration - 0.15) : Number.POSITIVE_INFINITY;
@@ -1123,7 +1407,9 @@ export function seek(seconds: number, allowRecovery = true, force = false) {
   const hardReloadAtTrackStart =
     isTauriRuntime() && unclampedTarget <= 0.05 && currentPositionBeforeSeek > 1;
   const directSeekReload =
-    exactSourceRequired || hardReloadAtTrackStart || shouldUseDirectSeekReload(unclampedTarget, force);
+    exactSourceRequired ||
+    hardReloadAtTrackStart ||
+    shouldUseDirectSeekReload(unclampedTarget, force);
   const target = directSeekReload
     ? unclampedTarget
     : force
@@ -1187,6 +1473,7 @@ export function handlePrev() {
 function stopTrack() {
   resetQueuedSeekQueue();
   clearBufferedSeekPauseState();
+  clearStartupBufferPauseState();
   if (notifyRafId != null) cancelAnimationFrame(notifyRafId);
   if (notifyTimeout != null) clearTimeout(notifyTimeout);
   notifyRafId = null;
@@ -1197,6 +1484,7 @@ function stopTrack() {
   }
   hasTrack = false;
   currentPlaybackSource = 'none';
+  pendingCrossfadeDurationSecs = null;
   waitingForStartupProgress = false;
   startupProgressDeadline = 0;
   waitForReadyBuffer = false;
@@ -1373,7 +1661,6 @@ async function primeCachedPlaybackStart(trackUrn: string, expectedGen: number) {
 
   try {
     await invoke('audio_play');
-    await invoke('audio_seek', { position: 0 });
   } catch (error) {
     console.warn('[Audio] Cached playback start prime failed', error);
   }
@@ -1511,216 +1798,242 @@ async function loadTrack(track: Track, skipStop = false) {
   suppressStallDetection(4500);
   primeStartupRecoveryWindow(track.urn);
   const gen = ++loadGen;
-  if (!skipStop) stopTrack();
-  isCrossfadingOut = false;
-  currentUrn = track.urn;
   const urn = track.urn;
-
-  fallbackDuration = track.duration / 1000;
-  cachedDuration = fallbackDuration;
-  cachedTime = 0;
-  lastSmoothTime = 0;
-  waitingForStartupProgress = true;
-  startupProgressDeadline = Date.now() + 8000;
-  seekTargetTime = -1;
-  seekPendingUntil = 0;
-  clearBufferedSeekPauseState();
-  waitForReadyBuffer = true;
-  startupBufferedSecs = 0;
-  readyBufferPromise = null;
-  readyBufferResolver = null;
-  beginPlaybackBufferTracking(fallbackDuration);
-  usePlayerStore.setState({ downloadProgress: null });
-  usePlayerStore.getState().setCurrentTrackStreamQuality(undefined);
-  usePlayerStore.getState().setCurrentTrackStreamCodec(undefined);
-  flushNotifyImmediate();
-
-  if (!isTauriRuntime()) {
-    void hydrateTrackMetadata(track, gen);
-    hasTrack = false;
-    if (typeof window !== 'undefined') {
-      window.setTimeout(() => {
-        if (isTauriRuntime() && usePlayerStore.getState().currentTrack?.urn === urn) {
-          void loadTrack(track, skipStop);
-        }
-      }, 300);
-    }
-    return;
+  if (skipStop) {
+    pendingCrossfadeTrackUrn = urn;
   }
-
-  setupTauriBindings();
-  syncNativeAudioRuntime();
-
-  const cachedPath = await getCacheFilePath(urn);
-  if (gen !== loadGen) return;
-  if (!cachedPath) {
-    void hydrateTrackMetadata(track, gen);
-  }
-
-  const settings = useSettingsStore.getState();
-  const crossfadeSecs = resolveCrossfadeDurationForLoad(settings, track.duration / 1000, 0);
-  const cacheTargetPath = await getCacheTargetPath(urn);
-  if (gen !== loadGen) return;
-  const loadFromNetworkWithFallback = async () => {
-    usePlayerStore.setState({ downloadProgress: 0 });
-
-    const directStreamSource = await getTrackStreamSource(urn);
-    const backendProgressiveSource =
-      directStreamSource.protocol === 'progressive'
-        ? null
-        : await getBackendProgressiveTrackStreamSource(urn);
-    const streamSource = backendProgressiveSource ?? directStreamSource;
-    updateEstimatedStreamTotalBytes(fallbackDuration, streamSource.format);
-    console.log(
-      `[Audio] Loading ${backendProgressiveSource ? 'backend progressive' : 'direct'} stream: ${urn} (${streamSource.protocol}/${streamSource.format})`,
-    );
-    try {
-      const result = await invoke<AudioLoadInvokeResult>('audio_load_url', {
-        progressToken: gen,
-        url: streamSource.url,
-        sessionId: getSessionId(),
-        streamContentTypeHint: streamSource.mimeType,
-        cachePath: cacheTargetPath,
-        cacheKey: urn,
-        crossfadeSecs,
-        expectedDurationSecs: track.duration > 0 ? track.duration / 1000 : null,
-      });
-      const streamCodec =
-        inferCodecFromContentType(result.stream_content_type) ||
-        inferCodecFromContentType(streamSource.mimeType) ||
-        inferCodecFromFormat(streamSource.format) ||
-        undefined;
-      console.log(
-        `[Audio] Stream loaded: resolved=${result.stream_quality || 'unknown'}, codec=${streamCodec || 'unknown'}, mime=${result.stream_content_type || 'unknown'}`,
-      );
-      return {
-        ...result,
-        stream_quality:
-          result.stream_quality === 'hq' || result.stream_quality === 'lq'
-            ? result.stream_quality
-            : streamSource.quality,
-        stream_codec: streamCodec,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[Audio] Stream load failed: error=${message}`);
-      throw error;
-    }
-  };
 
   try {
-    let result: {
-      duration_secs: number | null;
-      stream_quality?: string | null;
-      stream_content_type?: string | null;
-      stream_codec?: string | null;
-    };
-    let loadedFromCache = false;
+    if (!skipStop) stopTrack();
+    isCrossfadingOut = false;
+    currentUrn = track.urn;
+    warmTrackTransitionProfile(track);
 
-    if (cachedPath) {
+    fallbackDuration = track.duration / 1000;
+    cachedDuration = fallbackDuration;
+    cachedTime = 0;
+    lastSmoothTime = 0;
+    waitingForStartupProgress = true;
+    startupProgressDeadline = Date.now() + 8000;
+    seekTargetTime = -1;
+    seekPendingUntil = 0;
+    clearBufferedSeekPauseState();
+    waitForReadyBuffer = true;
+    startupBufferedSecs = 0;
+    readyBufferPromise = null;
+    readyBufferResolver = null;
+    beginPlaybackBufferTracking(fallbackDuration);
+    usePlayerStore.setState({ downloadProgress: null });
+    usePlayerStore.getState().setCurrentTrackStreamQuality(undefined);
+    usePlayerStore.getState().setCurrentTrackStreamCodec(undefined);
+    flushNotifyImmediate();
+
+    if (!isTauriRuntime()) {
+      void hydrateTrackMetadata(track, gen);
+      hasTrack = false;
+      if (typeof window !== 'undefined') {
+        window.setTimeout(() => {
+          if (isTauriRuntime() && usePlayerStore.getState().currentTrack?.urn === urn) {
+            void loadTrack(track, skipStop);
+          }
+        }, 300);
+      }
+      return;
+    }
+
+    setupTauriBindings();
+    syncNativeAudioRuntime();
+
+    const cachedPath = await getCacheFilePath(urn);
+    if (gen !== loadGen) return;
+    if (!cachedPath) {
+      void hydrateTrackMetadata(track, gen);
+    }
+
+    const settings = useSettingsStore.getState();
+    const crossfadeSecs =
+      skipStop && pendingCrossfadeDurationSecs != null
+        ? pendingCrossfadeDurationSecs
+        : resolveCrossfadeDurationForLoad(settings, track.duration / 1000, 0);
+    const cacheTargetPath = await getCacheTargetPath(urn);
+    if (gen !== loadGen) return;
+    const loadFromNetworkWithFallback = async () => {
+      usePlayerStore.setState({ downloadProgress: 0 });
+
+      const directStreamSource = await getTrackStreamSource(urn);
+      const backendProgressiveSource =
+        directStreamSource.protocol === 'progressive'
+          ? null
+          : await getBackendProgressiveTrackStreamSource(urn);
+      const streamSource = backendProgressiveSource ?? directStreamSource;
+      updateEstimatedStreamTotalBytes(fallbackDuration, streamSource.format);
+      console.log(
+        `[Audio] Loading ${backendProgressiveSource ? 'backend progressive' : 'direct'} stream: ${urn} (${streamSource.protocol}/${streamSource.format})`,
+      );
       try {
-        result = await invoke<{
-          duration_secs: number | null;
-          stream_quality?: string | null;
-          stream_content_type?: string | null;
-          stream_codec?: string | null;
-        }>('audio_load_file', {
-          eventToken: gen,
-          path: cachedPath,
+        const result = await invoke<AudioLoadInvokeResult>('audio_load_url', {
+          progressToken: gen,
+          url: streamSource.url,
+          sessionId: getSessionId(),
+          streamContentTypeHint: streamSource.mimeType,
+          cachePath: cacheTargetPath,
           cacheKey: urn,
           crossfadeSecs,
+          expectedDurationSecs: track.duration > 0 ? track.duration / 1000 : null,
         });
-        loadedFromCache = true;
-        currentPlaybackSource = 'cache-file';
-      } catch (cacheError) {
-        console.warn('[Audio] Cached file failed to decode, retrying from network...', cacheError);
-        await removeCachedTrack(urn);
+        const streamCodec =
+          inferCodecFromContentType(result.stream_content_type) ||
+          inferCodecFromContentType(streamSource.mimeType) ||
+          inferCodecFromFormat(streamSource.format) ||
+          undefined;
+        console.log(
+          `[Audio] Stream loaded: resolved=${result.stream_quality || 'unknown'}, codec=${streamCodec || 'unknown'}, mime=${result.stream_content_type || 'unknown'}`,
+        );
+        return {
+          ...result,
+          stream_quality:
+            result.stream_quality === 'hq' || result.stream_quality === 'lq'
+              ? result.stream_quality
+              : streamSource.quality,
+          stream_codec: streamCodec,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[Audio] Stream load failed: error=${message}`);
+        throw error;
+      }
+    };
+
+    try {
+      let result: {
+        duration_secs: number | null;
+        stream_quality?: string | null;
+        stream_content_type?: string | null;
+        stream_codec?: string | null;
+      };
+      let loadedFromCache = false;
+
+      if (cachedPath) {
+        try {
+          result = await invoke<{
+            duration_secs: number | null;
+            stream_quality?: string | null;
+            stream_content_type?: string | null;
+            stream_codec?: string | null;
+          }>('audio_load_file', {
+            eventToken: gen,
+            path: cachedPath,
+            cacheKey: urn,
+            crossfadeSecs,
+          });
+          loadedFromCache = true;
+          currentPlaybackSource = 'cache-file';
+        } catch (cacheError) {
+          console.warn(
+            '[Audio] Cached file failed to decode, retrying from network...',
+            cacheError,
+          );
+          await removeCachedTrack(urn);
+          result = await loadFromNetworkWithFallback();
+          currentPlaybackSource = 'network';
+        }
+      } else {
         result = await loadFromNetworkWithFallback();
         currentPlaybackSource = 'network';
       }
-    } else {
-      result = await loadFromNetworkWithFallback();
-      currentPlaybackSource = 'network';
-    }
 
-    const resolvedQuality =
-      result.stream_quality === 'hq' || result.stream_quality === 'lq'
-        ? result.stream_quality
-        : loadedFromCache
-          ? track.streamQuality || (useSettingsStore.getState().highQualityStreaming ? 'hq' : 'lq')
-          : useSettingsStore.getState().highQualityStreaming
-            ? 'hq'
-            : 'lq';
-    const resolvedCodec =
-      result.stream_codec ||
-      inferCodecFromContentType(result.stream_content_type) ||
-      track.streamCodec ||
-      (resolvedQuality === 'hq' ? 'AAC' : 'MP3');
-    if (isLikelyFullTrackPlayback(track, result.duration_secs)) {
-      usePlayerStore.getState().setTrackAccessByUrn(track.urn, 'playable');
-    }
-    usePlayerStore.getState().setCurrentTrackStreamQuality(resolvedQuality);
-    usePlayerStore.getState().setCurrentTrackStreamCodec(resolvedCodec);
-    if (loadedFromCache) {
-      await primeCachedPlaybackStart(urn, gen);
-      waitForReadyBuffer = false;
+      const resolvedQuality =
+        result.stream_quality === 'hq' || result.stream_quality === 'lq'
+          ? result.stream_quality
+          : loadedFromCache
+            ? track.streamQuality ||
+              (useSettingsStore.getState().highQualityStreaming ? 'hq' : 'lq')
+            : useSettingsStore.getState().highQualityStreaming
+              ? 'hq'
+              : 'lq';
+      const resolvedCodec =
+        result.stream_codec ||
+        inferCodecFromContentType(result.stream_content_type) ||
+        track.streamCodec ||
+        (resolvedQuality === 'hq' ? 'AAC' : 'MP3');
+      if (isLikelyFullTrackPlayback(track, result.duration_secs)) {
+        usePlayerStore.getState().setTrackAccessByUrn(track.urn, 'playable');
+      }
+      usePlayerStore.getState().setCurrentTrackStreamQuality(resolvedQuality);
+      usePlayerStore.getState().setCurrentTrackStreamCodec(resolvedCodec);
+      if (loadedFromCache) {
+        await primeCachedPlaybackStart(urn, gen);
+        waitForReadyBuffer = false;
+        waitingForStartupProgress = false;
+        startupProgressDeadline = 0;
+        readyBufferPromise = null;
+        readyBufferResolver = null;
+        finalizePlaybackBufferAsCached();
+      } else if (await syncPlaybackBufferFromCompleteCache(urn, gen)) {
+        // complete cache already exists for this track even though we kept network playback path
+      } else {
+        syncPlaybackBufferPhase(true);
+        if (waitForReadyBuffer && usePlayerStore.getState().isPlaying) {
+          pauseNativeForStartupBuffer();
+        }
+      }
+      console.log(
+        `[Audio] Active stream: quality=${resolvedQuality}, codec=${resolvedCodec || 'unknown'}, source=${loadedFromCache ? 'cache' : 'network'}, mime=${result.stream_content_type || 'unknown'}`,
+      );
+    } catch (e) {
+      console.error('[Audio] Load failed:', e);
+      usePlayerStore.setState({ downloadProgress: null });
       waitingForStartupProgress = false;
       startupProgressDeadline = 0;
-      readyBufferPromise = null;
-      readyBufferResolver = null;
-      finalizePlaybackBufferAsCached();
-    } else if (await syncPlaybackBufferFromCompleteCache(urn, gen)) {
-      // complete cache already exists for this track even though we kept network playback path
-    } else {
-      syncPlaybackBufferPhase(true);
-    }
-    console.log(
-      `[Audio] Active stream: quality=${resolvedQuality}, codec=${resolvedCodec || 'unknown'}, source=${loadedFromCache ? 'cache' : 'network'}, mime=${result.stream_content_type || 'unknown'}`,
-    );
-  } catch (e) {
-    console.error('[Audio] Load failed:', e);
-    usePlayerStore.setState({ downloadProgress: null });
-    waitingForStartupProgress = false;
-    startupProgressDeadline = 0;
-    resetPlaybackBufferState();
-    if (gen !== loadGen) return;
-    if (isNotFoundLoadError(e)) {
-      console.warn(`[Audio] Marking track as unavailable after stream 404: ${track.urn}`);
-      usePlayerStore.getState().setTrackAccessByUrn(track.urn, 'blocked');
-      void handleUnavailableTrack(track);
+      resetPlaybackBufferState();
+      if (gen !== loadGen) return;
+      if (isNotFoundLoadError(e)) {
+        console.warn(`[Audio] Marking track as unavailable after stream 404: ${track.urn}`);
+        usePlayerStore.getState().setTrackAccessByUrn(track.urn, 'blocked');
+        void handleUnavailableTrack(track);
+        return;
+      }
+      usePlayerStore.getState().pause();
       return;
     }
-    usePlayerStore.getState().pause();
-    return;
-  }
 
-  // Stale check — another loadTrack started while we were loading
-  if (gen !== loadGen) {
-    if (isTauriRuntime()) {
-      invoke('audio_stop').catch(console.error);
-    }
-    return;
-  }
-  hasTrack = true;
-  lastTickAt = Date.now();
-  if (waitForReadyBuffer && cachedDuration > 0) {
-    readyBufferPromise = new Promise<void>((resolve) => {
-      readyBufferResolver = resolve;
-    });
-
-    // Timeout: if buffer doesn't fill in time, start anyway
-    const timeoutId = setTimeout(() => {
-      if (waitForReadyBuffer && readyBufferResolver) {
-        console.log(
-          `[Audio] Prebuffer timeout after ${(currentBufferStrategy.startupTimeoutMs / 1000).toFixed(1)}s, starting playback...`,
-        );
-        resolveReadyBuffer('timeout');
+    // Stale check — another loadTrack started while we were loading
+    if (gen !== loadGen) {
+      if (isTauriRuntime()) {
+        invoke('audio_stop').catch(console.error);
       }
-    }, currentBufferStrategy.startupTimeoutMs);
+      return;
+    }
+    hasTrack = true;
+    lastTickAt = Date.now();
+    if (waitForReadyBuffer && cachedDuration > 0) {
+      readyBufferPromise = new Promise<void>((resolve) => {
+        readyBufferResolver = resolve;
+      });
 
-    // Wait for buffer to be ready
-    await readyBufferPromise;
-    clearTimeout(timeoutId);
+      // Timeout: if buffer doesn't fill in time, start anyway
+      const timeoutId = setTimeout(() => {
+        if (waitForReadyBuffer && readyBufferResolver) {
+          console.log(
+            `[Audio] Prebuffer timeout after ${(currentBufferStrategy.startupTimeoutMs / 1000).toFixed(1)}s, starting playback...`,
+          );
+          resolveReadyBuffer('timeout');
+        }
+      }, currentBufferStrategy.startupTimeoutMs);
+
+      // Wait for buffer to be ready
+      await readyBufferPromise;
+      clearTimeout(timeoutId);
+      if (
+        gen !== loadGen ||
+        currentUrn !== urn ||
+        usePlayerStore.getState().currentTrack?.urn !== urn
+      ) {
+        return;
+      }
+      console.log(`[Audio] Prebuffer ready: ${startupBufferedSecs.toFixed(1)}s buffered`);
+    }
+
     if (
       gen !== loadGen ||
       currentUrn !== urn ||
@@ -1728,40 +2041,39 @@ async function loadTrack(track: Track, skipStop = false) {
     ) {
       return;
     }
-    console.log(`[Audio] Prebuffer ready: ${startupBufferedSecs.toFixed(1)}s buffered`);
-  }
+    // Record to listening history (fire-and-forget)
+    if (track.urn && track.title) {
+      api('/history', {
+        method: 'POST',
+        body: JSON.stringify({
+          scTrackId: track.urn,
+          title: track.title,
+          artistName: track.user?.username || '',
+          artworkUrl: track.artwork_url || null,
+          duration: track.duration || 0,
+        }),
+      }).catch(() => {});
+    }
 
-  if (
-    gen !== loadGen ||
-    currentUrn !== urn ||
-    usePlayerStore.getState().currentTrack?.urn !== urn
-  ) {
-    return;
-  }
-  // Record to listening history (fire-and-forget)
-  if (track.urn && track.title) {
-    api('/history', {
-      method: 'POST',
-      body: JSON.stringify({
-        scTrackId: track.urn,
-        title: track.title,
-        artistName: track.user?.username || '',
-        artworkUrl: track.artwork_url || null,
-        duration: track.duration || 0,
-      }),
-    }).catch(() => {});
-  }
+    if (!usePlayerStore.getState().isPlaying) {
+      if (isTauriRuntime()) {
+        invoke('audio_pause').catch(console.error);
+      }
+    }
 
-  if (!usePlayerStore.getState().isPlaying) {
-    if (isTauriRuntime()) {
-      invoke('audio_pause').catch(console.error);
+    updatePlaybackState(usePlayerStore.getState().isPlaying);
+    updateMediaPosition();
+    preloadQueue();
+    warmUpcomingTransitionProfiles();
+    isCrossfadingOut = false;
+  } finally {
+    if (skipStop && pendingCrossfadeTrackUrn === urn) {
+      pendingCrossfadeTrackUrn = null;
+    }
+    if (skipStop) {
+      pendingCrossfadeDurationSecs = null;
     }
   }
-
-  updatePlaybackState(usePlayerStore.getState().isPlaying);
-  updateMediaPosition();
-  preloadQueue();
-  isCrossfadingOut = false;
 }
 
 function handleTrackEnd() {
@@ -1791,7 +2103,7 @@ function handleTrackEnd() {
         void continueSoundWaveQueue(lastTrack);
       } else if (state.repeat === 'off') {
         if (lastTrack) {
-          void autoplayRelated(lastTrack);
+          void autoplayContinuation(lastTrack, 'queue-ended');
         } else {
           usePlayerStore.getState().pause();
         }
@@ -1818,6 +2130,8 @@ let tauriBindingsPoll: ReturnType<typeof setInterval> | null = null;
 
 async function recoverFromStall(elapsedMs: number) {
   if (stallProbeInFlight || stallRecoveryInFlight) return;
+  if (hasPendingCrossfadeLoad()) return;
+  if (nativeStartupPausedForBuffering) return;
   if (!playbackBufferSnapshot.fullyCached && Date.now() - lastDownloadProgressAt < 2200) {
     return;
   }
@@ -1970,14 +2284,16 @@ function setupTauriBindings() {
       !isCrossfadeOffMode(settings.crossfadeMode) &&
       cachedDuration > 0
     ) {
+      const currentTrack = usePlayerStore.getState().currentTrack;
       const transitionDuration =
         settings.crossfadeMode === 'manual'
           ? getManualCrossfadeDuration(settings)
-          : getSmartCrossfadeDuration(cachedDuration, cachedTime);
+          : getSmartCrossfadeDurationForTracks(currentTrack, cachedTime);
       const remaining = cachedDuration - cachedTime;
       if (remaining <= transitionDuration && remaining > 0 && !isCrossfadingOut) {
         isCrossfadingOut = true;
         crossfadeInProgress = true;
+        pendingCrossfadeDurationSecs = transitionDuration;
         handleTrackEnd();
       }
     }
@@ -1985,6 +2301,10 @@ function setupTauriBindings() {
 
   listen('audio:ended', () => {
     clearBufferedSeekPauseState();
+    if (hasPendingCrossfadeLoad()) {
+      console.log('[Audio] Ignoring ended event while crossfade transition is still loading');
+      return;
+    }
     const nearTrackEnd = cachedDuration > 0 && cachedTime >= Math.max(0, cachedDuration - 1.2);
     if (Date.now() < endedGuardUntil && !nearTrackEnd) {
       console.warn('[Audio] Ignoring spurious ended event during seek transition');
@@ -2049,6 +2369,8 @@ function setupTauriBindings() {
 
   setInterval(() => {
     if (!isTauriRuntime() || !hasTrack || !lastTickAt) return;
+    if (hasPendingCrossfadeLoad()) return;
+    if (nativeStartupPausedForBuffering) return;
     const { isPlaying } = usePlayerStore.getState();
     if (!isPlaying) return;
     const now = Date.now();
@@ -2062,6 +2384,8 @@ function setupTauriBindings() {
 
   setInterval(() => {
     if (!isTauriRuntime() || !currentUrn) return;
+    if (hasPendingCrossfadeLoad()) return;
+    if (nativeStartupPausedForBuffering) return;
     const state = usePlayerStore.getState();
     if (!state.isPlaying || state.currentTrack?.urn !== currentUrn) return;
     if (playbackBufferSnapshot.phase === 'ready' || playbackBufferSnapshot.fullyCached) return;
@@ -2143,6 +2467,137 @@ function setupTauriBindings() {
   });
 }
 
+function getContextualWavePreset() {
+  return useSettingsStore.getState().soundwaveMode === 'diverse'
+    ? CHARACTER_PRESETS.discover
+    : CHARACTER_PRESETS.favorite;
+}
+
+function serializeStringList(values: string[]) {
+  return [...values].sort().join('|');
+}
+
+function scheduleSoundWaveQueueRefresh(reason: string) {
+  if (queuedSoundWaveRefreshTimer) {
+    clearTimeout(queuedSoundWaveRefreshTimer);
+  }
+
+  queuedSoundWaveRefreshTimer = setTimeout(() => {
+    queuedSoundWaveRefreshTimer = null;
+    const sw = useSoundWaveStore.getState();
+    const player = usePlayerStore.getState();
+    if (!sw.isActive || sw.isSuspended || player.queueSource !== 'soundwave') {
+      return;
+    }
+
+    void sw
+      .refreshUpcomingQueue({ reason })
+      .then((tail) => {
+        if (tail.length > 0) {
+          preloadQueue();
+          warmUpcomingTransitionProfiles();
+        }
+      })
+      .catch((error) => {
+        console.error('[SoundWave] Scheduled queue refresh failed', error);
+      });
+  }, SOUNDWAVE_REFRESH_DEBOUNCE_MS);
+}
+
+async function ensureHiddenSoundWaveContinuation(
+  anchorTrack: Track,
+  reason: string,
+): Promise<boolean> {
+  if (!anchorTrack?.urn || backgroundContinuationInFlight) {
+    return false;
+  }
+
+  const player = usePlayerStore.getState();
+  if (!player.currentTrack || player.currentTrack.urn !== anchorTrack.urn) {
+    return false;
+  }
+
+  backgroundContinuationInFlight = true;
+  try {
+    console.log(
+      `[SoundWave] Preparing hidden continuation: reason=${reason}, anchor=${anchorTrack.urn}`,
+    );
+
+    const tail = await buildWaveQueueFromPlayerContext({
+      languages: [...useSettingsStore.getState().soundwaveLanguages].sort(),
+      mode: useSettingsStore.getState().soundwaveMode,
+      hideLiked: useSettingsStore.getState().soundwaveHideLiked,
+      targetSize: CONTEXTUAL_AUTOPLAY_TAIL_TARGET,
+    });
+
+    const latestPlayer = usePlayerStore.getState();
+    if (!latestPlayer.currentTrack || latestPlayer.currentTrack.urn !== anchorTrack.urn) {
+      console.log(
+        `[SoundWave] Hidden continuation became stale: reason=${reason}, anchor=${anchorTrack.urn}`,
+      );
+      return false;
+    }
+
+    if (tail.length === 0) {
+      console.warn(
+        `[SoundWave] Hidden continuation produced no wave tail: reason=${reason}, anchor=${anchorTrack.urn}`,
+      );
+      return false;
+    }
+
+    const queueHead =
+      latestPlayer.queueIndex >= 0
+        ? latestPlayer.queue.slice(0, latestPlayer.queueIndex + 1)
+        : [anchorTrack];
+    const nextQueue = dedupeTracksByUrn([...queueHead, ...tail]);
+
+    await useSoundWaveStore.getState().startFromQueue({
+      queue: nextQueue,
+      seedTracks: [anchorTrack],
+      preserveCurrentTrack: true,
+      preset: getContextualWavePreset(),
+      launchContext: null,
+    });
+
+    backgroundContinuationPreparedUrn = anchorTrack.urn;
+    preloadQueue();
+    warmUpcomingTransitionProfiles();
+    console.log(
+      `[SoundWave] Hidden continuation activated: reason=${reason}, tail=${tail.length}, queue=${nextQueue.length}`,
+    );
+    return true;
+  } catch (error) {
+    console.error('[SoundWave] Hidden continuation failed', error);
+    return false;
+  } finally {
+    backgroundContinuationInFlight = false;
+  }
+}
+
+function maybePrepareBackgroundContinuation(
+  state: ReturnType<typeof usePlayerStore.getState>,
+  reason: string,
+) {
+  if (!state.currentTrack || state.repeat !== 'off' || state.queueSource === 'soundwave') {
+    return;
+  }
+
+  if (state.queue.length === 0 || state.queueIndex < 0) {
+    return;
+  }
+
+  const isLast = state.queueIndex >= state.queue.length - 1;
+  if (!isLast) {
+    return;
+  }
+
+  if (backgroundContinuationPreparedUrn === state.currentTrack.urn) {
+    return;
+  }
+
+  void ensureHiddenSoundWaveContinuation(state.currentTrack, reason);
+}
+
 setupTauriBindings();
 if (!tauriBindingsReady) {
   tauriBindingsPoll = setInterval(() => {
@@ -2160,8 +2615,13 @@ usePlayerStore.subscribe((state, prev) => {
   const trackChanged = state.currentTrack?.urn !== currentUrn;
   const playToggled = state.isPlaying !== prev.isPlaying;
   const previousTrack = prev.currentTrack;
+  const queueChanged =
+    state.queue !== prev.queue ||
+    state.queueIndex !== prev.queueIndex ||
+    state.queueSource !== prev.queueSource;
 
   if (trackChanged) {
+    backgroundContinuationPreparedUrn = null;
     if (state.currentTrack) {
       const sw = useSoundWaveStore.getState();
       if (sw.isActive && !sw.isSuspended && prev.queueSource === 'soundwave') {
@@ -2191,6 +2651,9 @@ usePlayerStore.subscribe((state, prev) => {
       fallbackDuration = 0;
       cachedDuration = 0;
       notify();
+    }
+    if (state.currentTrack) {
+      maybePrepareBackgroundContinuation(state, 'track-change:last-manual-track');
     }
     return;
   }
@@ -2234,17 +2697,53 @@ usePlayerStore.subscribe((state, prev) => {
       ),
     }).catch(console.error);
   }
+
+  if (queueChanged && state.currentTrack) {
+    maybePrepareBackgroundContinuation(state, 'queue-update:last-manual-track');
+    if (state.queue.length > prev.queue.length || state.queueSource !== prev.queueSource) {
+      preloadQueue();
+      warmUpcomingTransitionProfiles();
+    }
+  }
 });
 
 /* ── EQ settings subscriber ──────────────────────────────────── */
 
 useSettingsStore.subscribe((state, prev) => {
-  if (!isTauriRuntime()) return;
-  if (state.eqEnabled !== prev.eqEnabled || state.eqGains !== prev.eqGains) {
+  if (isTauriRuntime() && (state.eqEnabled !== prev.eqEnabled || state.eqGains !== prev.eqGains)) {
     invoke('audio_set_eq', { enabled: state.eqEnabled, gains: state.eqGains }).catch(console.error);
   }
-  if (state.normalizeVolume !== prev.normalizeVolume) {
+  if (isTauriRuntime() && state.normalizeVolume !== prev.normalizeVolume) {
     invoke('audio_set_normalization', { enabled: state.normalizeVolume }).catch(console.error);
+  }
+
+  const sw = useSoundWaveStore.getState();
+  const player = usePlayerStore.getState();
+  if (!sw.isActive || sw.isSuspended || player.queueSource !== 'soundwave') {
+    return;
+  }
+
+  const contextualWaveSettingsChanged =
+    state.soundwaveMode !== prev.soundwaveMode ||
+    state.soundwaveHideLiked !== prev.soundwaveHideLiked ||
+    serializeStringList(state.soundwaveLanguages) !== serializeStringList(prev.soundwaveLanguages);
+
+  const presetWaveSettingsChanged =
+    state.languageFilterEnabled !== prev.languageFilterEnabled ||
+    state.soundwaveHideLiked !== prev.soundwaveHideLiked ||
+    state.soundwaveGenreStrict !== prev.soundwaveGenreStrict ||
+    serializeStringList(state.preferredLanguages) !==
+      serializeStringList(prev.preferredLanguages) ||
+    serializeStringList(state.soundwaveSelectedGenres) !==
+      serializeStringList(prev.soundwaveSelectedGenres);
+
+  if (sw.continuationStrategy === 'contextual-tail' && contextualWaveSettingsChanged) {
+    scheduleSoundWaveQueueRefresh('settings:contextual-tail');
+    return;
+  }
+
+  if (sw.continuationStrategy === 'preset-batch' && presetWaveSettingsChanged) {
+    scheduleSoundWaveQueueRefresh('settings:preset-wave');
   }
 });
 
@@ -2299,7 +2798,7 @@ async function handleUnavailableTrack(track: Track) {
       await continueSoundWaveQueue(track);
       return;
     }
-    await autoplayRelated(track);
+    await autoplayContinuation(track, 'unavailable-last-track');
     return;
   }
 
@@ -2311,23 +2810,48 @@ async function continueSoundWaveQueue(lastTrack: Track) {
   const before = usePlayerStore.getState();
 
   try {
-    console.log('[SoundWave] Queue exhausted, generating next batch...');
-    const batch = await sw.generateBatch();
+    console.log(
+      `[SoundWave] Queue exhausted, refreshing continuation strategy=${sw.continuationStrategy ?? 'none'}...`,
+    );
+    const tail = await sw.refreshUpcomingQueue({ reason: 'queue-exhausted' });
 
-    if (batch.length > 0) {
-      usePlayerStore.getState().addToQueue(batch);
+    if (tail.length > 0) {
+      preloadQueue();
+      warmUpcomingTransitionProfiles();
       const after = usePlayerStore.getState();
       if (after.queue.length > before.queue.length && after.queueIndex < after.queue.length - 1) {
         currentUrn = null;
         after.next();
         return;
       }
-      console.warn('[SoundWave] Generated batch contained no fresh queue additions');
+      console.warn('[SoundWave] Refreshed queue tail contained no playable next track');
     } else {
-      console.warn('[SoundWave] Queue refill returned no tracks');
+      console.warn('[SoundWave] Queue refresh returned no tracks');
     }
   } catch (error) {
     console.error('[SoundWave] Queue refill failed', error);
+  }
+
+  if (await ensureHiddenSoundWaveContinuation(lastTrack, 'soundwave-tail-fallback')) {
+    const after = usePlayerStore.getState();
+    if (after.queueIndex < after.queue.length - 1) {
+      currentUrn = null;
+      after.next();
+      return;
+    }
+  }
+
+  await autoplayRelated(lastTrack);
+}
+
+async function autoplayContinuation(lastTrack: Track, reason: string) {
+  if (await ensureHiddenSoundWaveContinuation(lastTrack, reason)) {
+    const state = usePlayerStore.getState();
+    if (state.queueIndex < state.queue.length - 1) {
+      currentUrn = null;
+      state.next();
+      return;
+    }
   }
 
   await autoplayRelated(lastTrack);
@@ -2470,6 +2994,9 @@ export function preloadQueue() {
     const idx = queueIndex + i;
     if (idx < queue.length) {
       queuePreload(queue[idx].urn, 'queue');
+      if (i <= 2) {
+        warmTrackTransitionProfile(queue[idx]);
+      }
     }
   }
   schedulePreloadPump(420);

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { useShallow } from 'zustand/shallow';
+import { MediaConnectivityDialog } from './components/connectivity/MediaConnectivityDialog';
 import { AppShell } from './components/layout/AppShell';
 import { ContextMenuProvider } from './components/context-menu/ContextMenuProvider';
 import { ThemeProvider } from './components/ThemeProvider';
@@ -16,6 +17,7 @@ import {
   isDirectAuthRequiredError,
   mapDirectUserToAuthUser,
 } from './lib/direct-soundcloud-api';
+import { checkSoundCloudCdnConnectivity } from './lib/media-connectivity';
 import { Home } from './pages/Home';
 import { Library } from './pages/Library';
 import { Login } from './pages/Login';
@@ -32,6 +34,8 @@ import { useSettingsStore } from './stores/settings';
 type AppErrorBoundaryState = {
   error: Error | null;
 };
+
+const MEDIA_CONNECTIVITY_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 function isDirectAuthFailure(error: unknown) {
   return isDirectAuthRequiredError(error);
@@ -87,9 +91,13 @@ function AppInner() {
   const [checking, setChecking] = useState(true);
   const [authHydrated, setAuthHydrated] = useState(() => useAuthStore.persist.hasHydrated());
   const [directHydrated, setDirectHydrated] = useState(() => useDirectAuthStore.persist.hasHydrated());
+  const [settingsHydrated, setSettingsHydrated] = useState(() =>
+    useSettingsStore.persist.hasHydrated(),
+  );
   const directAuthenticated = useDirectAuthStore((s) => s.isAuthenticated);
   const directUser = useDirectAuthStore((s) => s.user);
   const directSetUser = useDirectAuthStore((s) => s.setUser);
+  const setMediaConnectivityProbeState = useSettingsStore((s) => s.setMediaConnectivityProbeState);
   const effectiveAuthenticated = isAuthenticated || directAuthenticated;
 
   // Re-apply persisted app icon choice on each app start. Tauri uses the
@@ -159,6 +167,19 @@ function AppInner() {
 
     const unsubscribe = useDirectAuthStore.persist.onFinishHydration(() => {
       setDirectHydrated(true);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (useSettingsStore.persist.hasHydrated()) {
+      setSettingsHydrated(true);
+      return;
+    }
+
+    const unsubscribe = useSettingsStore.persist.onFinishHydration(() => {
+      setSettingsHydrated(true);
     });
 
     return unsubscribe;
@@ -282,7 +303,44 @@ function AppInner() {
     sessionId,
   ]);
 
-  const isBooting = !authHydrated || !directHydrated || checking;
+  useEffect(() => {
+    if (!authHydrated || !directHydrated || !settingsHydrated) return;
+
+    let cancelled = false;
+
+    const runConnectivityProbe = async () => {
+      try {
+        const result = await checkSoundCloudCdnConnectivity({
+          useRememberedStream: effectiveAuthenticated,
+        });
+        if (cancelled) return;
+        setMediaConnectivityProbeState(result.status);
+      } catch {
+        if (cancelled) return;
+        setMediaConnectivityProbeState('degraded');
+      }
+    };
+
+    setMediaConnectivityProbeState('unknown');
+    void runConnectivityProbe();
+
+    const intervalId = window.setInterval(() => {
+      void runConnectivityProbe();
+    }, MEDIA_CONNECTIVITY_RECHECK_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [
+    authHydrated,
+    directHydrated,
+    effectiveAuthenticated,
+    setMediaConnectivityProbeState,
+    settingsHydrated,
+  ]);
+
+  const isBooting = !authHydrated || !directHydrated || !settingsHydrated || checking;
 
   return (
     <ThemeProvider>
@@ -301,6 +359,7 @@ function AppInner() {
               },
             }}
           />
+          <MediaConnectivityDialog />
           {isBooting && (
             <div
               className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2.5 px-5 py-2.5 rounded-full border border-white/[0.08] bg-white/[0.06] backdrop-blur-lg shadow-[0_4px_16px_rgba(0,0,0,0.3)] animate-fade-in whitespace-nowrap"

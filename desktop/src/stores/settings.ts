@@ -100,22 +100,9 @@ export type ThemeGradientAnimation = 'flow' | 'pulse' | 'breathe';
 export type DiscordRpcMode = 'text' | 'track' | 'artist' | 'activity';
 export type DiscordRpcButtonMode = 'soundcloud' | 'app' | 'both';
 export type ApiMode = 'auto' | 'custom';
-export type MediaProxyMode = 'off' | 'auto' | 'manual';
-export type MediaProxyRouting = 'direct' | 'proxy';
+export type MediaProxyMode = 'off' | 'manual';
 export type MediaProxyTypeLabel = 'http' | 'https' | 'socks4' | 'socks5';
-
-export interface LastKnownWorkingMediaProxy {
-  mode: MediaProxyMode;
-  routing: MediaProxyRouting;
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  proxyType: MediaProxyTypeLabel;
-  latencyMs: number | null;
-  throughputKbps: number | null;
-  lastCheckedAt: number | null;
-}
+export type MediaConnectivityProbeState = 'unknown' | 'healthy' | 'degraded';
 
 export type AppIconVariant = 'default' | 'inverted' | 'upstream' | 'wave' | 'custom';
 
@@ -217,69 +204,8 @@ const normalizeAppUiScale = (value: unknown): number => {
   return Math.min(APP_UI_SCALE_MAX, Math.max(APP_UI_SCALE_MIN, Math.round(numeric * 100) / 100));
 };
 
-const normalizeLastKnownWorkingMediaProxy = (
-  value: unknown,
-): LastKnownWorkingMediaProxy | null => {
-  if (!value || typeof value !== 'object') return null;
-
-  const proxy = value as Partial<LastKnownWorkingMediaProxy> & {
-    proxy_type?: unknown;
-    latency_ms?: unknown;
-    throughput_kbps?: unknown;
-    last_checked_at?: unknown;
-  };
-
-  const mode =
-    proxy.mode === 'auto' || proxy.mode === 'manual' || proxy.mode === 'off'
-      ? proxy.mode
-      : null;
-  const routing = proxy.routing === 'proxy' || proxy.routing === 'direct' ? proxy.routing : null;
-  const host = typeof proxy.host === 'string' ? proxy.host.trim() : '';
-  const port = Number(proxy.port);
-  const proxyTypeSource =
-    typeof proxy.proxyType === 'string'
-      ? proxy.proxyType
-      : typeof proxy.proxy_type === 'string'
-        ? proxy.proxy_type
-        : '';
-  const proxyType =
-    proxyTypeSource === 'http' ||
-    proxyTypeSource === 'https' ||
-    proxyTypeSource === 'socks4' ||
-    proxyTypeSource === 'socks5'
-      ? proxyTypeSource
-      : null;
-
-  if (!mode || !routing || !host || !Number.isFinite(port) || port <= 0 || !proxyType) {
-    return null;
-  }
-
-  const latencySource =
-    proxy.latencyMs ??
-    proxy.latency_ms ??
-    null;
-  const throughputSource =
-    proxy.throughputKbps ??
-    proxy.throughput_kbps ??
-    null;
-  const lastCheckedSource =
-    proxy.lastCheckedAt ??
-    proxy.last_checked_at ??
-    null;
-
-  return {
-    mode,
-    routing,
-    host,
-    port,
-    username: typeof proxy.username === 'string' ? proxy.username : '',
-    password: typeof proxy.password === 'string' ? proxy.password : '',
-    proxyType,
-    latencyMs: Number.isFinite(Number(latencySource)) ? Number(latencySource) : null,
-    throughputKbps: Number.isFinite(Number(throughputSource)) ? Number(throughputSource) : null,
-    lastCheckedAt: Number.isFinite(Number(lastCheckedSource)) ? Number(lastCheckedSource) : null,
-  };
-};
+const normalizeMediaProxyMode = (value: unknown): MediaProxyMode =>
+  value === 'manual' ? 'manual' : 'off';
 
 export interface SettingsState {
   accentColor: string;
@@ -312,7 +238,9 @@ export interface SettingsState {
   mediaProxyPort: string;
   mediaProxyUsername: string;
   mediaProxyPassword: string;
-  lastKnownWorkingMediaProxy: LastKnownWorkingMediaProxy | null;
+  mediaConnectivityDialogOpen: boolean;
+  mediaConnectivityDialogDismissed: boolean;
+  mediaConnectivityProbeState: MediaConnectivityProbeState;
   spotifyClientId: string;
   youtubeClientId: string;
   youtubeClientSecret: string;
@@ -407,6 +335,9 @@ export interface SettingsState {
   setMediaProxyPort: (port: string) => void;
   setMediaProxyUsername: (username: string) => void;
   setMediaProxyPassword: (password: string) => void;
+  setMediaConnectivityDialogOpen: (open: boolean) => void;
+  setMediaConnectivityDialogDismissed: (dismissed: boolean) => void;
+  setMediaConnectivityProbeState: (state: MediaConnectivityProbeState) => void;
   setSpotifyClientId: (id: string) => void;
   setYoutubeClientId: (id: string) => void;
   setYoutubeClientSecret: (secret: string) => void;
@@ -530,7 +461,9 @@ const DEFAULTS = {
   mediaProxyPort: '',
   mediaProxyUsername: '',
   mediaProxyPassword: '',
-  lastKnownWorkingMediaProxy: null as LastKnownWorkingMediaProxy | null,
+  mediaConnectivityDialogOpen: false,
+  mediaConnectivityDialogDismissed: false,
+  mediaConnectivityProbeState: 'unknown' as MediaConnectivityProbeState,
   spotifyClientId: '',
   youtubeClientId: '',
   youtubeClientSecret: '',
@@ -667,6 +600,12 @@ export const useSettingsStore = create<SettingsState>()(
         set({ mediaProxyPort: mediaProxyPort.replace(/[^\d]/g, '').slice(0, 5) }),
       setMediaProxyUsername: (mediaProxyUsername) => set({ mediaProxyUsername }),
       setMediaProxyPassword: (mediaProxyPassword) => set({ mediaProxyPassword }),
+      setMediaConnectivityDialogOpen: (mediaConnectivityDialogOpen) =>
+        set({ mediaConnectivityDialogOpen }),
+      setMediaConnectivityDialogDismissed: (mediaConnectivityDialogDismissed) =>
+        set({ mediaConnectivityDialogDismissed }),
+      setMediaConnectivityProbeState: (mediaConnectivityProbeState) =>
+        set({ mediaConnectivityProbeState }),
       setSpotifyClientId: (spotifyClientId) => set({ spotifyClientId }),
       setYoutubeClientId: (youtubeClientId) => set({ youtubeClientId }),
       setYoutubeClientSecret: (youtubeClientSecret) => set({ youtubeClientSecret }),
@@ -833,7 +772,7 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: 'sc-settings',
       storage: createJSONStorage(() => tauriStorage),
-      version: 15,
+      version: 17,
       migrate: (persistedState) => {
         const state = (
           persistedState && typeof persistedState === 'object' ? persistedState : {}
@@ -851,9 +790,7 @@ export const useSettingsStore = create<SettingsState>()(
           normalizedKey && normalizedKey !== ENV_QDRANT_KEY ? normalizedKey : DEFAULTS.qdrantKey;
         const qdrantUrl = normalizeQdrantUrl((state.qdrantUrl as string) || DEFAULTS.qdrantUrl);
         const pinnedPlaylists = normalizePinnedPlaylists(state.pinnedPlaylists);
-        const lastKnownWorkingMediaProxy = normalizeLastKnownWorkingMediaProxy(
-          state.lastKnownWorkingMediaProxy,
-        );
+        const mediaProxyMode = normalizeMediaProxyMode(state.mediaProxyMode);
         const preferredLanguages = normalizePreferredLanguages(
           Array.isArray(state.preferredLanguages)
             ? state.preferredLanguages
@@ -878,7 +815,13 @@ export const useSettingsStore = create<SettingsState>()(
           qdrantUrl,
           qdrantKey,
           pinnedPlaylists,
-          lastKnownWorkingMediaProxy,
+          mediaProxyMode,
+          mediaConnectivityDialogOpen: false,
+          mediaConnectivityDialogDismissed:
+            typeof state.mediaConnectivityDialogDismissed === 'boolean'
+              ? state.mediaConnectivityDialogDismissed
+              : DEFAULTS.mediaConnectivityDialogDismissed,
+          mediaConnectivityProbeState: DEFAULTS.mediaConnectivityProbeState,
           preferredLanguages,
           appFontSize: normalizeAppFontSize(state.appFontSize),
           appUiScale: normalizeAppUiScale(state.appUiScale),
@@ -906,9 +849,7 @@ export const useSettingsStore = create<SettingsState>()(
           normalizedKey && normalizedKey !== ENV_QDRANT_KEY ? normalizedKey : DEFAULTS.qdrantKey;
         const qdrantUrl = normalizeQdrantUrl((state.qdrantUrl as string) || currentState.qdrantUrl);
         const pinnedPlaylists = normalizePinnedPlaylists(state.pinnedPlaylists);
-        const lastKnownWorkingMediaProxy = normalizeLastKnownWorkingMediaProxy(
-          state.lastKnownWorkingMediaProxy,
-        );
+        const mediaProxyMode = normalizeMediaProxyMode(state.mediaProxyMode);
         const preferredLanguages = normalizePreferredLanguages(
           Array.isArray(state.preferredLanguages)
             ? state.preferredLanguages
@@ -933,7 +874,13 @@ export const useSettingsStore = create<SettingsState>()(
           qdrantUrl,
           qdrantKey,
           pinnedPlaylists,
-          lastKnownWorkingMediaProxy,
+          mediaProxyMode,
+          mediaConnectivityDialogOpen: false,
+          mediaConnectivityDialogDismissed:
+            typeof state.mediaConnectivityDialogDismissed === 'boolean'
+              ? state.mediaConnectivityDialogDismissed
+              : currentState.mediaConnectivityDialogDismissed,
+          mediaConnectivityProbeState: currentState.mediaConnectivityProbeState,
           preferredLanguages,
           appFontSize: normalizeAppFontSize(state.appFontSize ?? currentState.appFontSize),
           appUiScale: normalizeAppUiScale(state.appUiScale ?? currentState.appUiScale),
@@ -975,7 +922,7 @@ export const useSettingsStore = create<SettingsState>()(
         mediaProxyPort: s.mediaProxyPort,
         mediaProxyUsername: s.mediaProxyUsername,
         mediaProxyPassword: s.mediaProxyPassword,
-        lastKnownWorkingMediaProxy: s.lastKnownWorkingMediaProxy,
+        mediaConnectivityDialogDismissed: s.mediaConnectivityDialogDismissed,
         spotifyClientId: s.spotifyClientId,
         youtubeClientId: s.youtubeClientId,
         youtubeClientSecret: s.youtubeClientSecret,

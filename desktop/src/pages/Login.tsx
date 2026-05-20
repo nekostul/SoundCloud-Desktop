@@ -6,6 +6,7 @@ import {
   mapDirectUserToAuthUser,
   startDirectOAuthFlow,
 } from '../lib/direct-soundcloud-api';
+import { checkSoundCloudCdnConnectivity } from '../lib/media-connectivity';
 import { Check, Disc3 } from '../lib/icons';
 import { queryClient } from '../main';
 import { useAuthStore } from '../stores/auth';
@@ -18,16 +19,22 @@ interface LoginProps {
 
 export function Login({ autoStartRequestId = null }: LoginProps) {
   const { t } = useTranslation();
+  const [settingsHydrated, setSettingsHydrated] = useState(() => useSettingsStore.persist.hasHydrated());
   const clearReloginRequest = useAuthStore((s) => s.clearReloginRequest);
   const soundcloudClientId = useSettingsStore((s) => s.soundcloudClientId);
   const soundcloudClientSecret = useSettingsStore((s) => s.soundcloudClientSecret);
   const setSoundcloudClientId = useSettingsStore((s) => s.setSoundcloudClientId);
   const setSoundcloudClientSecret = useSettingsStore((s) => s.setSoundcloudClientSecret);
+  const mediaConnectivityDialogOpen = useSettingsStore((s) => s.mediaConnectivityDialogOpen);
+  const setMediaConnectivityDialogOpen = useSettingsStore((s) => s.setMediaConnectivityDialogOpen);
+  const setMediaConnectivityProbeState = useSettingsStore((s) => s.setMediaConnectivityProbeState);
   const directSetTokens = useDirectAuthStore((s) => s.setTokens);
   const directSetUser = useDirectAuthStore((s) => s.setUser);
   const [loading, setLoading] = useState(false);
   const loadingTimeoutRef = useRef<number | null>(null);
   const latestAttemptRef = useRef(0);
+  const connectivityProbeInFlightRef = useRef(false);
+  const mediaConnectivityDialogOpenRef = useRef(mediaConnectivityDialogOpen);
 
   const hasCredentials =
     soundcloudClientId.trim().length > 0 && soundcloudClientSecret.trim().length > 0;
@@ -89,6 +96,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
       });
 
       clearReloginRequest();
+      setMediaConnectivityDialogOpen(false);
       queryClient.invalidateQueries();
       toast.success(t('settings.directOAuthSuccess'));
       window.location.hash = '/';
@@ -111,11 +119,86 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
     directSetTokens,
     directSetUser,
     hasCredentials,
+    setMediaConnectivityDialogOpen,
     soundcloudClientId,
     soundcloudClientSecret,
   ]);
 
   useEffect(() => clearLoadingTimeout, [clearLoadingTimeout]);
+
+  useEffect(() => {
+    if (useSettingsStore.persist.hasHydrated()) {
+      setSettingsHydrated(true);
+      return;
+    }
+
+    const unsubscribe = useSettingsStore.persist.onFinishHydration(() => {
+      setSettingsHydrated(true);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    mediaConnectivityDialogOpenRef.current = mediaConnectivityDialogOpen;
+  }, [mediaConnectivityDialogOpen]);
+
+  useEffect(() => {
+    if (!settingsHydrated) return;
+
+    setMediaConnectivityProbeState('unknown');
+  }, [settingsHydrated, setMediaConnectivityProbeState]);
+
+  const runConnectivityProbe = useCallback(async () => {
+    if (connectivityProbeInFlightRef.current) return;
+    if (mediaConnectivityDialogOpenRef.current) return;
+
+    connectivityProbeInFlightRef.current = true;
+
+    try {
+      const result = await checkSoundCloudCdnConnectivity({ useRememberedStream: true });
+      setMediaConnectivityProbeState(result.status);
+
+      if (!result.healthy) {
+        setMediaConnectivityDialogOpen(true);
+      }
+    } catch {
+      setMediaConnectivityProbeState('degraded');
+      setMediaConnectivityDialogOpen(true);
+    } finally {
+      connectivityProbeInFlightRef.current = false;
+    }
+  }, [setMediaConnectivityDialogOpen, setMediaConnectivityProbeState]);
+
+  useEffect(() => {
+    if (!settingsHydrated) return;
+
+    let disposed = false;
+    const scheduleProbe = (delayMs = 0) =>
+      window.setTimeout(() => {
+        if (disposed) return;
+        void runConnectivityProbe();
+      }, delayMs);
+
+    const timeoutId = scheduleProbe(250);
+    const handleFocus = () => {
+      void runConnectivityProbe();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      void runConnectivityProbe();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timeoutId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [runConnectivityProbe, settingsHydrated]);
 
   useEffect(() => {
     if (!autoStartRequestId || loading || !hasCredentials) return;

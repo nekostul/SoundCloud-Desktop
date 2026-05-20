@@ -13,6 +13,9 @@ interface ScWaveformJson {
   samples: number[];
 }
 
+const waveformPromiseCache = new Map<string, Promise<WaveformSamples | null>>();
+const waveformDataCache = new Map<string, WaveformSamples | null>();
+
 /** Convert SC's PNG waveform URL (`_m.png`) to the JSON variant (`_m.json`). */
 function normalizeWaveformUrl(raw: string): string | null {
   if (!raw) return null;
@@ -36,6 +39,36 @@ async function fetchWaveform(rawUrl: string): Promise<WaveformSamples> {
   return { values: json.samples, height: json.height || 140 };
 }
 
+export async function getTrackWaveform(track: Track | null): Promise<WaveformSamples | null> {
+  const rawUrl = track?.waveform_url ?? null;
+  if (!rawUrl) return null;
+
+  if (waveformDataCache.has(rawUrl)) {
+    return waveformDataCache.get(rawUrl) ?? null;
+  }
+
+  const existing = waveformPromiseCache.get(rawUrl);
+  if (existing) {
+    return existing;
+  }
+
+  const request = fetchWaveform(rawUrl)
+    .then((waveform) => {
+      waveformDataCache.set(rawUrl, waveform);
+      return waveform;
+    })
+    .catch(() => {
+      waveformDataCache.set(rawUrl, null);
+      return null;
+    })
+    .finally(() => {
+      waveformPromiseCache.delete(rawUrl);
+    });
+
+  waveformPromiseCache.set(rawUrl, request);
+  return request;
+}
+
 /** Fetch + cache a track's raw SC waveform JSON. 30-min cache per track URN. */
 export function useTrackWaveform(track: Track | null) {
   const rawUrl = track?.waveform_url ?? null;
@@ -45,6 +78,6 @@ export function useTrackWaveform(track: Track | null) {
     staleTime: 1000 * 60 * 30,
     gcTime: 1000 * 60 * 60,
     retry: false,
-    queryFn: () => fetchWaveform(rawUrl!),
+    queryFn: () => getTrackWaveform(track),
   });
 }

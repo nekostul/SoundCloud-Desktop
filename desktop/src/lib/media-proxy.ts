@@ -1,32 +1,13 @@
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { toast } from 'sonner';
 import i18n from '../i18n';
-import {
-  useSettingsStore,
-  type LastKnownWorkingMediaProxy,
-  type MediaProxyRouting,
-  type MediaProxyTypeLabel,
-} from '../stores/settings';
+import { useSettingsStore } from '../stores/settings';
 import { isTauriRuntime } from './runtime';
 
-export type MediaProxyMode = 'off' | 'auto' | 'manual';
-
-type MediaProxySnapshot = {
-  mode: MediaProxyMode;
-  routing: MediaProxyRouting;
-  host: string;
-  port: number;
-  username?: string | null;
-  password?: string | null;
-  proxy_type: MediaProxyTypeLabel;
-  latency_ms?: number | null;
-  throughput_kbps?: number | null;
-  last_checked_at?: number | null;
-};
+export type MediaProxyMode = 'off' | 'manual';
 
 export type MediaProxyStatus = {
-  mode: MediaProxyMode;
+  mode: MediaProxyMode | string;
   routing: 'direct' | 'proxy' | string;
   state: string;
   proxy_type?: string | null;
@@ -38,7 +19,6 @@ export type MediaProxyStatus = {
   message?: string | null;
   message_key?: string | null;
   message_args?: Record<string, string> | null;
-  last_known_working_proxy?: MediaProxySnapshot | null;
 };
 
 type MediaProxySettingsPayload = {
@@ -47,13 +27,24 @@ type MediaProxySettingsPayload = {
   port?: number | null;
   username?: string | null;
   password?: string | null;
-  last_known_working_proxy?: MediaProxySnapshot | null;
 };
 
 type MediaHttpResponse = {
   status: number;
   content_type?: string;
   body: string;
+};
+
+type MediaHttpHeadResponse = {
+  status: number;
+  content_type?: string;
+  body?: string;
+};
+
+type MediaStreamProbeResponse = {
+  url: string;
+  status: number;
+  bytes_read: number;
 };
 
 let listenersReady = false;
@@ -73,71 +64,6 @@ function hasInlineProxyPort(value: string): boolean {
   if (lastColon <= 0) return false;
 
   return /^\d{1,5}$/.test(trimmed.slice(lastColon + 1));
-}
-
-function toMediaProxySnapshot(
-  proxy: LastKnownWorkingMediaProxy | null,
-): MediaProxySnapshot | null {
-  if (!proxy) return null;
-
-  return {
-    mode: proxy.mode,
-    routing: proxy.routing,
-    host: proxy.host,
-    port: proxy.port,
-    username: proxy.username || null,
-    password: proxy.password || null,
-    proxy_type: proxy.proxyType,
-    latency_ms: proxy.latencyMs,
-    throughput_kbps: proxy.throughputKbps,
-    last_checked_at: proxy.lastCheckedAt,
-  };
-}
-
-function fromMediaProxySnapshot(
-  snapshot: MediaProxySnapshot | null | undefined,
-): LastKnownWorkingMediaProxy | null {
-  if (!snapshot) return null;
-
-  const host = snapshot.host.trim();
-  if (!host || !Number.isFinite(snapshot.port) || snapshot.port <= 0) {
-    return null;
-  }
-
-  return {
-    mode: snapshot.mode,
-    routing: snapshot.routing === 'proxy' ? 'proxy' : 'direct',
-    host,
-    port: snapshot.port,
-    username: snapshot.username?.trim() || '',
-    password: snapshot.password || '',
-    proxyType: snapshot.proxy_type,
-    latencyMs: typeof snapshot.latency_ms === 'number' ? snapshot.latency_ms : null,
-    throughputKbps: typeof snapshot.throughput_kbps === 'number' ? snapshot.throughput_kbps : null,
-    lastCheckedAt: typeof snapshot.last_checked_at === 'number' ? snapshot.last_checked_at : null,
-  };
-}
-
-function syncLastKnownWorkingProxy(status: MediaProxyStatus | null) {
-  if (!status) return;
-
-  if (status.mode !== 'auto') return;
-
-  const snapshot = fromMediaProxySnapshot(status.last_known_working_proxy);
-  if (!snapshot) return;
-
-  useSettingsStore.setState({ lastKnownWorkingMediaProxy: snapshot });
-}
-
-export function rememberLastKnownWorkingMediaProxy(
-  status: MediaProxyStatus | null | undefined,
-): void {
-  if (!status || status.mode !== 'auto') return;
-
-  const snapshot = fromMediaProxySnapshot(status.last_known_working_proxy);
-  if (!snapshot) return;
-
-  useSettingsStore.setState({ lastKnownWorkingMediaProxy: snapshot });
 }
 
 function buildPayloadFromStore(): MediaProxySettingsPayload {
@@ -161,10 +87,6 @@ function buildPayloadFromStore(): MediaProxySettingsPayload {
     port: resolvedPort,
     username: state.mediaProxyUsername.trim() || null,
     password: state.mediaProxyPassword || null,
-    last_known_working_proxy:
-      state.mediaProxyMode === 'auto'
-        ? toMediaProxySnapshot(state.lastKnownWorkingMediaProxy)
-        : null,
   };
 }
 
@@ -188,18 +110,8 @@ export async function initMediaProxyRuntime() {
   if (!isTauriRuntime() || listenersReady) return;
   listenersReady = true;
 
-  await listen<MediaProxyStatus>('media-proxy:auto-fallback', (event) => {
-    lastStatus = event.payload;
-    syncLastKnownWorkingProxy(event.payload);
-    toast.message(
-      resolveMediaProxyStatusMessage(event.payload) ??
-        i18n.t('settings.mediaProxyNoticeAutoFallback'),
-    );
-  }).catch(console.error);
-
   await listen<MediaProxyStatus>('media-proxy:status', (event) => {
     lastStatus = event.payload;
-    syncLastKnownWorkingProxy(event.payload);
   }).catch(console.error);
 }
 
@@ -222,7 +134,6 @@ export async function applyMediaProxySettings(): Promise<MediaProxyStatus | null
   })
     .then((status) => {
       lastStatus = status;
-      syncLastKnownWorkingProxy(status);
       lastAppliedKey = payloadKey;
       lastAppliedAt = Date.now();
       return status;
@@ -244,19 +155,10 @@ export async function getMediaProxyStatus(): Promise<MediaProxyStatus | null> {
   try {
     const status = await invoke<MediaProxyStatus>('media_proxy_get_status');
     lastStatus = status;
-    syncLastKnownWorkingProxy(status);
     return status;
   } catch {
     return lastStatus;
   }
-}
-
-export async function refreshMediaProxyPool(): Promise<MediaProxyStatus | null> {
-  if (!isTauriRuntime()) return null;
-  const status = await invoke<MediaProxyStatus>('media_proxy_refresh_auto');
-  lastStatus = status;
-  syncLastKnownWorkingProxy(status);
-  return status;
 }
 
 async function mediaProxyHttpGet(
@@ -315,4 +217,61 @@ export async function fetchMediaJson<T>(
   },
 ): Promise<T> {
   return JSON.parse(await fetchMediaText(url, options)) as T;
+}
+
+export async function probeMediaHead(
+  url: string,
+  options?: {
+    headers?: Record<string, string>;
+    timeoutMs?: number;
+  },
+): Promise<MediaHttpHeadResponse> {
+  if (!isTauriRuntime()) {
+    const response = await fetch(url, {
+      method: 'HEAD',
+      headers: options?.headers,
+      signal:
+        typeof options?.timeoutMs === 'number' && options.timeoutMs > 0
+          ? AbortSignal.timeout(options.timeoutMs)
+          : undefined,
+    });
+    return {
+      status: response.status,
+      content_type: response.headers.get('content-type') || '',
+    };
+  }
+
+  return await invoke<MediaHttpHeadResponse>('media_proxy_http_head', {
+    url,
+    headers: options?.headers,
+    timeoutMs: options?.timeoutMs,
+  });
+}
+
+export async function probeRememberedMediaStream(options?: {
+  timeoutMs?: number;
+}): Promise<MediaStreamProbeResponse> {
+  if (!isTauriRuntime()) {
+    throw new Error('stream probe is only available in Tauri runtime');
+  }
+
+  return await invoke<MediaStreamProbeResponse>('media_proxy_probe_stream', {
+    timeoutMs: options?.timeoutMs,
+  });
+}
+
+export async function probeMediaStreamUrl(
+  url: string,
+  options?: {
+    timeoutMs?: number;
+  },
+): Promise<MediaStreamProbeResponse> {
+  if (!isTauriRuntime()) {
+    throw new Error('stream probe is only available in Tauri runtime');
+  }
+
+  return await invoke<MediaStreamProbeResponse>('media_proxy_probe_stream_url', {
+    url,
+    timeoutMs: options?.timeoutMs,
+  });
 }
