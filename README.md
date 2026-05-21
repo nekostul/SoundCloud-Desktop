@@ -11,20 +11,18 @@ SoundCloud Desktop
 </h1>
 
 <p align="center">
-<b>Кастомный SoundCloud Desktop клиент для Windows</b><br>
-Без рекламы · Без капчи · Без цензуры · Доступно в России
+<b>Кастомный SoundCloud Desktop-клиент для Windows, macOS и Linux</b><br>
+Без рекламы · Новый fullscreen для текстов · SoundWave · Улучшенный desktop UX
 </p>
 
 <p align="center">
 <a href="https://github.com/nekostul/SoundCloud-Desktop/releases/latest">
 <img src="https://img.shields.io/github/v/release/nekostul/SoundCloud-Desktop?style=for-the-badge&logo=github&color=FF5500&label=VERSION" alt="Version"/>
 </a>
-
 <a href="https://github.com/nekostul/SoundCloud-Desktop/stargazers">
 <img src="https://img.shields.io/github/stars/nekostul/SoundCloud-Desktop?style=for-the-badge&logo=github&color=FF5500&label=Stars" alt="Stars"/>
 </a>
-
-<a href="https://github.com/nekostul/SoundCloud-Desktop/blob/main/LICENSE">
+<a href="https://github.com/zxcloli666/SoundCloud-Desktop/blob/main/LICENSE">
 <img src="https://img.shields.io/badge/License-MIT-FF5500?style=for-the-badge" alt="License"/>
 </a>
 </p>
@@ -39,66 +37,76 @@ SoundCloud Desktop
 
 # Что это?
 
-**SoundCloud Desktop** — кастомный форк SoundCloud Desktop с полностью переработанным fullscreen-режимом, cinematic lyrics и улучшенным пользовательским опытом.
+**SoundCloud Desktop** — кастомный desktop-клиент для SoundCloud с полностью переработанным fullscreen-режимом для текстов, mini-player, SoundWave-рекомендациями, улучшенными страницами артистов и нативной оболочкой на **Tauri 2**.
 
-Приложение работает через официальный **SoundCloud API**, построено на **Tauri 2 + React 19** и оптимизировано исключительно под Windows.
+В репозитории лежат две основные части:
+- **`/desktop`** — desktop-приложение на **Tauri 2 + React 19 + Vite**
+- **`/backend`** — локальный BFF на **NestJS 11 + TypeORM + SQL.js/SQLite**
 
 ---
 
 # Особенности
 
-## Бесплатно и без рекламы
+## Fullscreen lyrics и mini-player
 
-- без paywall внутри приложения
-- без рекламы
-- без ограничений на функции
+- новый fullscreen UI для текстов
+- cinematic lyrics и ручной поиск текста
+- сохранение состояния fullscreen между переключениями треков
+- плавные переходы между artwork, lyrics и mini-player
 
-> Для входа требуется собственный `client_id` и `client_secret` SoundCloud API.  
-> Их можно получить через создание приложения в [SoundCloud Developers](https://soundcloud.com/you/apps), однако для этого может потребоваться подписка SoundCloud (Artist Pro).
+---
+
+## SoundWave
+
+- улучшенные рекомендации и более непрерывная wave-очередь
+- быстрый запуск Wave с артистов и плейлистов
+- режимы похожих и более разнообразных рекомендаций
+- фильтры по языкам и скрытие лайкнутых треков
+
+---
+
+## Обновлённые страницы артистов и UI
+
+- редизайн страниц артистов
+- похожие исполнители и внешние ссылки в профиле
+- новые контекстные меню
+- новый экран запуска и более аккуратный desktop UI
+
+---
+
+## Диагностика медиасоединения и proxy
+
+- встроенная проверка доступности SoundCloud CDN
+- помощник для проблем со стримами, artwork и waveform
+- отдельные proxy-настройки именно для медиатрафика
+
+---
+
+## Playback
+
+- fullscreen lyrics
+- waveform и artwork-интеграция в плеере
+- пресеты скорости: slowed / default / speed up
+- улучшенная плавность прогресса и переключения треков
 
 ---
 
 ## Работа в России
 
-Приложение запускается и работает без дополнительных программ, однако:
-
-- для загрузки обложек и части медиа может потребоваться VPN
-- воспроизведение музыки обычно работает и без VPN
+Приложение может работать без дополнительных программ, но для части медиаконтента, artwork и waveform может понадобиться VPN или proxy. Для этого в приложении есть встроенная диагностика медиасоединения и отдельные proxy-настройки для медиатрафика.
 
 ---
 
-## Улучшенный fullscreen режим
+## Авторизация через SoundCloud API
 
-Полностью переработанный fullscreen UI:
+Для входа нужен собственный `Client ID` и `Client Secret` от SoundCloud OAuth app.
 
-- cinematic lyrics
-- адаптивный интерфейс
-- плавные анимации
-- автоматическое масштабирование под размер окна
-- свободный скролл текстов
-- автоматический возврат к активной строке
-- улучшенный blur overlay
+Создать приложение можно в [SoundCloud Developers](https://soundcloud.com/you/apps).  
+Для OAuth app используйте redirect URI:
 
----
-
-## Улучшенные тексты песен
-
-- fullscreen lyrics
-- посимвольная синхронизация
-- ручной поиск текстов
-- автоматическое восстановление текстов между треками
-- сохранение состояния fullscreen режима
-- fallback поиск при отсутствии текста
-
----
-
-## Slowed Mode
-
-Встроенное управление скоростью воспроизведения:
-
-- Slowed
-- Default Speed
-- Speed Up
+```text
+https://sc-auth-redirect.web.app/oauth/callback
+```
 
 ---
 
@@ -106,44 +114,23 @@ SoundCloud Desktop
 
 Вместо Electron используется **Tauri 2 (Rust)**:
 
-- маленький размер приложения
-- низкое потребление памяти
-- быстрый запуск
-- плавный интерфейс
-
----
-
-## Официальный SoundCloud API
-
-Приложение использует официальный API SoundCloud.
-
----
-
-## SQLite
-
-Вместо PostgreSQL используется SQLite:
-- проще установка
-- меньше зависимостей
+- меньше вес приложения
+- ниже потребление памяти
 - быстрее запуск
-- удобнее для локального desktop приложения
+- нативная кроссплатформенная сборка
 
 ---
 
 # Скачать
 
-## Windows
-
-Скачать последнюю версию:
+Последний релиз:
 
 https://github.com/nekostul/SoundCloud-Desktop/releases/latest
 
-Поддерживаются:
-- `.exe`
-- `.msi`
-
-Требования:
-- Windows 10
-- Windows 11
+Публикуются сборки для:
+- **Windows**: `.exe`, `.msi`
+- **macOS**: `.dmg`, `.app.tar.gz`
+- **Linux**: `.AppImage`, `.deb`, `.rpm`, `.flatpak`
 
 ---
 
@@ -167,20 +154,37 @@ https://github.com/nekostul/SoundCloud-Desktop/releases/latest
 
 ---
 
-## Запуск
+## Desktop app
 
 ```bash
 git clone https://github.com/nekostul/SoundCloud-Desktop.git
 cd SoundCloud-Desktop/desktop
 pnpm install
 pnpm tauri dev
-````
+```
+
+---
+
+## Backend
+
+Если нужно отдельно запустить локальный BFF:
+
+```bash
+cd backend
+pnpm install
+pnpm start:dev
+```
+
+Отдельную базу вручную поднимать не нужно: backend использует локальный SQLite-файл через `SQL.js`.
+
+Подробнее: [backend/README.md](./backend/README.md)
 
 ---
 
 ## Production build
 
 ```bash
+cd desktop
 pnpm tauri build
 ```
 
@@ -188,16 +192,18 @@ pnpm tauri build
 
 # Стек
 
-| Компонент  | Технология   |
-| ---------- | ------------ |
-| Desktop    | Tauri 2      |
-| Frontend   | React 19     |
-| Build Tool | Vite 7       |
-| Styling    | Tailwind CSS |
-| State      | Zustand      |
-| Database   | SQLite       |
-| Backend    | Rust         |
-| UI         | Radix UI     |
+| Компонент | Технология |
+| ---------- | ---------- |
+| Desktop app | Tauri 2 |
+| Frontend | React 19 |
+| Build Tool | Vite 7 |
+| Styling | Tailwind CSS 4 |
+| State | Zustand |
+| UI | Radix UI |
+| Native layer | Rust |
+| Backend | NestJS 11 |
+| Data layer | TypeORM |
+| Local storage | SQL.js / SQLite file |
 
 ---
 
@@ -214,11 +220,10 @@ SoundCloud является торговой маркой SoundCloud Ltd.
 <p align="center">
 <code>soundcloud desktop</code> ·
 <code>soundcloud windows</code> ·
+<code>soundcloud macos</code> ·
+<code>soundcloud linux</code> ·
 <code>soundcloud россия</code> ·
-<code>soundcloud без рекламы</code> ·
 <code>soundcloud desktop app</code> ·
-<code>soundcloud player</code> ·
 <code>soundcloud fullscreen lyrics</code> ·
-<code>soundcloud cinematic lyrics</code> ·
 <code>soundcloud tauri</code>
 </p>
