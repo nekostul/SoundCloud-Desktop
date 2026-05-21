@@ -1,19 +1,22 @@
-import * as Slider from '@radix-ui/react-slider';
+﻿import * as Slider from '@radix-ui/react-slider';
+import { invoke } from '@tauri-apps/api/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { TFunction } from 'i18next';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Volume, Volume2, VolumeX } from 'lucide-react';
 import { createPortal, flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
 import { api } from '../../lib/api';
 import { isAppBackgrounded } from '../../lib/app-visibility';
 import {
   getFallbackArtworkGradientPalette,
   useArtworkGradientPalette,
 } from '../../lib/artwork-palette';
-import { getCurrentTime, getSmoothCurrentTime, seek } from '../../lib/audio';
+import { getCurrentTime, getDuration, getSmoothCurrentTime, seek } from '../../lib/audio';
 import type { AudioFeatures } from '../../lib/audio-analyser';
 import { audioAnalyser } from '../../lib/audio-analyser';
-import { art } from '../../lib/formatters';
+import { art, formatTime } from '../../lib/formatters';
 import { getAnimationFrameBudgetMs } from '../../lib/framerate';
 import { invalidateAllLikesCache } from '../../lib/hooks';
 import {
@@ -49,8 +52,15 @@ import {
   searchLyrics,
   splitArtistTitle,
 } from '../../lib/lyrics';
+import type { CommunityLyricsDraft } from '../../stores/communityLyricsDrafts';
+import { useCommunityLyricsDraftStore } from '../../stores/communityLyricsDrafts';
 import { useDislikesStore } from '../../stores/dislikes';
-import { useArtworkStore, useFullscreenPanelStore, useLyricsStore } from '../../stores/lyrics';
+import {
+  type CommunitySyncStage,
+  useArtworkStore,
+  useFullscreenPanelStore,
+  useLyricsStore,
+} from '../../stores/lyrics';
 import {
   PLAYBACK_RATE_MAX,
   PLAYBACK_RATE_MIN,
@@ -249,17 +259,104 @@ function useFallbackImageSource(sources: string[], resetKey: string) {
   };
 }
 
+type LyricsSearchQuery = {
+  artist: string;
+  title: string;
+};
 
-function useResolvedLyrics(
+type TrackScopedLyricsSearchQuery = LyricsSearchQuery & {
+  trackUrn: string;
+};
+
+type ManualLyricsCacheEntry = LyricsSearchQuery & {
+  lyrics: LyricsResult;
+};
+
+function normalizeLyricsSearchQueryValue(value: string) {
+  return value.trim().toLocaleLowerCase();
+}
+
+function isSameLyricsSearchQuery(
+  left: LyricsSearchQuery | null | undefined,
+  right: LyricsSearchQuery | null | undefined,
+) {
+  if (!left || !right) return false;
+
+  return (
+    normalizeLyricsSearchQueryValue(left.artist) ===
+      normalizeLyricsSearchQueryValue(right.artist) &&
+    normalizeLyricsSearchQueryValue(left.title) === normalizeLyricsSearchQueryValue(right.title)
+  );
+}
+
+function buildTrackScopedLyricsSearchQuery(
+  trackUrn: string,
+  query: LyricsSearchQuery,
+): TrackScopedLyricsSearchQuery {
+  return {
+    trackUrn,
+    artist: query.artist.trim(),
+    title: query.title.trim(),
+  };
+}
+
+function getActiveTrackScopedLyricsSearchQuery(
+  trackUrn: string | null | undefined,
+  query: TrackScopedLyricsSearchQuery | null,
+): LyricsSearchQuery | null {
+  if (!trackUrn || !query || query.trackUrn !== trackUrn) return null;
+
+  return {
+    artist: query.artist,
+    title: query.title,
+  };
+}
+
+function getPreferredTrackLyricsSearchQuery(
+  trackUrn: string | null | undefined,
+  query: TrackScopedLyricsSearchQuery | null,
+  queryRef: React.MutableRefObject<Map<string, LyricsSearchQuery>>,
+): LyricsSearchQuery | null {
+  return getActiveTrackScopedLyricsSearchQuery(trackUrn, query) ?? (trackUrn ? (queryRef.current.get(trackUrn) ?? null) : null);
+}
+
+function getCachedManualLyrics(
+  manualLyricsRef: React.MutableRefObject<Map<string, ManualLyricsCacheEntry>>,
+  trackUrn: string | null | undefined,
+  query: LyricsSearchQuery | null,
+): LyricsResult | null {
+  if (!trackUrn || !query) return null;
+
+  const cachedEntry = manualLyricsRef.current.get(trackUrn);
+  if (!cachedEntry || !isSameLyricsSearchQuery(cachedEntry, query)) {
+    return null;
+  }
+
+  return cachedEntry.lyrics;
+}
+
+
+function useResolvedLyrics<TManualCache extends Map<string, LyricsResult> | Map<string, ManualLyricsCacheEntry>>(
   visible: boolean,
   track: Track | null | undefined,
   reqArtist: string,
   reqTitle: string,
   trackDurationMs: number | undefined,
-  manualLyricsRef: React.MutableRefObject<Map<string, LyricsResult>>,
+  manualLyricsRef: React.MutableRefObject<TManualCache>,
+  manualQuery: LyricsSearchQuery | null = null,
+  autoLyricsRef?: React.MutableRefObject<Map<string, LyricsResult>>,
 ) {
   const trackUrn = track?.urn;
-  const cachedLyrics = trackUrn ? (manualLyricsRef.current.get(trackUrn) ?? null) : null;
+  const legacyLyricsCacheRef = manualLyricsRef as React.MutableRefObject<Map<string, LyricsResult>>;
+  const manualLyricsCacheRef = manualLyricsRef as React.MutableRefObject<Map<string, ManualLyricsCacheEntry>>;
+  const cachedManualLyrics = getCachedManualLyrics(manualLyricsCacheRef, trackUrn ?? null, manualQuery);
+  const cachedAutoLyrics =
+    !manualQuery && autoLyricsRef && trackUrn ? (autoLyricsRef.current.get(trackUrn) ?? null) : null;
+  const cachedLegacyLyrics =
+    !manualQuery && !autoLyricsRef && trackUrn
+      ? (legacyLyricsCacheRef.current.get(trackUrn) ?? null)
+      : null;
+  const cachedLyrics = cachedManualLyrics ?? cachedAutoLyrics ?? cachedLegacyLyrics;
   const lyricsQuery = useQuery({
     queryKey: ['lyrics', LYRICS_SEARCH_QUERY_VERSION, trackUrn, reqArtist, reqTitle],
     queryFn: () =>
@@ -312,7 +409,16 @@ const autoLyrics =
   resolvedQuery.data ?? lyricsQuery.data ?? null;
 
 if (trackUrn && autoLyrics && !cachedLyrics) {
-  manualLyricsRef.current.set(trackUrn, autoLyrics);
+  if (manualQuery) {
+    manualLyricsCacheRef.current.set(trackUrn, {
+      ...manualQuery,
+      lyrics: autoLyrics,
+    });
+  } else if (autoLyricsRef) {
+    autoLyricsRef.current.set(trackUrn, autoLyrics);
+  } else {
+    legacyLyricsCacheRef.current.set(trackUrn, autoLyrics);
+  }
 }
 
 const data =
@@ -1743,24 +1849,49 @@ function getPauseNoteAnimationDurationSec(playbackRate: number): number {
   return NOTE_GRADIENT_DURATION_SEC / Math.max(playbackRate, 0.35);
 }
 
-const SyncedLyricsWithPlaceholders = React.memo(({ lines }: { lines: LyricLine[] }) => {
+type ReleaseSyncedLyricsLayout = 'default' | 'communityPreview';
+
+const SyncedLyricsWithPlaceholders = React.memo(
+  ({
+    lines,
+    layout = 'default',
+  }: {
+    lines: LyricLine[];
+    layout?: ReleaseSyncedLyricsLayout;
+  }) => {
   const displayLines = useMemo(() => buildDisplayLinesWithPausePlaceholders(lines), [lines]);
 
-  return <ReleaseSyncedLyricsWithProgress lines={displayLines} />;
-});
+    return <ReleaseSyncedLyricsWithProgress lines={displayLines} layout={layout} />;
+  },
+);
 
-function getCenteredLyricScrollTop(container: HTMLElement, el: HTMLElement) {
+function getCenteredLyricScrollTop(
+  container: HTMLElement,
+  el: HTMLElement,
+  centerOffsetRatio = 0.05,
+) {
   return (
-    el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2 + container.clientHeight * 0.05
+    el.offsetTop -
+    container.clientHeight / 2 +
+    el.clientHeight / 2 +
+    container.clientHeight * centerOffsetRatio
   );
 }
 
 const ReleaseSyncedLyricsWithProgress = React.memo(
-  ({ lines }: { lines: (LyricLine | { time: number; text: string; isPlaceholder: true })[] }) => {
+  ({
+    lines,
+    layout = 'default',
+  }: {
+    lines: (LyricLine | { time: number; text: string; isPlaceholder: true })[];
+    layout?: ReleaseSyncedLyricsLayout;
+  }) => {
     const playbackRate = usePlayerStore((s) => s.playbackRate);
     const targetFramerate = useSettingsStore((s) => s.targetFramerate);
     const unlockFramerate = useSettingsStore((s) => s.unlockFramerate);
     const noteGradientDurationSec = getPauseNoteAnimationDurationSec(playbackRate);
+    const isCommunityPreviewLayout = layout === 'communityPreview';
+    const centerOffsetRatio = isCommunityPreviewLayout ? 0 : 0.05;
     const [isUserScrolling, setIsUserScrolling] = useState(false);
     const [activeIndex, setActiveIndex] = useState(-1);
     const [timeUntilLyrics, setTimeUntilLyrics] = useState(999);
@@ -1908,7 +2039,7 @@ const ReleaseSyncedLyricsWithProgress = React.memo(
         if (activeIdx >= 0 && activeIdx < lineElsRef.current.length) {
           const el = lineElsRef.current[activeIdx];
           if (!el) return;
-          const top = getCenteredLyricScrollTop(container, el);
+          const top = getCenteredLyricScrollTop(container, el, centerOffsetRatio);
           container.scrollTo({ top, behavior });
           lastScrollTsRef.current = performance.now();
           return;
@@ -1926,7 +2057,7 @@ const ReleaseSyncedLyricsWithProgress = React.memo(
           manualScrollDetachedRef.current = false;
           userScrollTimeoutRef.current = null;
           scrollToActiveLine('smooth');
-        }, 900);
+        }, isCommunityPreviewLayout ? 2600 : 900);
       };
 
       const markManualScroll = () => {
@@ -1990,7 +2121,7 @@ if (idx !== activeRef.current) {
 
         if (idx >= 0 && idx < lineEls.length) {
           const el = lineEls[idx];
-      const top = getCenteredLyricScrollTop(container, el);
+      const top = getCenteredLyricScrollTop(container, el, centerOffsetRatio);
       const now = performance.now();
 
           if (!manualScrollDetachedRef.current) {
@@ -2047,15 +2178,32 @@ if (idx !== activeRef.current) {
         container.removeEventListener('touchmove', markManualScroll);
         clearUserScrollTimeout();
       };
-    }, [lines, targetFramerate, unlockFramerate]);
+    }, [centerOffsetRatio, isCommunityPreviewLayout, lines, targetFramerate, unlockFramerate]);
+
+    const containerClassName = isCommunityPreviewLayout
+      ? 'mx-auto h-full min-h-0 max-h-[62vh] w-full max-w-[880px] overflow-y-auto scrollbar-hide px-[clamp(18px,3vw,38px)] py-[clamp(24px,4.4vh,46px)]'
+      : 'h-full min-h-0 overflow-y-auto scrollbar-hide px-2 py-16 pl-[14vw] pr-[8vw]';
+    const stackClassName = isCommunityPreviewLayout
+      ? 'mx-auto flex min-h-full max-w-[780px] flex-col justify-center gap-1'
+      : 'mx-auto flex max-w-[1100px] flex-col gap-2';
+    const lineBaseClassName = isCommunityPreviewLayout
+      ? 'lyric-line group relative origin-center will-change-transform py-1 text-[clamp(22px,2.35vw,30px)] font-bold tracking-tight antialiased text-white/55 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]'
+      : 'lyric-line group relative origin-center will-change-transform py-3 text-[38px] font-bold tracking-tight antialiased text-white/55 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]';
+    const pauseStateClassName = isCommunityPreviewLayout
+      ? 'flex w-full justify-center px-0 pr-0 opacity-52 scale-[0.995] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.08] data-[state=active]:blur-0 data-[state=past-near]:opacity-46 data-[state=past-near]:scale-[0.988] data-[state=past-near]:blur-0 data-[state=past]:opacity-34 data-[state=past]:scale-[0.956] data-[state=past]:blur-[2px] data-[state=next-near]:opacity-76 data-[state=next-near]:scale-[0.99] data-[state=next-near]:blur-0 data-[state=next]:opacity-34 data-[state=next]:scale-[0.952] data-[state=next]:blur-[2px]'
+      : 'flex w-full justify-center px-0 pr-0 opacity-55 scale-[0.995] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.12] data-[state=active]:blur-0 data-[state=past-near]:opacity-40 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-0 data-[state=past]:opacity-30 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-74 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-0 data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]';
+    const lyricStateClassName = isCommunityPreviewLayout
+      ? 'cursor-pointer opacity-52 scale-[0.99] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.1] data-[state=active]:blur-0 data-[state=active]:[text-shadow:0_0_24px_rgba(255,255,255,0.2)] data-[state=past-near]:opacity-46 data-[state=past-near]:scale-[0.99] data-[state=past-near]:blur-[1px] data-[state=past]:opacity-34 data-[state=past]:scale-[0.96] data-[state=past]:blur-[2px] data-[state=next-near]:opacity-76 data-[state=next-near]:scale-[0.99] data-[state=next-near]:blur-[1px] data-[state=next]:opacity-34 data-[state=next]:scale-[0.955] data-[state=next]:blur-[2px]'
+      : 'cursor-pointer pr-12 opacity-55 scale-[0.985] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.15] data-[state=active]:blur-0 data-[state=active]:[text-shadow:0_0_32px_rgba(255,255,255,0.22)] data-[state=past-near]:opacity-40 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-[2px] data-[state=past]:opacity-30 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-72 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-[2px] data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]';
+    const bottomSpacerClassName = isCommunityPreviewLayout ? 'h-[14vh]' : 'h-[50vh]';
 
 return (
   <div
     ref={containerRef}
     data-user-scrolling={isUserScrolling ? 'true' : 'false'}
-    className="flex-1 overflow-y-auto scrollbar-hide px-2 py-16 pl-[14vw] pr-[8vw]"
+    className={containerClassName}
   >
-    <div className="flex flex-col gap-2 max-w-[1100px] mx-auto">
+    <div className={stackClassName}>
       {activeIndex < 0 && (
         <div className="flex w-full justify-center py-10 pointer-events-none">
           <div className="flex items-end gap-2">
@@ -2098,7 +2246,7 @@ const displayText =
             return (
               <div
                 key={`${line.time}-${i}-${isPlaceholder ? 'ph' : 'lyric'}`}
-                className={`lyric-line group relative ${activeIndex < 0? 'blur-[3px] opacity-40': ''} origin-center will-change-transform py-3 text-[38px] font-bold tracking-tight antialiased text-white/55 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ${isPauseDisplay ? 'flex w-full justify-center px-0 pr-0 opacity-55 scale-[0.995] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.12] data-[state=active]:blur-0 data-[state=past-near]:opacity-40 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-0 data-[state=past]:opacity-30 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-74 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-0 data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]' : 'cursor-pointer pr-12 opacity-55 scale-[0.985] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.15] data-[state=active]:blur-0 data-[state=active]:[text-shadow:0_0_32px_rgba(255,255,255,0.22)] data-[state=past-near]:opacity-40 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-[2px] data-[state=past]:opacity-30 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-72 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-[2px] data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]'}`}
+                className={`${lineBaseClassName} ${activeIndex < 0 ? 'blur-[3px] opacity-40' : ''} ${isPauseDisplay ? pauseStateClassName : lyricStateClassName}`}
                 style={{
                   textRendering: 'optimizeLegibility',
                   ['--lyric-progress' as string]: '0%',
@@ -2112,7 +2260,7 @@ const displayText =
                       const container = containerRef.current;
                       const el = lineElsRef.current[i];
                       if (container && el) {
-                        const top = getCenteredLyricScrollTop(container, el);
+                        const top = getCenteredLyricScrollTop(container, el, centerOffsetRatio);
                         container.scrollTo({ top, behavior: 'smooth' });
                       }
                     } else {
@@ -2165,7 +2313,7 @@ const displayText =
             );
           })}
         </div>
-        <div className="h-[50vh]" />
+        <div className={bottomSpacerClassName} />
       </div>
     );
   },
@@ -2874,9 +3022,11 @@ export const SyncedLyrics = React.memo(({ lines }: { lines: LyricLine[] }) => (
 /* ── Plain Lyrics ─────────────────────────────────────────── */
 
 const PlainLyrics = React.memo(({ text }: { text: string }) => (
-  <div className="flex-1 overflow-y-auto px-[clamp(20px,4vw,56px)] py-[clamp(88px,14vh,156px)] scrollbar-hide">
-    <div className="mx-auto max-w-[880px] whitespace-pre-wrap text-center text-[clamp(20px,2.2vw,30px)] font-semibold leading-[1.8] text-white/64">
-      {text}
+  <div className="h-full min-h-0 overflow-y-auto px-2 py-16 pl-[14vw] pr-[8vw] scrollbar-hide">
+    <div className="mx-auto flex min-h-full max-w-[1100px] flex-col justify-center gap-3">
+      <div className="w-full whitespace-pre-wrap text-center text-[clamp(24px,3vw,38px)] font-semibold leading-[1.72] tracking-tight text-white/64">
+        {text}
+      </div>
     </div>
   </div>
 ));
@@ -2951,6 +3101,335 @@ type ResolvedLyricsData = {
 
 function hasRenderableLyrics(lyrics: ResolvedLyricsData) {
   return Boolean(lyrics?.synced?.length || lyrics?.plain);
+}
+
+type CommunitySyncSource = 'genius' | 'soundcloud';
+
+type CommunitySyncLine = {
+  kind: 'lyric' | 'pause';
+  text: string;
+  time: number | null;
+};
+
+type CommunitySyncSession = {
+  plainLyrics: string;
+  lines: CommunitySyncLine[];
+  activeIndex: number;
+  source: CommunitySyncSource;
+};
+
+type CommunitySyncTrackMeta = {
+  trackUrn: string;
+  artistName: string;
+  trackName: string;
+  durationSec: number;
+};
+
+function isCommunitySyncSource(source: LyricsSource | null | undefined): source is CommunitySyncSource {
+  return source === 'genius' || source === 'soundcloud';
+}
+
+function canCreateCommunitySync(
+  lyrics: ResolvedLyricsData,
+): lyrics is { plain: string; source: CommunitySyncSource; synced: null } {
+  return shouldRenderPlainLyrics(lyrics) && isCommunitySyncSource(lyrics.source);
+}
+
+function splitCommunitySyncLines(plainLyrics: string): string[] {
+  const lines = String(plainLyrics || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.length > 0 ? lines : [];
+}
+
+function normalizeCommunitySyncComparableText(value: string): string {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function createCommunitySyncLyricLine(text: string, time: number | null = null): CommunitySyncLine {
+  return {
+    kind: 'lyric',
+    text,
+    time,
+  };
+}
+
+function createCommunitySyncPauseLine(time: number): CommunitySyncLine {
+  return {
+    kind: 'pause',
+    text: '',
+    time,
+  };
+}
+
+function createCommunitySyncSession(
+  plainLyrics: string,
+  source: CommunitySyncSource,
+): CommunitySyncSession | null {
+  const lines = splitCommunitySyncLines(plainLyrics);
+  if (lines.length === 0) return null;
+
+  return {
+    plainLyrics,
+    lines: lines.map((line) => createCommunitySyncLyricLine(line)),
+    activeIndex: -1,
+    source,
+  };
+}
+
+function createCommunitySyncSessionFromDraft(
+  draft: CommunityLyricsDraft,
+): CommunitySyncSession | null {
+  const lines = splitCommunitySyncLines(draft.plainLyrics);
+  if (lines.length === 0) return null;
+
+  const nextLines: CommunitySyncLine[] = [];
+  let plainIndex = 0;
+
+  for (const syncedLine of draft.syncedLyrics) {
+    if (isPauseMarkerText(syncedLine.text)) {
+      nextLines.push(createCommunitySyncPauseLine(syncedLine.time));
+      continue;
+    }
+
+    const nextPlainLine = lines[plainIndex];
+    if (nextPlainLine) {
+      const normalizedSynced = normalizeCommunitySyncComparableText(syncedLine.text);
+      const normalizedPlain = normalizeCommunitySyncComparableText(nextPlainLine);
+      if (normalizedSynced === normalizedPlain || !normalizedSynced) {
+        nextLines.push(createCommunitySyncLyricLine(nextPlainLine, syncedLine.time));
+        plainIndex += 1;
+        continue;
+      }
+
+      nextLines.push(createCommunitySyncLyricLine(nextPlainLine, syncedLine.time));
+      plainIndex += 1;
+      continue;
+    }
+
+    nextLines.push(createCommunitySyncLyricLine(syncedLine.text, syncedLine.time));
+  }
+
+  while (plainIndex < lines.length) {
+    nextLines.push(createCommunitySyncLyricLine(lines[plainIndex]));
+    plainIndex += 1;
+  }
+
+  const firstPendingIndex = nextLines.findIndex((line) => line.time === null);
+  const hasStampedLines = nextLines.some((line) => typeof line.time === 'number');
+
+  return {
+    plainLyrics: draft.plainLyrics,
+    lines: nextLines,
+    activeIndex:
+      !hasStampedLines
+        ? -1
+        : firstPendingIndex >= 0
+          ? firstPendingIndex
+          : Math.max(Math.min(nextLines.length - 1, 0), 0),
+    source: draft.source,
+  };
+}
+
+function toCommunitySyncDraft(
+  trackMeta: CommunitySyncTrackMeta,
+  session: CommunitySyncSession,
+): CommunityLyricsDraft {
+  return {
+    trackUrn: trackMeta.trackUrn,
+    artistName: trackMeta.artistName,
+    trackName: trackMeta.trackName,
+    durationSec: trackMeta.durationSec,
+    plainLyrics: session.plainLyrics,
+    syncedLyrics: session.lines.flatMap((line) => {
+      return typeof line.time === 'number'
+        ? [{ time: line.time, text: line.kind === 'pause' ? '' : line.text }]
+        : [];
+    }),
+    createdAt: new Date().toISOString(),
+    source: session.source,
+  };
+}
+
+const COMMUNITY_SYNC_MIN_GAP_SEC = 0.001;
+
+function formatCommunitySyncTimestamp(seconds: number): string {
+  const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+
+  const totalMilliseconds = Math.round(safe * 1000);
+
+  const minutes = Math.floor(totalMilliseconds / 60000);
+  const wholeSeconds = Math.floor(totalMilliseconds / 1000) % 60;
+  const milliseconds = totalMilliseconds % 1000;
+
+  return `${String(minutes).padStart(2, '0')}:${String(
+    wholeSeconds,
+  ).padStart(2, '0')}.${String(milliseconds).padStart(3, '0')}`;
+}
+
+function serializeCommunitySyncedLyrics(lines: LyricLine[]): string {
+  return lines
+    .map((line) => `[${formatCommunitySyncTimestamp(line.time)}]${line.text}`)
+    .join('\n');
+}
+
+function isCommunitySyncSessionComplete(session: CommunitySyncSession | null): boolean {
+  return Boolean(
+    session && session.lines.length > 0 && session.lines.every((line) => typeof line.time === 'number'),
+  );
+}
+
+function parseCommunitySyncTimestampInput(value: string): number | null {
+  const match = String(value || '')
+    .trim()
+    .match(/^(\d{1,3}):([0-5]\d)(?::|[.,])(\d{1,3})$/);
+  if (!match) return null;
+
+  const [, minutes, seconds, milliseconds] = match;
+  return Number(minutes) * 60 + Number(seconds) + Number(milliseconds.padEnd(3, '0')) / 1000;
+}
+
+function roundCommunitySyncTimestamp(seconds: number): number {
+  return Number(Math.max(0, seconds).toFixed(3));
+}
+
+function hasCommunitySyncStampedLines(lines: CommunitySyncLine[]): boolean {
+  return lines.some((line) => typeof line.time === 'number');
+}
+
+function resolveCommunitySyncActiveIndex(
+  lines: CommunitySyncLine[],
+  preferredIndex: number,
+): number {
+  if (lines.length === 0 || !hasCommunitySyncStampedLines(lines)) return -1;
+  return Math.max(0, Math.min(preferredIndex, lines.length - 1));
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(
+    target.closest(
+      'input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"]',
+    ),
+  );
+}
+
+function findCommunitySyncPreviousStampedIndex(
+  lines: CommunitySyncLine[],
+  startIndex: number,
+): number {
+  for (let index = Math.min(startIndex, lines.length - 1); index >= 0; index -= 1) {
+    if (typeof lines[index]?.time === 'number') return index;
+  }
+
+  return -1;
+}
+
+function findCommunitySyncNextStampedIndex(lines: CommunitySyncLine[], startIndex: number): number {
+  for (let index = Math.max(0, startIndex); index < lines.length; index += 1) {
+    if (typeof lines[index]?.time === 'number') return index;
+  }
+
+  return -1;
+}
+
+function findCommunitySyncNextPendingIndex(lines: CommunitySyncLine[], startIndex: number): number {
+  for (let index = Math.max(0, startIndex); index < lines.length; index += 1) {
+    if (lines[index]?.time === null) return index;
+  }
+
+  return -1;
+}
+
+function getCommunitySyncTimeBounds(lines: CommunitySyncLine[], index: number) {
+  const previousIndex = findCommunitySyncPreviousStampedIndex(lines, index - 1);
+  const nextIndex = findCommunitySyncNextStampedIndex(lines, index + 1);
+
+  return {
+    previousTime: previousIndex >= 0 ? (lines[previousIndex]?.time ?? null) : null,
+    nextTime: nextIndex >= 0 ? (lines[nextIndex]?.time ?? null) : null,
+  };
+}
+
+function getStampedCommunitySyncTime(
+  currentTime: number,
+  previousTime: number | null,
+  nextTime: number | null,
+): number {
+  const safeCurrentTime = Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0;
+  const minimum = previousTime === null ? 0 : previousTime + COMMUNITY_SYNC_MIN_GAP_SEC;
+  const maximum =
+    nextTime === null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(minimum, nextTime - COMMUNITY_SYNC_MIN_GAP_SEC);
+  return roundCommunitySyncTimestamp(Math.min(Math.max(safeCurrentTime, minimum), maximum));
+}
+
+function getCommunitySyncPlaybackIndex(
+  lines: CommunitySyncLine[],
+  currentTime: number,
+  fallbackIndex: number,
+): number {
+  const safeCurrentTime = Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0;
+  let firstStampedIndex = -1;
+  let firstStampedTime: number | null = null;
+  let activeIndex = -1;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineTime = lines[index]?.time;
+    if (typeof lineTime !== 'number') continue;
+    if (firstStampedIndex < 0) {
+      firstStampedIndex = index;
+      firstStampedTime = lineTime;
+    }
+    if (lineTime <= safeCurrentTime + 0.02) {
+      activeIndex = index;
+      continue;
+    }
+    break;
+  }
+
+  if (activeIndex >= 0) return activeIndex;
+  if (firstStampedIndex >= 0) {
+    if (firstStampedTime !== null && safeCurrentTime + 0.02 < firstStampedTime) return -1;
+    return firstStampedIndex;
+  }
+  if (fallbackIndex < 0) return -1;
+  return Math.max(0, Math.min(fallbackIndex, lines.length - 1));
+}
+
+function getCommunitySyncStampTargetIndex(session: CommunitySyncSession): number {
+  if (session.lines.length === 0) return -1;
+  if (session.activeIndex < 0) {
+    return findCommunitySyncNextPendingIndex(session.lines, 0);
+  }
+  const activeLine = session.lines[Math.max(0, Math.min(session.activeIndex, session.lines.length - 1))];
+  if (!activeLine) return -1;
+  if (activeLine.time === null) return Math.max(0, Math.min(session.activeIndex, session.lines.length - 1));
+
+  const nextPendingIndex = findCommunitySyncNextPendingIndex(session.lines, session.activeIndex + 1);
+  if (nextPendingIndex >= 0) return nextPendingIndex;
+
+  return -1;
+}
+
+function getCommunitySyncPauseInsertIndex(session: CommunitySyncSession): number {
+  if (session.lines.length === 0) return 0;
+  if (session.activeIndex < 0) return 0;
+  const activeLine = session.lines[Math.max(0, Math.min(session.activeIndex, session.lines.length - 1))];
+  if (!activeLine || activeLine.time === null) {
+    return Math.max(0, Math.min(session.activeIndex, session.lines.length));
+  }
+
+  const nextPendingIndex = findCommunitySyncNextPendingIndex(session.lines, session.activeIndex + 1);
+  if (nextPendingIndex >= 0) return nextPendingIndex;
+
+  return Math.min(session.activeIndex + 1, session.lines.length);
 }
 
 /* ── Lyrics Search Modal ──────────────────────────────────── */
@@ -3073,6 +3552,469 @@ const LyricsSearchModal = React.memo(
   },
 );
 
+const CommunitySyncLiveClock = React.memo(
+  ({ syncedCount, totalLines }: { syncedCount: number; totalLines: number }) => {
+    const [currentTime, setCurrentTime] = useState(() => getCurrentTime());
+
+    useEffect(() => {
+      const tick = () => setCurrentTime(getCurrentTime());
+      tick();
+      const intervalId = window.setInterval(tick, 90);
+      return () => window.clearInterval(intervalId);
+    }, []);
+
+    return (
+      <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-black/[0.22] px-3 py-1.5 text-[11px] font-medium text-white/68 shadow-[0_12px_34px_rgba(0,0,0,0.26)] backdrop-blur-xl">
+        <span className="tabular-nums">{formatTime(currentTime)}</span>
+        <span className="h-1 w-1 rounded-full bg-white/16" />
+        <span className="tabular-nums text-white/42">
+          {syncedCount}/{totalLines}
+        </span>
+      </div>
+    );
+  },
+);
+
+const CommunitySyncTimestampChip = React.memo(
+  ({
+    value,
+    onCommit,
+  }: {
+    value: number;
+    onCommit: (nextTime: number) => void;
+  }) => {
+    const [editing, setEditing] = useState(false);
+    const [draftValue, setDraftValue] = useState(() => formatCommunitySyncTimestamp(value));
+    const inputRef = useRef<HTMLInputElement | null>(null);
+
+    useEffect(() => {
+      if (!editing) {
+        setDraftValue(formatCommunitySyncTimestamp(value));
+      }
+    }, [editing, value]);
+
+    useEffect(() => {
+      if (!editing) return;
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, [editing]);
+
+    const cancelEditing = useCallback(() => {
+      setDraftValue(formatCommunitySyncTimestamp(value));
+      setEditing(false);
+    }, [value]);
+
+    const submitEditing = useCallback(() => {
+      const parsed = parseCommunitySyncTimestampInput(draftValue);
+      if (parsed == null) {
+        cancelEditing();
+        return;
+      }
+
+      onCommit(parsed);
+      setEditing(false);
+    }, [cancelEditing, draftValue, onCommit]);
+
+    const sharedClassName =
+      'inline-flex h-7 min-w-[82px] items-center justify-center rounded-full border border-white/[0.08] bg-black/[0.18] px-2.5 text-[10px] font-semibold tabular-nums text-white/52 shadow-[0_10px_24px_rgba(0,0,0,0.22)] backdrop-blur-xl transition-all duration-200 hover:border-white/[0.12] hover:bg-black/[0.26] hover:text-white/78';
+
+    if (editing) {
+      return (
+        <input
+          ref={inputRef}
+          type="text"
+          value={draftValue}
+          inputMode="numeric"
+          spellCheck={false}
+          aria-label="Edit lyric timestamp"
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => setDraftValue(event.target.value)}
+          onBlur={submitEditing}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              submitEditing();
+              return;
+            }
+
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              cancelEditing();
+            }
+          }}
+          className={`${sharedClassName} w-[82px] outline-none ring-1 ring-white/[0.14]`}
+        />
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setEditing(true);
+        }}
+        className={sharedClassName}
+      >
+        {formatCommunitySyncTimestamp(value)}
+      </button>
+    );
+  },
+);
+
+const CommunitySyncEditor = React.memo(
+  ({
+    session,
+    onSyncLine,
+    onInsertPause,
+    onUndo,
+    onPublish,
+    publishPending,
+    onSeekLine,
+    onUpdateTimestamp,
+    onCancel,
+    t,
+  }: {
+    session: CommunitySyncSession;
+    onSyncLine: () => void;
+    onInsertPause: () => void;
+    onUndo: () => void;
+    onPublish: () => void;
+    publishPending: boolean;
+    onSeekLine: (index: number) => void;
+    onUpdateTimestamp: (index: number, nextTime: number) => void;
+    onCancel: () => void;
+    t: TFunction;
+  }) => {
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const syncedCount = session.lines.filter((line) => typeof line.time === 'number').length;
+    const canPublish = isCommunitySyncSessionComplete(session);
+
+    useEffect(() => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const activeLine = container.querySelector<HTMLElement>(
+        `[data-sync-line-index="${session.activeIndex}"]`,
+      );
+      activeLine?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, [session.activeIndex]);
+
+    return (
+      <div
+        className="relative mx-auto flex h-full w-full max-w-[960px] flex-col overflow-hidden animate-fade-in-up"
+      >
+        <div className="flex items-start justify-between gap-4 px-[clamp(8px,1.4vw,18px)] pt-3 pb-2">
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/28">
+              {t('track.communitySyncMode', 'Sync mode')}
+            </div>
+            <div className="mt-1 text-[12px] text-white/40">
+              {t('track.communitySyncModeHint', 'Отмечайте строки прямо по ходу трека.')}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <CommunitySyncLiveClock syncedCount={syncedCount} totalLines={session.lines.length} />
+            <button
+              type="button"
+              onClick={onCancel}
+              className="inline-flex h-9 items-center rounded-full border border-white/[0.08] bg-white/[0.04] px-3 text-[12px] font-medium text-white/58 transition-all duration-200 hover:border-white/[0.12] hover:bg-white/[0.08] hover:text-white/84"
+            >
+              {t('track.communitySyncExit', 'Выйти')}
+            </button>
+          </div>
+        </div>
+
+        <div className="mx-auto flex w-full max-w-[880px] flex-wrap items-center justify-center gap-2 px-4 pb-4 text-[11px] text-white/34">
+          {[
+            ['SPACE', t('track.communitySyncHintNext', 'следующая строка')],
+            ['BACKSPACE', t('track.communitySyncHintUndo', 'отменить последнюю')],
+            ['ESC', t('track.communitySyncHintCancel', 'выйти без сохранения')],
+          ].map(([key, label]) => (
+            <span
+              key={key}
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 backdrop-blur-md"
+            >
+              <span className="font-semibold text-white/54">{key}</span>
+              <span>{label}</span>
+            </span>
+          ))}
+        </div>
+
+        <div
+          ref={containerRef}
+          className="flex-1 overflow-y-auto px-[clamp(20px,4vw,56px)] pb-8 scrollbar-hide"
+        >
+          <div className="mx-auto flex max-w-[880px] flex-col gap-2 pt-6">
+            {session.lines.map((line, index) => {
+              const timestamp = line.time;
+              const canSeekToLine = typeof timestamp === 'number';
+              const hasActiveLine = session.activeIndex >= 0;
+              const distance = hasActiveLine ? index - session.activeIndex : 0;
+              const isActive = hasActiveLine && distance === 0;
+              const isPast = hasActiveLine && distance < 0;
+              const isPauseLine = line.kind === 'pause';
+              const stateClassName = !hasActiveLine
+                ? 'opacity-[0.58] scale-[0.98] text-white/[0.62]'
+                : isActive
+                  ? 'opacity-100 scale-[1.08] text-white [text-shadow:0_0_34px_rgba(255,255,255,0.2)]'
+                  : isPast
+                    ? distance === -1
+                      ? 'opacity-[0.72] scale-[0.995] text-white/[0.78]'
+                      : 'opacity-[0.42] scale-[0.97] text-white/[0.48]'
+                    : distance === 1
+                      ? 'opacity-[0.78] scale-[0.995] text-white/[0.84]'
+                      : 'opacity-[0.46] scale-[0.97] text-white/[0.54]';
+
+              return (
+                <div
+                  key={`${index}-${line.kind}-${line.text}-${line.time ?? 'pending'}`}
+                  data-sync-line-index={index}
+                  onClick={canSeekToLine ? () => onSeekLine(index) : undefined}
+                  className={`relative flex w-full items-center justify-center px-[72px] py-3 text-center text-[clamp(24px,3vw,42px)] font-bold tracking-tight transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                    canSeekToLine ? 'cursor-pointer' : 'cursor-default'
+                  } ${stateClassName}`}
+                >
+                  {timestamp !== null ? (
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2">
+                      <CommunitySyncTimestampChip
+                        value={timestamp}
+                        onCommit={(nextTime) => onUpdateTimestamp(index, nextTime)}
+                      />
+                    </div>
+                  ) : null}
+                  {isPauseLine ? (
+                    <span className="block min-h-[1.15em] w-full select-none whitespace-pre-wrap text-center">
+                      {'\u00A0'}
+                    </span>
+                  ) : (
+                    <span className="block whitespace-pre-wrap text-center">{line.text}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="h-[34vh]" />
+        </div>
+
+        <div className="px-[clamp(20px,4vw,56px)] pb-[clamp(132px,18vh,172px)] pt-4">
+          <div className="mx-auto flex max-w-[880px] flex-wrap items-center justify-between gap-3 rounded-[28px] border border-white/[0.08] bg-[rgba(8,8,10,0.3)] px-4 py-4 shadow-[0_28px_90px_rgba(0,0,0,0.34)] backdrop-blur-[26px]">
+            <div className="text-[12px] text-white/42">
+              {t('track.communitySyncProgress', 'Строка {{current}} из {{total}}')
+                .replace(
+                  '{{current}}',
+                  String(
+                    session.activeIndex < 0
+                      ? 0
+                      : Math.min(session.activeIndex + 1, session.lines.length),
+                  ),
+                )
+                .replace('{{total}}', String(session.lines.length))}
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onUndo}
+                disabled={syncedCount === 0}
+                className="inline-flex h-10 items-center rounded-full border border-white/[0.08] bg-white/[0.04] px-4 text-[12px] font-medium text-white/62 transition-all duration-200 hover:border-white/[0.12] hover:bg-white/[0.08] hover:text-white disabled:cursor-default disabled:opacity-38"
+              >
+                {t('track.communitySyncUndo', 'Отменить')}
+              </button>
+              <button
+                type="button"
+                onClick={onInsertPause}
+                className="inline-flex h-10 items-center rounded-full border border-white/[0.08] bg-white/[0.05] px-4 text-[12px] font-medium text-white/66 transition-all duration-200 hover:border-white/[0.12] hover:bg-white/[0.09] hover:text-white"
+              >
+                {t('track.communitySyncPause', 'Пауза')}
+              </button>
+              <div className="flex items-center">
+                <button
+                  type="button"
+                  onClick={onSyncLine}
+                  className={`inline-flex h-10 items-center rounded-full px-5 text-[12px] font-semibold transition-all duration-300 ${
+                    canPublish
+                      ? 'border border-white/[0.08] bg-white/[0.05] text-white/66 hover:border-white/[0.12] hover:bg-white/[0.09] hover:text-white'
+                      : 'border border-white/[0.1] bg-white/[0.12] text-white shadow-[0_14px_40px_rgba(255,255,255,0.08)] hover:border-white/[0.16] hover:bg-white/[0.18] hover:shadow-[0_0_26px_rgba(255,255,255,0.12)]'
+                  }`}
+                >
+                  {t('track.communitySyncNextButton', 'Следующая строка')}
+                </button>
+                <div
+                  className={`overflow-hidden rounded-full transition-[max-width,opacity,margin,transform] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                    canPublish
+                      ? 'ml-2 max-w-[156px] opacity-100 translate-x-0'
+                      : 'ml-0 max-w-0 opacity-0 translate-x-3 pointer-events-none'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={onPublish}
+                    disabled={publishPending}
+                    className={`inline-flex h-10 w-[156px] items-center justify-center rounded-full border border-white/[0.1] bg-white/[0.12] px-5 text-[12px] font-semibold text-white shadow-[0_14px_40px_rgba(255,255,255,0.08)] transition-all duration-300 hover:border-white/[0.16] hover:bg-white/[0.18] hover:shadow-[0_0_26px_rgba(255,255,255,0.12)] disabled:cursor-default disabled:opacity-60 ${
+                      canPublish ? 'translate-x-0 opacity-100 delay-75' : 'translate-x-3 opacity-0 delay-0'
+                    }`}
+                  >
+                    {publishPending ? (
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 size={13} className="animate-spin" />
+                        <span>{t('track.communitySyncPublishing', 'Публикация...')}</span>
+                      </span>
+                    ) : (
+                      t('track.communitySyncPublish', 'Опубликовать')
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  },
+);
+
+const CommunitySyncPublishConfirm = React.memo(
+  ({
+    open,
+    pending,
+    onClose,
+    onConfirm,
+    t,
+    trackName,
+    artistName,
+    albumName,
+    duration,
+    onTrackNameChange,
+    onArtistNameChange,
+    onAlbumNameChange,
+    onDurationChange,
+  }: {
+    open: boolean;
+    pending: boolean;
+    onClose: () => void;
+    onConfirm: () => void;
+    t: TFunction;
+    trackName: string;
+    artistName: string;
+    albumName: string;
+    duration: string;
+    onTrackNameChange: (value: string) => void;
+    onArtistNameChange: (value: string) => void;
+    onAlbumNameChange: (value: string) => void;
+    onDurationChange: (value: string) => void;
+  }) => {
+    if (!open || typeof document === 'undefined') return null;
+
+    return createPortal(
+      <div
+        className="fixed inset-0 z-[90] flex items-center justify-center bg-black/72 backdrop-blur-[18px]"
+        onClick={pending ? undefined : onClose}
+      >
+        <div
+          className="w-[min(92vw,560px)] rounded-[30px] border border-white/[0.08] bg-[rgba(12,12,16,0.82)] px-6 py-6 shadow-[0_42px_160px_rgba(0,0,0,0.64)] backdrop-blur-[30px] animate-fade-in-up"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/28">
+            {t('track.communitySyncPublishConfirmLabel', 'Подтверждение')}
+          </div>
+          <div className="mt-3 text-[22px] font-semibold tracking-tight text-white/92">
+            {t(
+              'track.communitySyncPublishConfirmTitle',
+              'Проверьте синхронизацию перед публикацией',
+            )}
+          </div>
+          <div className="mt-3 text-[13px] leading-6 text-white/54">
+            {t(
+              'track.communitySyncPublishConfirmText',
+              'После отправки синхронизацию нельзя будет изменить через LRCLIB API. Если всё звучит точно, можно публиковать.',
+            )}
+          </div>
+
+          <div className="mt-6 space-y-3">
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.16em] text-white/38 mb-1">
+                {t('track.communitySyncTrackName', 'Track Name')}
+              </label>
+              <input
+                type="text"
+                value={trackName}
+                onChange={(e) => onTrackNameChange(e.target.value)}
+                disabled={pending}
+                className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-[12px] text-white/92 placeholder-white/28 transition-all duration-200 focus:border-white/[0.12] focus:bg-white/[0.06] focus:outline-none disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.16em] text-white/38 mb-1">
+                {t('track.communitySyncArtistName', 'Artist Name')}
+              </label>
+              <input
+                type="text"
+                value={artistName}
+                onChange={(e) => onArtistNameChange(e.target.value)}
+                disabled={pending}
+                className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-[12px] text-white/92 placeholder-white/28 transition-all duration-200 focus:border-white/[0.12] focus:bg-white/[0.06] focus:outline-none disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.16em] text-white/38 mb-1">
+                {t('track.communitySyncAlbumName', 'Album Name')}
+              </label>
+              <input
+                type="text"
+                value={albumName}
+                onChange={(e) => onAlbumNameChange(e.target.value)}
+                disabled={pending}
+                placeholder={t('track.communitySyncAlbumNamePlaceholder', 'Optional')}
+                className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-[12px] text-white/92 placeholder-white/28 transition-all duration-200 focus:border-white/[0.12] focus:bg-white/[0.06] focus:outline-none disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.16em] text-white/38 mb-1">
+                {t('track.communitySyncDuration', 'Duration (seconds)')}
+              </label>
+              <input
+                type="number"
+                value={duration}
+                onChange={(e) => onDurationChange(e.target.value)}
+                disabled={pending}
+                min="0"
+                className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-[12px] text-white/92 placeholder-white/28 transition-all duration-200 focus:border-white/[0.12] focus:bg-white/[0.06] focus:outline-none disabled:opacity-50"
+              />
+            </div>
+          </div>
+
+          <div className="mt-6 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={pending}
+              className="inline-flex h-10 items-center rounded-full border border-white/[0.08] bg-white/[0.04] px-4 text-[12px] font-medium text-white/62 transition-all duration-200 hover:border-white/[0.12] hover:bg-white/[0.08] hover:text-white disabled:cursor-default disabled:opacity-38"
+            >
+              {t('common.cancel', 'Отменить')}
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={pending}
+              className="inline-flex h-10 items-center rounded-full border border-white/[0.1] bg-white/[0.12] px-5 text-[12px] font-semibold text-white shadow-[0_14px_40px_rgba(255,255,255,0.08)] transition-all duration-200 hover:border-white/[0.16] hover:bg-white/[0.18] hover:shadow-[0_0_26px_rgba(255,255,255,0.12)] disabled:cursor-default disabled:opacity-38"
+            >
+              {pending ? (
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 size={13} className="animate-spin" />
+                  <span>{t('track.communitySyncPublishing', 'Публикация...')}</span>
+                </span>
+              ) : (
+                t('track.communitySyncPublishNow', 'Опубликовать')
+              )}
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  },
+);
+
 export const LyricsPanel = React.memo(
   ({
     forceOpen = false,
@@ -3099,13 +4041,10 @@ const artworkColor = useArtworkColor(track?.artwork_url ?? null);
 const [isEditing, setIsEditing] = useState(false);
 
 const manualQueryRef = useRef(
-  new Map<string, { artist: string; title: string }>(),
+  new Map<string, LyricsSearchQuery>(),
 );
 
-const [manualQuery, setManualQuery] = useState<{
-  artist: string;
-  title: string;
-} | null>(null);
+const [manualQuery, setManualQuery] = useState<TrackScopedLyricsSearchQuery | null>(null);
 
 const [editArtist, setEditArtist] = useState('');
 const [editTitle, setEditTitle] = useState('');
@@ -3113,9 +4052,14 @@ const [isResizingSplit, setIsResizingSplit] = useState(false);
 const splitLayoutRef = useRef<HTMLDivElement>(null);
 const splitDraggingRef = useRef(false);
 
-    const reqArtist = manualQuery ? manualQuery.artist : (track?.user.username ?? '');
-    const reqTitle = manualQuery ? manualQuery.title : (track?.title ?? '');
+    const trackUrn = track?.urn ?? null;
+    const activeManualQuery = getPreferredTrackLyricsSearchQuery(trackUrn, manualQuery, manualQueryRef);
+    const reqArtist = activeManualQuery ? activeManualQuery.artist : (track?.user.username ?? '');
+    const reqTitle = activeManualQuery ? activeManualQuery.title : (track?.title ?? '');
     const manualLyricsRef = useRef(
+  new Map<string, ManualLyricsCacheEntry>(),
+);
+    const autoLyricsRef = useRef(
   new Map<string, LyricsResult>(),
 );
     const {
@@ -3128,10 +4072,12 @@ const splitDraggingRef = useRef(false);
         reqTitle,
         getTrackDurationMs(track),
         manualLyricsRef,
+        activeManualQuery,
+        autoLyricsRef,
       );
 const warmupEnabled =
   interactiveVisible && generatedFromPlain;
-    const {} = useAudioTextWarmup(
+    useAudioTextWarmup(
       warmupEnabled,
       track,
       reqArtist,
@@ -3141,14 +4087,17 @@ const warmupEnabled =
 
     // biome-ignore lint/correctness/useExhaustiveDependencies: reset editor state only on track switch
 useEffect(() => {
-  if (!track?.urn) {
+  if (!trackUrn) {
     setManualQuery(null);
     return;
   }
 
-  setManualQuery(manualQueryRef.current.get(track.urn) ?? null);
+  const savedManualQuery = manualQueryRef.current.get(trackUrn) ?? null;
+  setManualQuery(
+    savedManualQuery ? buildTrackScopedLyricsSearchQuery(trackUrn, savedManualQuery) : null,
+  );
   setIsEditing(false);
-}, [track?.urn]);
+}, [trackUrn]);
 
     useEffect(() => {
       if (!interactiveVisible) return;
@@ -3214,7 +4163,7 @@ useEffect(() => {
           <button
             type="button"
             onClick={() => {
-              useLyricsStore.setState({ open: false });
+              useLyricsStore.setState({ open: false, communitySyncStage: 'idle' });
               useFullscreenPanelStore.getState().setOpenAnimation('default');
               useFullscreenPanelStore.getState().setTransitionDirection('toArtwork');
               useFullscreenPanelStore.getState().setMode('artwork');
@@ -3313,15 +4262,13 @@ useEffect(() => {
                     type="button"
                       onClick={() => {
                         const query = {
-                          artist: editArtist,
-                          title: editTitle,
+                          artist: editArtist.trim(),
+                          title: editTitle.trim(),
                         };
+                        if (!trackUrn || !query.artist || !query.title) return;
 
-                        setManualQuery(query);
-
-                        if (track?.urn) {
-                          manualQueryRef.current.set(track.urn, query);
-                        }
+                        manualQueryRef.current.set(trackUrn, query);
+                        setManualQuery(buildTrackScopedLyricsSearchQuery(trackUrn, query));
 
                         setIsEditing(false);
                       }}
@@ -3338,9 +4285,11 @@ useEffect(() => {
                   onSearch={() => {
                     const parsed = splitArtistTitle(track?.title ?? '');
                     setEditArtist(
-                      manualQuery?.artist || (parsed ? parsed[0] : track?.user.username || ''),
+                      activeManualQuery?.artist || (parsed ? parsed[0] : track?.user.username || ''),
                     );
-                    setEditTitle(manualQuery?.title || (parsed ? parsed[1] : track?.title || ''));
+                    setEditTitle(
+                      activeManualQuery?.title || (parsed ? parsed[1] : track?.title || ''),
+                    );
                     setIsEditing(true);
                   }}
                 />
@@ -3357,9 +4306,11 @@ useEffect(() => {
                   onSearch={() => {
                     const parsed = splitArtistTitle(track?.title ?? '');
                     setEditArtist(
-                      manualQuery?.artist || (parsed ? parsed[0] : track?.user.username || ''),
+                      activeManualQuery?.artist || (parsed ? parsed[0] : track?.user.username || ''),
                     );
-                    setEditTitle(manualQuery?.title || (parsed ? parsed[1] : track?.title || ''));
+                    setEditTitle(
+                      activeManualQuery?.title || (parsed ? parsed[1] : track?.title || ''),
+                    );
                     setIsEditing(true);
                   }}
                 />
@@ -3372,9 +4323,11 @@ useEffect(() => {
                   onClick={() => {
                     const parsed = splitArtistTitle(track?.title ?? '');
                     setEditArtist(
-                      manualQuery?.artist || (parsed ? parsed[0] : track?.user.username || ''),
+                      activeManualQuery?.artist || (parsed ? parsed[0] : track?.user.username || ''),
                     );
-                    setEditTitle(manualQuery?.title || (parsed ? parsed[1] : track?.title || ''));
+                    setEditTitle(
+                      activeManualQuery?.title || (parsed ? parsed[1] : track?.title || ''),
+                    );
                     setIsEditing(true);
                   }}
                   className="w-12 h-12 flex items-center justify-center rounded-full text-white/40 hover:text-white/70 hover:bg-white/10 transition-all"
@@ -3636,6 +4589,7 @@ const LyricsMiniPlayerDock = ({
   openAnimation,
   closeAnimation,
   hideArtwork,
+  forceCollapsed = false,
   onOpenArtworkLightbox,
 }: {
   track: Track;
@@ -3643,11 +4597,13 @@ const LyricsMiniPlayerDock = ({
   openAnimation: 'default' | 'fromMiniPlayer';
   closeAnimation: 'none' | 'toMiniPlayer';
   hideArtwork: boolean;
+  forceCollapsed?: boolean;
   onOpenArtworkLightbox: (sourceElement: HTMLElement | null) => void;
 }) => {
   const { t } = useTranslation();
   const controlsCollapsed = useSettingsStore((s) => s.lyricsMiniPlayerControlsCollapsed);
   const setControlsCollapsed = useSettingsStore((s) => s.setLyricsMiniPlayerControlsCollapsed);
+  const effectiveControlsCollapsed = forceCollapsed || controlsCollapsed;
   const [r, g, b] = color;
   const dockAnimationClass =
     closeAnimation === 'toMiniPlayer'
@@ -3676,29 +4632,31 @@ const LyricsMiniPlayerDock = ({
           }}
         />
         <div className="pointer-events-none absolute inset-px rounded-[29px] border border-white/[0.06]" />
-        <button
-          type="button"
-          onClick={() => setControlsCollapsed(!controlsCollapsed)}
-          title={
-            controlsCollapsed
-              ? t('track.showMiniPlayerControls', 'Show controls')
-              : t('track.hideMiniPlayerControls', 'Hide controls')
-          }
-          aria-label={
-            controlsCollapsed
-              ? t('track.showMiniPlayerControls', 'Show controls')
-              : t('track.hideMiniPlayerControls', 'Hide controls')
-          }
-          className="absolute right-3 top-3 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-black/[0.24] text-white/54 opacity-0 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-md transition-all duration-200 ease-[var(--ease-apple)] hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white/88 focus-visible:opacity-100 focus-visible:outline-none group-hover/lyrics-mini-player:opacity-100"
-        >
-          {controlsCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </button>
+        {!forceCollapsed ? (
+          <button
+            type="button"
+            onClick={() => setControlsCollapsed(!controlsCollapsed)}
+            title={
+              controlsCollapsed
+                ? t('track.showMiniPlayerControls', 'Show controls')
+                : t('track.hideMiniPlayerControls', 'Hide controls')
+            }
+            aria-label={
+              controlsCollapsed
+                ? t('track.showMiniPlayerControls', 'Show controls')
+                : t('track.hideMiniPlayerControls', 'Hide controls')
+            }
+            className="absolute right-3 top-3 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-black/[0.24] text-white/54 opacity-0 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-md transition-all duration-200 ease-[var(--ease-apple)] hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white/88 focus-visible:opacity-100 focus-visible:outline-none group-hover/lyrics-mini-player:opacity-100"
+          >
+            {controlsCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+        ) : null}
 
         <div className="lyrics-mini-player-content relative">
           <div className="lyrics-mini-player-header flex items-start gap-4">
             <LyricsMiniPlayerArtwork
               track={track}
-              controlsCollapsed={controlsCollapsed}
+              controlsCollapsed={effectiveControlsCollapsed}
               hideArtwork={hideArtwork}
               onOpenArtworkLightbox={onOpenArtworkLightbox}
             />
@@ -3727,7 +4685,7 @@ const LyricsMiniPlayerDock = ({
 
           <div
             className={`overflow-hidden transition-[max-height,opacity,transform,margin] duration-300 ease-[var(--ease-apple)] ${
-              controlsCollapsed
+              effectiveControlsCollapsed
                 ? 'mt-0 max-h-0 translate-y-2 opacity-0 pointer-events-none'
                 : 'mt-4 max-h-[180px] translate-y-0 opacity-100'
             }`}
@@ -3913,6 +4871,7 @@ const FullscreenLyricsMiniPlayerOverlay = React.memo(
     openAnimation,
     closeAnimation,
     hideArtwork,
+    forceCollapsed = false,
     onOpenArtworkLightbox,
   }: {
     track: Track;
@@ -3920,6 +4879,7 @@ const FullscreenLyricsMiniPlayerOverlay = React.memo(
     openAnimation: 'default' | 'fromMiniPlayer';
     closeAnimation: 'none' | 'toMiniPlayer';
     hideArtwork: boolean;
+    forceCollapsed?: boolean;
     onOpenArtworkLightbox: (sourceElement: HTMLElement | null) => void;
   }) => {
     if (typeof document === 'undefined') return null;
@@ -3941,6 +4901,7 @@ const FullscreenLyricsMiniPlayerOverlay = React.memo(
             openAnimation={openAnimation}
             closeAnimation={closeAnimation}
             hideArtwork={hideArtwork}
+            forceCollapsed={forceCollapsed}
             onOpenArtworkLightbox={onOpenArtworkLightbox}
           />
         </div>
@@ -3955,7 +4916,6 @@ const FullscreenLyricsColumn = React.memo(
     lyrics,
     warmupEnabled,
     suppressFallback,
-    onOpenSearch,
   }: {
     lyrics: ResolvedLyricsData;
     warmupEnabled: boolean;
@@ -3963,20 +4923,12 @@ const FullscreenLyricsColumn = React.memo(
     pseudoSynced: boolean;
     hintLabel: string | null;
     suppressFallback: boolean;
-    onOpenSearch: () => void;
   }) => {
-    const hasSourceBadge = shouldRenderSyncedLyrics(lyrics) || shouldRenderPlainLyrics(lyrics);
-
     return (
-      <div className="relative mx-auto flex h-full w-full max-w-[960px] flex-col overflow-hidden">
-        {hasSourceBadge ? (
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-10">
-            <div className="pointer-events-auto">
-              <LyricsSourceBadge source={lyrics.source} onSearch={onOpenSearch} />
-            </div>
-          </div>
-        ) : null}
-
+      <div
+        className="relative mx-auto flex h-full w-full max-w-[960px] flex-col overflow-hidden"
+        style={{ transform: 'translateX(-30px)' }}
+      >
         <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
           {suppressFallback ? (
             <div className="flex-1" />
@@ -4010,10 +4962,20 @@ const FullscreenPanels = React.memo(() => {
   const closeAnimation = useFullscreenPanelStore((s) => s.closeAnimation);
   const openAnimation = useFullscreenPanelStore((s) => s.openAnimation);
   const open = useLyricsStore((s) => s.open);
+  const setCommunitySyncStageInStore = useLyricsStore((s) => s.setCommunitySyncStage);
   const track = usePlayerStore((s) => s.currentTrack);
   const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
+  const lyricsMiniPlayerControlsCollapsed = useSettingsStore((s) => s.lyricsMiniPlayerControlsCollapsed);
+  const setLyricsMiniPlayerControlsCollapsed = useSettingsStore(
+    (s) => s.setLyricsMiniPlayerControlsCollapsed,
+  );
   const artworkColor = useArtworkColor(track?.artwork_url ?? null);
   const { t } = useTranslation();
+  const communityDraft = useCommunityLyricsDraftStore((s) =>
+    track?.urn ? (s.draftsByTrackUrn[track.urn] ?? null) : null,
+  );
+  const saveCommunityDraft = useCommunityLyricsDraftStore((s) => s.saveDraft);
+  const removeCommunityDraft = useCommunityLyricsDraftStore((s) => s.removeDraft);
   const {
     artworkLightboxOpen,
     artworkLightboxSource,
@@ -4027,28 +4989,49 @@ const FullscreenPanels = React.memo(() => {
   const isLyrics = mode === 'lyrics';
   const closingToMiniPlayer = closeAnimation === 'toMiniPlayer';
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
-  const [manualQuery, setManualQuery] = useState<{ artist: string; title: string } | null>(null);
-  const [submittedSearchQuery, setSubmittedSearchQuery] = useState<{
-    artist: string;
-    title: string;
-  } | null>(null);
+  const manualQueryRef = useRef(new Map<string, LyricsSearchQuery>());
+  const [manualQuery, setManualQuery] = useState<TrackScopedLyricsSearchQuery | null>(null);
+  const [submittedSearchQuery, setSubmittedSearchQuery] =
+    useState<TrackScopedLyricsSearchQuery | null>(null);
   const [showNotFoundHint, setShowNotFoundHint] = useState(false);
   const [lyricsSessionRequested, setLyricsSessionRequested] = useState(false);
   const [isTrackLyricsPending, setIsTrackLyricsPending] = useState(false);
+  const [communitySyncStage, setCommunitySyncStage] = useState<CommunitySyncStage>('idle');
+  const [communitySyncSession, setCommunitySyncSession] = useState<CommunitySyncSession | null>(
+    null,
+  );
+  const [communityPublishPending, setCommunityPublishPending] = useState(false);
+  const [communityPublishedLyricsByTrack, setCommunityPublishedLyricsByTrack] = useState<
+    Record<string, LyricsResult>
+  >({});
+  const [communityPublishEditTrackName, setCommunityPublishEditTrackName] = useState('');
+  const [communityPublishEditArtistName, setCommunityPublishEditArtistName] = useState('');
+  const [communityPublishEditAlbumName, setCommunityPublishEditAlbumName] = useState('');
+  const [communityPublishEditDuration, setCommunityPublishEditDuration] = useState('');
   const notFoundHintTimeoutRef = useRef<number | null>(null);
   const pendingLyricsActionAfterLoadRef = useRef(false);
   const pendingManualSearchResolveRef = useRef(false);
   const pendingTrackAutoOpenRef = useRef(false);
   const skipNextArtworkToLyricsSharedTransitionRef = useRef(false);
   const handledMiniPlayerRequestRef = useRef(0);
+  const communitySyncSessionRef = useRef<CommunitySyncSession | null>(null);
+  const miniPlayerCollapsedBeforeCommunityFlowRef = useRef<boolean | null>(null);
   const prevTrackUrnRef = useRef<string | null>(null);
   const trackUrn = track?.urn ?? null;
   const isTrackSwitchingFrame =
     prevTrackUrnRef.current !== null && prevTrackUrnRef.current !== trackUrn;
+  const activeManualQuery = getPreferredTrackLyricsSearchQuery(trackUrn, manualQuery, manualQueryRef);
+  const activeSubmittedSearchQuery =
+    submittedSearchQuery && submittedSearchQuery.trackUrn === trackUrn
+      ? submittedSearchQuery
+      : null;
 
-  const reqArtist = manualQuery ? manualQuery.artist : (track?.user?.username ?? '');
-  const reqTitle = manualQuery ? manualQuery.title : (track?.title ?? '');
+  const reqArtist = activeManualQuery ? activeManualQuery.artist : (track?.user?.username ?? '');
+  const reqTitle = activeManualQuery ? activeManualQuery.title : (track?.title ?? '');
   const manualLyricsRef = useRef(
+  new Map<string, ManualLyricsCacheEntry>(),
+);
+  const autoLyricsRef = useRef(
   new Map<string, LyricsResult>(),
 );
   const {
@@ -4063,29 +5046,70 @@ const FullscreenPanels = React.memo(() => {
   reqTitle,
   getTrackDurationMs(track),
   manualLyricsRef,
+  activeManualQuery,
+  autoLyricsRef,
 );
-  const warmupEnabled = Boolean(
-    mode !== 'none' && generatedFromPlain
-  );
+  const manualSearchResultQuery = useQuery({
+    queryKey: [
+      'lyrics-manual-search',
+      LYRICS_SEARCH_QUERY_VERSION,
+      trackUrn,
+      activeSubmittedSearchQuery?.artist ?? null,
+      activeSubmittedSearchQuery?.title ?? null,
+    ],
+    queryFn: () =>
+      searchLyrics(
+        trackUrn!,
+        activeSubmittedSearchQuery!.artist,
+        activeSubmittedSearchQuery!.title,
+        getLyricsSearchOptions(
+          track,
+          activeSubmittedSearchQuery!.artist,
+          activeSubmittedSearchQuery!.title,
+          getTrackDurationMs(track),
+        ),
+      ),
+    enabled: mode !== 'none' && !!trackUrn && !!activeSubmittedSearchQuery,
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+    retry: 1,
+  });
+  const displayedLyrics =
+    trackUrn && communityPublishedLyricsByTrack[trackUrn]
+      ? communityPublishedLyricsByTrack[trackUrn]
+      : lyrics;
+  const warmupEnabled = Boolean(mode !== 'none' && generatedFromPlain && !displayedLyrics?.synced);
   const { motionHints, hintLabel } = useAudioTextWarmup(
     warmupEnabled,
     track,
     reqArtist,
     reqTitle,
-    lyrics,
+    displayedLyrics,
   );
-  const hasLyrics = hasRenderableLyrics(lyrics);
+  const hasLyrics = hasRenderableLyrics(displayedLyrics);
   const lyricsStageActive = isLyrics && hasLyrics;
   const searchPrefill = useMemo(
-    () => getLyricsSearchPrefill(track, manualQuery),
-    [track, manualQuery],
+    () => getLyricsSearchPrefill(track, activeManualQuery),
+    [track, activeManualQuery],
   );
+  const communitySyncTrackMeta = useMemo<CommunitySyncTrackMeta | null>(() => {
+    if (!trackUrn || !track) return null;
+
+    return {
+      trackUrn,
+      artistName: searchPrefill.artist.trim() || track.user?.username || '',
+      trackName: searchPrefill.title.trim() || track.title || '',
+      durationSec: track.duration > 0 ? track.duration / 1000 : 0,
+    };
+  }, [searchPrefill.artist, searchPrefill.title, track, trackUrn]);
   const searchResultState: 'idle' | 'loading' | 'found' | 'not_found' =
-    submittedSearchQuery === null
+    activeSubmittedSearchQuery === null
       ? 'idle'
-      : isLoading
+      : manualSearchResultQuery.isLoading
         ? 'loading'
-        : hasLyrics
+        : manualSearchResultQuery.data
           ? 'found'
           : 'not_found';
   const suppressLyricsFallback =
@@ -4093,8 +5117,25 @@ const FullscreenPanels = React.memo(() => {
   const suppressLyricsStage = suppressLyricsFallback || isTrackSwitchingFrame;
   const hideMiniPlayerArtwork =
     artworkLightboxSource === 'lyrics-mini-player' && artworkLightboxSourceArtworkHidden;
-
-
+  const canCreateCommunitySyncForTrack = canCreateCommunitySync(displayedLyrics);
+  const communityDraftSession = useMemo(
+    () => (communityDraft ? createCommunitySyncSessionFromDraft(communityDraft) : null),
+    [communityDraft],
+  );
+  const communityDraftTotalLines = communityDraftSession ? communityDraftSession.lines.length : 0;
+  const communityDraftReadyToPublish =
+    communityDraftTotalLines > 0 &&
+    Boolean(communityDraft && communityDraft.syncedLyrics.length >= communityDraftTotalLines);
+  const canRetryCommunityDraft = Boolean(communityDraft && !displayedLyrics?.synced?.length);
+  const communityFlowActive = communitySyncStage !== 'idle';
+  const showCommunityActionButton = lyricsStageActive && !communityFlowActive;
+  const communityActionLabel = canRetryCommunityDraft
+    ? communityDraftReadyToPublish
+      ? t('track.communitySyncOpenSavedButton', 'Открыть сохранённую синхронизацию')
+      : t('track.communitySyncResumeButton', 'Продолжить сохранённую синхронизацию')
+    : canCreateCommunitySyncForTrack
+      ? t('track.communitySyncCreateButton', 'Создать синхронизацию')
+      : null;
   const clearNotFoundHint = useCallback(() => {
     if (notFoundHintTimeoutRef.current !== null) {
       window.clearTimeout(notFoundHintTimeoutRef.current);
@@ -4112,6 +5153,420 @@ const FullscreenPanels = React.memo(() => {
     }, 3000);
   }, [clearNotFoundHint]);
 
+  const restartFinishedCommunitySyncTrack = useCallback(() => {
+    const player = usePlayerStore.getState();
+    if (!player.currentTrack || player.isPlaying) return;
+
+    const duration = getDuration();
+    if (!(duration > 0)) return;
+    if (getCurrentTime() < Math.max(0, duration - 0.45)) return;
+
+    player.resume();
+  }, []);
+
+  const resetCommunitySyncFlow = useCallback((restartTrackIfFinished = false) => {
+    setCommunitySyncStage('idle');
+    setCommunitySyncSession(null);
+    setCommunityPublishPending(false);
+    if (restartTrackIfFinished) {
+      restartFinishedCommunitySyncTrack();
+    }
+  }, [restartFinishedCommunitySyncTrack]);
+
+  useEffect(() => {
+    communitySyncSessionRef.current = communitySyncSession;
+  }, [communitySyncSession]);
+
+  useEffect(() => {
+    if (communityFlowActive) {
+      if (miniPlayerCollapsedBeforeCommunityFlowRef.current === null) {
+        miniPlayerCollapsedBeforeCommunityFlowRef.current = lyricsMiniPlayerControlsCollapsed;
+      }
+      if (!lyricsMiniPlayerControlsCollapsed) {
+        setLyricsMiniPlayerControlsCollapsed(true);
+      }
+      return;
+    }
+
+    const previousCollapsedState = miniPlayerCollapsedBeforeCommunityFlowRef.current;
+    if (previousCollapsedState === null) return;
+
+    miniPlayerCollapsedBeforeCommunityFlowRef.current = null;
+    if (lyricsMiniPlayerControlsCollapsed !== previousCollapsedState) {
+      setLyricsMiniPlayerControlsCollapsed(previousCollapsedState);
+    }
+  }, [
+    communityFlowActive,
+    lyricsMiniPlayerControlsCollapsed,
+    setLyricsMiniPlayerControlsCollapsed,
+  ]);
+
+  useEffect(
+    () => () => {
+      const previousCollapsedState = miniPlayerCollapsedBeforeCommunityFlowRef.current;
+      if (previousCollapsedState === null) return;
+
+      const settings = useSettingsStore.getState();
+      if (settings.lyricsMiniPlayerControlsCollapsed !== previousCollapsedState) {
+        settings.setLyricsMiniPlayerControlsCollapsed(previousCollapsedState);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    setCommunitySyncStageInStore(communitySyncStage);
+  }, [communitySyncStage, setCommunitySyncStageInStore]);
+
+  useEffect(() => () => setCommunitySyncStageInStore('idle'), [setCommunitySyncStageInStore]);
+
+  useEffect(() => {
+    if (communitySyncStage !== 'sync') return;
+
+    const syncEditorToPlayback = () => {
+      const currentSession = communitySyncSessionRef.current;
+      if (!currentSession || currentSession.lines.length === 0) return;
+
+      const nextActiveIndex = getCommunitySyncPlaybackIndex(
+        currentSession.lines,
+        getCurrentTime(),
+        currentSession.activeIndex,
+      );
+
+      if (nextActiveIndex === currentSession.activeIndex) return;
+
+      setCommunitySyncSession((session) => {
+        if (!session) return session;
+
+        const resolvedIndex = getCommunitySyncPlaybackIndex(
+          session.lines,
+          getCurrentTime(),
+          session.activeIndex,
+        );
+
+        if (resolvedIndex === session.activeIndex) return session;
+        return {
+          ...session,
+          activeIndex: resolvedIndex,
+        };
+      });
+    };
+
+    syncEditorToPlayback();
+    const intervalId = window.setInterval(syncEditorToPlayback, 90);
+    return () => window.clearInterval(intervalId);
+  }, [communitySyncStage]);
+
+  const startCommunitySync = useCallback(() => {
+    if (!track || !canCreateCommunitySyncForTrack) return;
+
+    const session = createCommunitySyncSession(displayedLyrics.plain, displayedLyrics.source);
+    if (!session) {
+      toast.error(t('track.communitySyncNoLines', 'Не удалось подготовить строки для синхронизации'));
+      return;
+    }
+
+    setIsSearchModalOpen(false);
+    setCommunitySyncSession(session);
+    setCommunitySyncStage('sync');
+  }, [canCreateCommunitySyncForTrack, displayedLyrics, t, track]);
+
+  const handleCommunityAction = useCallback(() => {
+    if (canRetryCommunityDraft) {
+      if (!communityDraft) return;
+
+      const session = createCommunitySyncSessionFromDraft(communityDraft);
+      if (!session) {
+        toast.error(t('track.communitySyncNoLines', 'Не удалось подготовить строки для синхронизации'));
+        return;
+      }
+
+      setIsSearchModalOpen(false);
+      setCommunitySyncSession(session);
+      setCommunitySyncStage('sync');
+      return;
+    }
+
+    startCommunitySync();
+  }, [
+    canRetryCommunityDraft,
+    communityDraft,
+    startCommunitySync,
+    t,
+  ]);
+
+  const closeCommunitySyncWithoutSave = useCallback(() => {
+    resetCommunitySyncFlow(true);
+  }, [resetCommunitySyncFlow]);
+
+  const dismissCommunityPublishConfirm = useCallback(() => {
+    setCommunitySyncStage('sync');
+  }, []);
+
+  const persistCommunitySyncDraft = useCallback((session: CommunitySyncSession) => {
+    if (!communitySyncTrackMeta) return;
+
+    if (!hasCommunitySyncStampedLines(session.lines)) {
+      removeCommunityDraft(communitySyncTrackMeta.trackUrn);
+      return;
+    }
+
+    saveCommunityDraft({
+      ...toCommunitySyncDraft(communitySyncTrackMeta, session),
+      createdAt: new Date().toISOString(),
+    });
+  }, [communitySyncTrackMeta, removeCommunityDraft, saveCommunityDraft]);
+
+  const handleCommunitySyncLine = useCallback(() => {
+    const currentSession = communitySyncSessionRef.current;
+    if (!currentSession) return;
+    const targetIndex = getCommunitySyncStampTargetIndex(currentSession);
+    if (targetIndex < 0 || targetIndex >= currentSession.lines.length) return;
+
+    const { previousTime, nextTime } = getCommunitySyncTimeBounds(currentSession.lines, targetIndex);
+    const nextLines = currentSession.lines.map((line, index) =>
+      index === targetIndex
+        ? {
+            ...line,
+            time: getStampedCommunitySyncTime(getCurrentTime(), previousTime, nextTime),
+          }
+        : line,
+    );
+    const nextPendingIndex = findCommunitySyncNextPendingIndex(nextLines, targetIndex + 1);
+
+    const nextSession: CommunitySyncSession = {
+      ...currentSession,
+      lines: nextLines,
+      activeIndex: nextPendingIndex >= 0 ? nextPendingIndex : targetIndex,
+    };
+
+    setCommunitySyncSession(nextSession);
+    persistCommunitySyncDraft(nextSession);
+  }, [persistCommunitySyncDraft]);
+
+  const handleCommunitySyncUndo = useCallback(() => {
+    const currentSession = communitySyncSessionRef.current;
+    if (!currentSession) return;
+
+    const activeLine = currentSession.lines[currentSession.activeIndex];
+    const targetIndex =
+      currentSession.activeIndex < 0
+        ? findCommunitySyncNextStampedIndex(currentSession.lines, 0)
+        : activeLine && typeof activeLine.time === 'number'
+          ? currentSession.activeIndex
+          : findCommunitySyncPreviousStampedIndex(currentSession.lines, currentSession.activeIndex - 1);
+
+    if (targetIndex < 0) return;
+
+    const targetLine = currentSession.lines[targetIndex];
+    const nextLines =
+      targetLine?.kind === 'pause'
+        ? currentSession.lines.filter((_, index) => index !== targetIndex)
+        : currentSession.lines.map((line, index) =>
+            index === targetIndex
+              ? {
+                  ...line,
+                  time: null,
+                }
+              : line,
+          );
+
+    const nextSession = {
+      ...currentSession,
+      lines: nextLines,
+      activeIndex: resolveCommunitySyncActiveIndex(
+        nextLines,
+        Math.max(0, Math.min(targetIndex, nextLines.length - 1)),
+      ),
+    };
+
+    setCommunitySyncSession(nextSession);
+    persistCommunitySyncDraft(nextSession);
+  }, [persistCommunitySyncDraft]);
+
+  const handleCommunitySyncInsertPause = useCallback(() => {
+    const currentSession = communitySyncSessionRef.current;
+    if (!currentSession) return;
+
+    const insertIndex = getCommunitySyncPauseInsertIndex(currentSession);
+    const { previousTime, nextTime } = getCommunitySyncTimeBounds(currentSession.lines, insertIndex);
+    const pauseLine = createCommunitySyncPauseLine(
+      getStampedCommunitySyncTime(getCurrentTime(), previousTime, nextTime),
+    );
+    const nextLines = [
+      ...currentSession.lines.slice(0, insertIndex),
+      pauseLine,
+      ...currentSession.lines.slice(insertIndex),
+    ];
+
+    const nextSession = {
+      ...currentSession,
+      lines: nextLines,
+      activeIndex: Math.max(0, Math.min(insertIndex + 1, nextLines.length - 1)),
+    };
+
+    setCommunitySyncSession(nextSession);
+    persistCommunitySyncDraft(nextSession);
+  }, [persistCommunitySyncDraft]);
+
+  const handleCommunityTimestampCommit = useCallback((index: number, nextTime: number) => {
+    const currentSession = communitySyncSessionRef.current;
+    if (!currentSession || index < 0 || index >= currentSession.lines.length) return;
+
+    const { previousTime, nextTime: followingTime } = getCommunitySyncTimeBounds(
+      currentSession.lines,
+      index,
+    );
+    const resolvedTime = getStampedCommunitySyncTime(nextTime, previousTime, followingTime);
+
+    const nextSession = {
+      ...currentSession,
+      lines: currentSession.lines.map((line, lineIndex) =>
+        lineIndex === index
+          ? {
+              ...line,
+              time: resolvedTime,
+            }
+          : line,
+      ),
+      activeIndex: index,
+    };
+
+    setCommunitySyncSession(nextSession);
+    persistCommunitySyncDraft(nextSession);
+  }, [persistCommunitySyncDraft]);
+
+  const handleCommunitySyncSeekLine = useCallback((index: number) => {
+    const currentSession = communitySyncSessionRef.current;
+    if (!currentSession || index < 0 || index >= currentSession.lines.length) return;
+
+    const targetTime = currentSession.lines[index]?.time;
+    if (typeof targetTime !== 'number') return;
+
+    seek(targetTime, true, true);
+    setCommunitySyncSession((session) =>
+      session && session.activeIndex !== index
+        ? {
+            ...session,
+            activeIndex: index,
+          }
+        : session,
+    );
+  }, []);
+
+  const handleCommunityPublishRequest = useCallback(() => {
+    if (!isCommunitySyncSessionComplete(communitySyncSessionRef.current)) return;
+    if (!communitySyncTrackMeta) return;
+    
+    setCommunityPublishEditTrackName(communitySyncTrackMeta.trackName);
+    setCommunityPublishEditArtistName(communitySyncTrackMeta.artistName);
+    setCommunityPublishEditAlbumName('');
+    setCommunityPublishEditDuration(String(Math.round(communitySyncTrackMeta.durationSec)));
+    setCommunitySyncStage('confirm');
+  }, [communitySyncTrackMeta]);
+
+  const handleCommunityPublishConfirm = useCallback(async () => {
+    const currentSession = communitySyncSessionRef.current;
+    if (!communitySyncTrackMeta || !currentSession || !isCommunitySyncSessionComplete(currentSession)) {
+      return;
+    }
+
+    const draft = {
+      ...toCommunitySyncDraft(communitySyncTrackMeta, currentSession),
+      createdAt: new Date().toISOString(),
+    };
+
+    const durationSec = parseInt(communityPublishEditDuration) || 0;
+
+    setCommunityPublishPending(true);
+    try {
+      await invoke('lrclib_publish_lyrics', {
+        artistName: communityPublishEditArtistName,
+        trackName: communityPublishEditTrackName,
+        duration: durationSec,
+        plainLyrics: draft.plainLyrics,
+        syncedLyrics: serializeCommunitySyncedLyrics(draft.syncedLyrics),
+        albumName: communityPublishEditAlbumName || null,
+      });
+
+      removeCommunityDraft(draft.trackUrn);
+      setCommunityPublishedLyricsByTrack((current) => ({
+        ...current,
+        [draft.trackUrn]: {
+          plain: draft.plainLyrics,
+          synced: draft.syncedLyrics,
+          source: 'lrclib',
+        },
+      }));
+      resetCommunitySyncFlow(true);
+      toast.success(
+        t('track.communitySyncPublished', 'Синхронизация опубликована в LRCLIB'),
+      );
+    } catch (error) {
+      saveCommunityDraft(draft);
+      setCommunitySyncStage('sync');
+      toast.error(t('track.communitySyncPublishFailed', 'Не удалось опубликовать синхронизацию'), {
+        description: t(
+          'track.communitySyncPublishFailedDesc',
+          'Синхронизация сохранена локально. Вы сможете отправить её позже.',
+        ),
+      });
+      console.error('LRCLIB publish failed', error);
+    } finally {
+      setCommunityPublishPending(false);
+    }
+  }, [
+    communitySyncTrackMeta,
+    communityPublishEditArtistName,
+    communityPublishEditTrackName,
+    communityPublishEditAlbumName,
+    communityPublishEditDuration,
+    removeCommunityDraft,
+    resetCommunitySyncFlow,
+    saveCommunityDraft,
+    t,
+  ]);
+
+  useEffect(() => {
+    if (communitySyncStage === 'idle') return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      if (isEditableKeyboardTarget(event.target)) return;
+
+      if (communitySyncStage === 'sync') {
+        if (event.code === 'Space') {
+          event.preventDefault();
+          handleCommunitySyncLine();
+          return;
+        }
+        if (event.code === 'Backspace') {
+          event.preventDefault();
+          handleCommunitySyncUndo();
+          return;
+        }
+      }
+
+      if (event.code === 'Escape') {
+        event.preventDefault();
+        if (communitySyncStage === 'sync') {
+          closeCommunitySyncWithoutSave();
+          return;
+        }
+        dismissCommunityPublishConfirm();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    closeCommunitySyncWithoutSave,
+    communitySyncStage,
+    dismissCommunityPublishConfirm,
+    handleCommunitySyncLine,
+    handleCommunitySyncUndo,
+  ]);
+
   const openLyricsMode = useCallback(() => {
     const applyModeChange = () => {
       clearNotFoundHint();
@@ -4121,7 +5576,7 @@ const FullscreenPanels = React.memo(() => {
       setIsSearchModalOpen(false);
       useArtworkStore.setState({ open: false });
       useFullscreenPanelStore.getState().setMode('lyrics');
-      useLyricsStore.setState({ open: true });
+      useLyricsStore.setState({ open: true, communitySyncStage: 'idle' });
     };
 
     const fullscreenState = useFullscreenPanelStore.getState();
@@ -4147,24 +5602,25 @@ const FullscreenPanels = React.memo(() => {
       setLyricsSessionRequested(false);
       setIsTrackLyricsPending(false);
       setIsSearchModalOpen(false);
+      resetCommunitySyncFlow(true);
       pendingLyricsActionAfterLoadRef.current = false;
       pendingManualSearchResolveRef.current = false;
       pendingTrackAutoOpenRef.current = false;
-      useLyricsStore.setState({ open: false });
+      useLyricsStore.setState({ open: false, communitySyncStage: 'idle' });
       useFullscreenPanelStore.getState().setMode('artwork');
       useArtworkStore.setState({ open: true });
     };
 
     runDocumentViewTransition(applyModeChange);
-  }, [clearNotFoundHint]);
+  }, [clearNotFoundHint, resetCommunitySyncFlow]);
 
   const handleManualSearch = useCallback((artist: string, title: string) => {
+    if (!trackUrn) return;
     const nextQuery = { artist: artist.trim(), title: title.trim() };
     if (!nextQuery.artist || !nextQuery.title) return;
     pendingManualSearchResolveRef.current = true;
-    setSubmittedSearchQuery(nextQuery);
-    setManualQuery(nextQuery);
-  }, []);
+    setSubmittedSearchQuery(buildTrackScopedLyricsSearchQuery(trackUrn, nextQuery));
+  }, [trackUrn]);
 
   const handleLyricsAction = useCallback(() => {
     clearNotFoundHint();
@@ -4198,10 +5654,25 @@ const FullscreenPanels = React.memo(() => {
   ]);
 
   useEffect(() => {
+    if (!trackUrn || mode === 'none') {
+      if (!trackUrn) {
+        setManualQuery(null);
+      }
+      return;
+    }
+
+    const savedManualQuery = manualQueryRef.current.get(trackUrn) ?? null;
+    setManualQuery(
+      savedManualQuery ? buildTrackScopedLyricsSearchQuery(trackUrn, savedManualQuery) : null,
+    );
+  }, [mode, trackUrn]);
+
+  useEffect(() => {
     if (mode !== 'none') return;
 
     setLyricsSessionRequested(false);
     setIsTrackLyricsPending(false);
+    resetCommunitySyncFlow(true);
     setManualQuery(null);
     setSubmittedSearchQuery(null);
     setIsSearchModalOpen(false);
@@ -4210,13 +5681,14 @@ const FullscreenPanels = React.memo(() => {
     pendingManualSearchResolveRef.current = false;
     pendingTrackAutoOpenRef.current = false;
     skipNextArtworkToLyricsSharedTransitionRef.current = false;
-  }, [mode, clearNotFoundHint]);
+  }, [mode, clearNotFoundHint, resetCommunitySyncFlow]);
 
   useEffect(() => {
     if (closeAnimation !== 'toMiniPlayer') return;
 
     setLyricsSessionRequested(false);
     setIsTrackLyricsPending(false);
+    resetCommunitySyncFlow(true);
     setManualQuery(null);
     setSubmittedSearchQuery(null);
     setIsSearchModalOpen(false);
@@ -4225,7 +5697,7 @@ const FullscreenPanels = React.memo(() => {
     pendingManualSearchResolveRef.current = false;
     pendingTrackAutoOpenRef.current = false;
     skipNextArtworkToLyricsSharedTransitionRef.current = false;
-  }, [clearNotFoundHint, closeAnimation]);
+  }, [clearNotFoundHint, closeAnimation, resetCommunitySyncFlow]);
 
   useEffect(() => {
     const nextUrn = track?.urn ?? null;
@@ -4237,15 +5709,26 @@ const FullscreenPanels = React.memo(() => {
     }
 
     if (nextUrn && nextUrn !== prevUrn) {
-      setManualQuery(null);
+      const savedManualQuery = manualQueryRef.current.get(nextUrn) ?? null;
+      setManualQuery(
+        savedManualQuery ? buildTrackScopedLyricsSearchQuery(nextUrn, savedManualQuery) : null,
+      );
+      resetCommunitySyncFlow();
       setSubmittedSearchQuery(null);
       setIsSearchModalOpen(false);
       clearNotFoundHint();
       pendingLyricsActionAfterLoadRef.current = false;
       pendingManualSearchResolveRef.current = false;
       skipNextArtworkToLyricsSharedTransitionRef.current = false;
-      
-      const cachedLyricsForNewTrack = manualLyricsRef.current.get(nextUrn);
+
+      const cachedManualLyricsForNewTrack = getCachedManualLyrics(
+        manualLyricsRef,
+        nextUrn,
+        savedManualQuery,
+      );
+      const cachedAutoLyricsForNewTrack =
+        !savedManualQuery ? (autoLyricsRef.current.get(nextUrn) ?? null) : null;
+      const cachedLyricsForNewTrack = cachedManualLyricsForNewTrack ?? cachedAutoLyricsForNewTrack;
       const hasImmediateLyrics = Boolean(cachedLyricsForNewTrack);
 
       if (lyricsSessionRequested) {
@@ -4265,11 +5748,9 @@ const FullscreenPanels = React.memo(() => {
     track?.urn,
     clearNotFoundHint,
     closeAnimation,
-    hasLyrics,
-    isLoading,
     lyricsSessionRequested,
-    mode,
     openLyricsMode,
+    resetCommunitySyncFlow,
   ]);
 
   useEffect(() => {
@@ -4310,6 +5791,40 @@ const FullscreenPanels = React.memo(() => {
   ]);
 
   useEffect(() => {
+    if (!pendingManualSearchResolveRef.current) return;
+    if (activeSubmittedSearchQuery === null || manualSearchResultQuery.isLoading || isTrackSwitchingFrame) {
+      return;
+    }
+
+    pendingManualSearchResolveRef.current = false;
+
+    if (!trackUrn || !manualSearchResultQuery.data) {
+      return;
+    }
+
+    const resolvedQuery = {
+      artist: activeSubmittedSearchQuery.artist,
+      title: activeSubmittedSearchQuery.title,
+    };
+
+    manualQueryRef.current.set(trackUrn, resolvedQuery);
+    manualLyricsRef.current.set(trackUrn, {
+      ...resolvedQuery,
+      lyrics: manualSearchResultQuery.data,
+    });
+    setManualQuery(buildTrackScopedLyricsSearchQuery(trackUrn, resolvedQuery));
+    setSubmittedSearchQuery(null);
+    openLyricsMode();
+  }, [
+    activeSubmittedSearchQuery,
+    isTrackSwitchingFrame,
+    manualSearchResultQuery.data,
+    manualSearchResultQuery.isLoading,
+    openLyricsMode,
+    trackUrn,
+  ]);
+
+  useEffect(() => {
     if (
       mode !== 'lyrics' ||
       closeAnimation !== 'none' ||
@@ -4320,7 +5835,7 @@ const FullscreenPanels = React.memo(() => {
       return;
     }
     if (!open) {
-      useLyricsStore.setState({ open: true });
+      useLyricsStore.setState({ open: true, communitySyncStage: 'idle' });
     }
   }, [closeAnimation, hasLyrics, isLoading, mode, open, lyricsSessionRequested]);
 
@@ -4355,13 +5870,22 @@ const FullscreenPanels = React.memo(() => {
         color={artworkColor}
       />
 
-      <div className="absolute top-6 left-6 z-20 pointer-events-none">
+      <div className="absolute left-6 top-6 z-20 flex max-w-[min(380px,calc(100vw-3rem))] flex-col items-start gap-2 pointer-events-none">
         <StreamQualityBadge
           quality={track.streamQuality}
           codec={track.streamCodec}
           access={track.access}
           className="backdrop-blur-sm"
         />
+        {showCommunityActionButton && communityActionLabel ? (
+          <button
+            type="button"
+            onClick={handleCommunityAction}
+            className="pointer-events-auto inline-flex min-h-9 items-center rounded-full border border-white/[0.08] bg-[rgba(12,12,16,0.38)] px-3.5 py-2 text-left text-[11px] font-medium text-white/70 shadow-[0_18px_40px_rgba(0,0,0,0.24)] backdrop-blur-[20px] transition-all duration-300 hover:border-white/[0.14] hover:bg-[rgba(18,18,24,0.52)] hover:text-white hover:shadow-[0_0_26px_rgba(255,255,255,0.08)]"
+          >
+            {communityActionLabel}
+          </button>
+        ) : null}
       </div>
 
       {/* Header */}
@@ -4370,14 +5894,32 @@ const FullscreenPanels = React.memo(() => {
         data-tauri-drag-region
       >
         {lyricsStageActive ? (
-          <button
-            type="button"
-            onClick={closeLyricsModeManually}
-            className="h-9 rounded-full px-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white/45 hover:text-white/80 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
-          >
-            <Maximize2 size={14} />
-            <span>{t('nav.fullscreen')}</span>
-          </button>
+          <>
+            {!communityFlowActive ? (
+              <>
+                {lyrics ? (
+                  <span className="inline-flex h-9 items-center rounded-full border border-white/[0.06] bg-white/[0.04] px-3 text-[10px] font-semibold text-white/20">
+                    {SOURCE_LABELS[lyrics.source]}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={openSearchModal}
+                  className="relative h-9 w-9 rounded-full flex items-center justify-center text-white/52 hover:text-white/82 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+                >
+                  <Search size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={closeLyricsModeManually}
+                  className="h-9 rounded-full px-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white/45 hover:text-white/80 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+                >
+                  <Maximize2 size={14} />
+                  <span>{t('nav.fullscreen')}</span>
+                </button>
+              </>
+            ) : null}
+          </>
         ) : (
           <div className="relative flex flex-col items-end">
             <div className="flex items-center gap-2">
@@ -4434,15 +5976,30 @@ const FullscreenPanels = React.memo(() => {
               {/* clamps between 280px (very short windows) and 640px (4K). */}
               {/* Reserves ~460px for title + slider + controls + panel + */}
               {/* gaps + fullscreen header. If still not enough, the column */}
-              <FullscreenLyricsColumn
-                lyrics={lyrics}
-                warmupEnabled={warmupEnabled}
-                motionHints={warmupEnabled ? motionHints : []}
-                pseudoSynced={pseudoSynced}
-                hintLabel={hintLabel}
-                suppressFallback={suppressLyricsStage}
-                onOpenSearch={openSearchModal}
-              />
+              {(communitySyncStage === 'sync' || communitySyncStage === 'confirm') &&
+              communitySyncSession ? (
+                <CommunitySyncEditor
+                  session={communitySyncSession}
+                  onSyncLine={handleCommunitySyncLine}
+                  onInsertPause={handleCommunitySyncInsertPause}
+                  onUndo={handleCommunitySyncUndo}
+                  onPublish={handleCommunityPublishRequest}
+                  publishPending={communityPublishPending}
+                  onSeekLine={handleCommunitySyncSeekLine}
+                  onUpdateTimestamp={handleCommunityTimestampCommit}
+                  onCancel={closeCommunitySyncWithoutSave}
+                  t={t}
+                />
+              ) : (
+                <FullscreenLyricsColumn
+                  lyrics={lyrics}
+                  warmupEnabled={warmupEnabled}
+                  motionHints={warmupEnabled ? motionHints : []}
+                  pseudoSynced={pseudoSynced}
+                  hintLabel={hintLabel}
+                  suppressFallback={suppressLyricsStage}
+                />
+              )}
             </div>
           </div>
         ) : (
@@ -4469,6 +6026,7 @@ const FullscreenPanels = React.memo(() => {
           openAnimation={openAnimation}
           closeAnimation={closeAnimation}
           hideArtwork={hideMiniPlayerArtwork}
+          forceCollapsed={communityFlowActive}
           onOpenArtworkLightbox={(sourceElement) =>
             openArtworkLightbox('lyrics-mini-player', sourceElement)
           }
@@ -4485,18 +6043,40 @@ const FullscreenPanels = React.memo(() => {
         onClose={closeArtworkLightbox}
       />
 
-        <LyricsSearchModal
-          isOpen={isSearchModalOpen}
-          onClose={() => setIsSearchModalOpen(false)}
-          initialArtist={searchPrefill.artist}
-          initialTitle={searchPrefill.title}
-          onSearch={handleManualSearch}
-          isSearching={Boolean(isSearchModalOpen && searchResultState === 'loading')}
-          resultState={searchResultState}
-          resultSource={hasLyrics ? lyrics?.source ?? null : null}
-        />
-      </>
-    );
+      <CommunitySyncPublishConfirm
+        open={communitySyncStage === 'confirm'}
+        pending={communityPublishPending}
+        onClose={dismissCommunityPublishConfirm}
+        onConfirm={() => {
+          void handleCommunityPublishConfirm();
+        }}
+        t={t}
+        trackName={communityPublishEditTrackName}
+        artistName={communityPublishEditArtistName}
+        albumName={communityPublishEditAlbumName}
+        duration={communityPublishEditDuration}
+        onTrackNameChange={setCommunityPublishEditTrackName}
+        onArtistNameChange={setCommunityPublishEditArtistName}
+        onAlbumNameChange={setCommunityPublishEditAlbumName}
+        onDurationChange={setCommunityPublishEditDuration}
+      />
+
+      <LyricsSearchModal
+        isOpen={isSearchModalOpen}
+        onClose={() => {
+          pendingManualSearchResolveRef.current = false;
+          setIsSearchModalOpen(false);
+        }}
+        initialArtist={searchPrefill.artist}
+        initialTitle={searchPrefill.title}
+        onSearch={handleManualSearch}
+        isSearching={Boolean(isSearchModalOpen && searchResultState === 'loading')}
+        resultState={searchResultState}
+        resultSource={manualSearchResultQuery.data?.source ?? null}
+      />
+    </>
+  );
 });
 
 export { FullscreenPanels };
+

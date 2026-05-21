@@ -4,6 +4,7 @@ export type FullscreenPanelMode = 'none' | 'artwork' | 'lyrics';
 export type TransitionDirection = 'none' | 'toLyrics' | 'toArtwork';
 export type FullscreenOpenAnimation = 'default' | 'fromMiniPlayer';
 export type FullscreenCloseAnimation = 'none' | 'toMiniPlayer';
+export type CommunitySyncStage = 'idle' | 'sync' | 'confirm';
 
 const FULLSCREEN_CLOSE_DURATION_MS = 460;
 let fullscreenCloseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -25,10 +26,12 @@ interface FullscreenPanelState {
 
 interface LyricsUIState {
   open: boolean;
+  communitySyncStage: CommunitySyncStage;
   toggle: () => void;
   openFromMiniPlayer: () => void;
   openPanel: () => void;
   close: () => void;
+  setCommunitySyncStage: (stage: CommunitySyncStage) => void;
 }
 
 export interface ArtworkUIState {
@@ -60,11 +63,11 @@ export const useFullscreenPanelStore = create<FullscreenPanelState>()((set) => (
       fullscreenCloseTimer = null;
     }
     useArtworkStore.setState({ open: false });
-    useLyricsStore.setState({ open: false });
+    useLyricsStore.setState({ open: false, communitySyncStage: 'idle' });
     set({ transitionDirection: 'none', closeAnimation: 'toMiniPlayer' });
     fullscreenCloseTimer = setTimeout(() => {
       useArtworkStore.setState({ open: false });
-      useLyricsStore.setState({ open: false });
+      useLyricsStore.setState({ open: false, communitySyncStage: 'idle' });
       set({
         mode: 'none',
         transitionDirection: 'none',
@@ -80,7 +83,7 @@ export const useFullscreenPanelStore = create<FullscreenPanelState>()((set) => (
       fullscreenCloseTimer = null;
     }
     useArtworkStore.setState({ open: false });
-    useLyricsStore.setState({ open: false });
+    useLyricsStore.setState({ open: false, communitySyncStage: 'idle' });
     set({
       mode: 'none',
       transitionDirection: 'none',
@@ -92,6 +95,7 @@ export const useFullscreenPanelStore = create<FullscreenPanelState>()((set) => (
 
 export const useLyricsStore = create<LyricsUIState>()((set) => ({
   open: false,
+  communitySyncStage: 'idle',
   toggle: () =>
     set((s) => {
       const nextOpen = !s.open;
@@ -105,7 +109,7 @@ export const useLyricsStore = create<LyricsUIState>()((set) => ({
       } else {
         useFullscreenPanelStore.getState().close();
       }
-      return { open: nextOpen };
+      return { open: nextOpen, communitySyncStage: 'idle' };
     }),
   openFromMiniPlayer: () => {
     useFullscreenPanelStore.getState().cancelCloseAnimation();
@@ -113,7 +117,7 @@ export const useLyricsStore = create<LyricsUIState>()((set) => ({
     useFullscreenPanelStore.getState().setOpenAnimation('fromMiniPlayer');
     useFullscreenPanelStore.getState().setTransitionDirection('none');
     useFullscreenPanelStore.getState().setMode('lyrics');
-    set({ open: true });
+    set({ open: true, communitySyncStage: 'idle' });
   },
   openPanel: () => {
     useFullscreenPanelStore.getState().cancelCloseAnimation();
@@ -122,19 +126,20 @@ export const useLyricsStore = create<LyricsUIState>()((set) => ({
     useFullscreenPanelStore.getState().setTransitionDirection('toLyrics');
     useFullscreenPanelStore.getState().setMode('lyrics');
     setTimeout(() => useFullscreenPanelStore.getState().setTransitionDirection('none'), 500);
-    set({ open: true });
+    set({ open: true, communitySyncStage: 'idle' });
   },
   close: () => {
     useFullscreenPanelStore.getState().beginClose();
-    set({ open: false });
+    set({ open: false, communitySyncStage: 'idle' });
   },
+  setCommunitySyncStage: (communitySyncStage) => set({ communitySyncStage }),
 }));
 
 export const useArtworkStore = create<ArtworkUIState>()((set) => ({
   open: false,
   openFromMiniPlayer: () => {
     useFullscreenPanelStore.getState().cancelCloseAnimation();
-    useLyricsStore.setState({ open: false });
+    useLyricsStore.setState({ open: false, communitySyncStage: 'idle' });
     useFullscreenPanelStore.getState().setOpenAnimation('fromMiniPlayer');
     useFullscreenPanelStore.getState().setTransitionDirection('none');
     useFullscreenPanelStore.getState().setMode('artwork');
@@ -143,7 +148,7 @@ export const useArtworkStore = create<ArtworkUIState>()((set) => ({
   setOpen: (open) => {
     if (open) {
       useFullscreenPanelStore.getState().cancelCloseAnimation();
-      useLyricsStore.setState({ open: false });
+      useLyricsStore.setState({ open: false, communitySyncStage: 'idle' });
       useFullscreenPanelStore.getState().setOpenAnimation('default');
       useFullscreenPanelStore.getState().setTransitionDirection('toArtwork');
       useFullscreenPanelStore.getState().setMode('artwork');

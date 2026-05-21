@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { useLyricsStore } from '../stores/lyrics';
 import { getEffectivePitchSemitones, type Track, usePlayerStore } from '../stores/player';
 import { useSettingsStore } from '../stores/settings';
 import { CHARACTER_PRESETS, useSoundWaveStore } from '../stores/soundwave';
@@ -2079,6 +2080,15 @@ async function loadTrack(track: Track, skipStop = false) {
 function handleTrackEnd() {
   const state = usePlayerStore.getState();
   const sw = useSoundWaveStore.getState();
+  const communitySyncStage = useLyricsStore.getState().communitySyncStage;
+
+  if (communitySyncStage !== 'idle') {
+    isCrossfadingOut = false;
+    crossfadeInProgress = false;
+    pendingCrossfadeDurationSecs = null;
+    usePlayerStore.getState().pause();
+    return;
+  }
 
   if (state.currentTrack) {
     sw.markTrackPlayed(state.currentTrack);
@@ -2280,6 +2290,7 @@ function setupTauriBindings() {
 
     const settings = useSettingsStore.getState();
     if (
+      useLyricsStore.getState().communitySyncStage === 'idle' &&
       !hasActiveSeekTransition(usePlayerStore.getState().currentTrack?.urn) &&
       !isCrossfadeOffMode(settings.crossfadeMode) &&
       cachedDuration > 0

@@ -279,6 +279,23 @@ export const AppShell = React.memo(() => {
 
       if (inInput) return;
 
+      const communitySyncStage = useLyricsStore.getState().communitySyncStage;
+      if (communitySyncStage === 'sync') {
+        switch (code) {
+          case 'Space':
+          case 'Enter':
+          case 'Backspace':
+          case 'Escape':
+            e.preventDefault();
+            return;
+        }
+      } else if (communitySyncStage === 'confirm') {
+        if (code === 'Escape') {
+          e.preventDefault();
+          return;
+        }
+      }
+
       const player = usePlayerStore.getState();
 
       switch (code) {

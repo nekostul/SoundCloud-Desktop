@@ -207,16 +207,13 @@ function normalizeLyricsResult(result: LyricsResult | null): LyricsResult | null
 }
 
 function cleanGeniusLyricsText(value: string): string {
-  return (
-    normalizePlainLyricsText(
-      value
-        .replace(/\n{3,}/g, '\n\n')
-        .replace(/^\d+\s*Contributors/i, '')
-        .replace(/^[^\n]*?Lyrics/i, '')
-        .replace(/^\[Текст песни.*?\]/i, '')
-        .replace(/\b(?:\d+\s*)?Embed\s*$/i, ''),
-    ) || ''
-  );
+  const normalizedSource = value
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\d+\s*Contributors/i, '')
+    .replace(/^[^\n]*?Lyrics/i, '')
+    .replace(/\b(?:\d+\s*)?Embed\s*$/i, '');
+  const cleaned = normalizePlainLyricsText(cleanLyrics(normalizedSource).join('\n'));
+  return cleaned || normalizePlainLyricsText(normalizedSource) || '';
 }
 
 function decodeHtmlToText(html: string): string {
@@ -273,6 +270,37 @@ function isLikelyLyricsBoilerplateLine(value: string): boolean {
   return (
     /\bcontributors?\b/i.test(trimmed) && /\b(translations?|romanizations?|lyrics)\b/i.test(trimmed)
   );
+}
+
+function isBracketedLyricsSectionTag(value: string): boolean {
+  return /^\[[^\]\r\n]+\]$/u.test(normalizeLyricLineText(value));
+}
+
+function hasVisibleLyricContent(value: string): boolean {
+  return /[\p{L}\p{N}]/u.test(value);
+}
+
+export function cleanLyrics(rawLyrics: string): string[] {
+  const normalized = normalizeLyricsTextBlock(rawLyrics);
+  if (!normalized) return [];
+
+  const normalizedLines = normalized
+    .split('\n')
+    .map((line) => normalizeLyricLineText(line));
+  const firstSectionTagIndex = normalizedLines.findIndex((line) => isBracketedLyricsSectionTag(line));
+  const relevantLines =
+    firstSectionTagIndex >= 0 ? normalizedLines.slice(firstSectionTagIndex) : normalizedLines;
+
+  const cleanedLines: string[] = [];
+  for (const line of relevantLines) {
+    if (!line) continue;
+    if (isBracketedLyricsSectionTag(line)) continue;
+    if (isLikelyLyricsBoilerplateLine(line)) continue;
+    if (!hasVisibleLyricContent(line)) continue;
+    cleanedLines.push(line);
+  }
+
+  return cleanedLines;
 }
 
 function normalizePlainLyricsText(value: string): string | null {

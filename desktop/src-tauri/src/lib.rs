@@ -16,11 +16,14 @@ mod ym_import;
 mod ytmusic_import;
 
 use base64::Engine;
+use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 use tauri::{window::Color, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -30,6 +33,213 @@ use server::ServerState;
 #[derive(Default)]
 struct TrayAvailabilityState {
     available: AtomicBool,
+}
+
+const LRCLIB_API_BASE: &str = "https://lrclib.net/api";
+const LRCLIB_CLIENT_NAME: &str = concat!("SoundCloud Desktop/", env!("CARGO_PKG_VERSION"));
+
+#[derive(serde::Deserialize)]
+struct LrclibPublishChallenge {
+    prefix: String,
+    target: String,
+}
+
+#[derive(serde::Deserialize)]
+struct LrclibErrorResponse {
+    message: Option<String>,
+    error: Option<String>,
+    name: Option<String>,
+}
+
+fn is_hash_below_target(hash: &[u8; 32], target: &[u8; 32]) -> bool {
+    for (left, right) in hash.iter().zip(target.iter()) {
+        if left < right {
+            return true;
+        }
+        if left > right {
+            return false;
+        }
+    }
+
+    false
+}
+
+fn solve_lrclib_publish_challenge(prefix: String, target_hex: String) -> Result<String, String> {
+    let decoded_target = hex::decode(target_hex.trim()).map_err(|error| error.to_string())?;
+    if decoded_target.len() != 32 {
+        return Err("LRCLIB returned an invalid challenge target".into());
+    }
+
+    let mut target = [0_u8; 32];
+    target.copy_from_slice(&decoded_target);
+
+    let worker_count = thread::available_parallelism()
+        .map(|count| count.get().max(1).min(8))
+        .unwrap_or(4);
+    let found = Arc::new(AtomicBool::new(false));
+    let solution = Arc::new(Mutex::new(None::<u64>));
+    let mut handles = Vec::with_capacity(worker_count);
+
+    for worker_index in 0..worker_count {
+        let found = Arc::clone(&found);
+        let solution = Arc::clone(&solution);
+        let prefix = prefix.clone();
+        let target = target;
+
+        handles.push(thread::spawn(move || {
+            let mut nonce = worker_index as u64;
+            let step = worker_count as u64;
+            let mut candidate = String::with_capacity(prefix.len() + 32);
+
+            while !found.load(Ordering::Relaxed) {
+                candidate.clear();
+                candidate.push_str(&prefix);
+                let _ = write!(&mut candidate, "{nonce}");
+
+                let digest = Sha256::digest(candidate.as_bytes());
+                let mut hash = [0_u8; 32];
+                hash.copy_from_slice(&digest);
+
+                if is_hash_below_target(&hash, &target) {
+                    if !found.swap(true, Ordering::SeqCst) {
+                        if let Ok(mut guard) = solution.lock() {
+                            *guard = Some(nonce);
+                        }
+                    }
+                    break;
+                }
+
+                nonce = nonce.saturating_add(step);
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle
+            .join()
+            .map_err(|_| "LRCLIB challenge solver panicked".to_string())?;
+    }
+
+    let nonce = solution
+        .lock()
+        .map_err(|_| "Failed to read LRCLIB challenge solution".to_string())?
+        .ok_or_else(|| "Failed to solve LRCLIB publish challenge".to_string())?;
+
+    Ok(format!("{prefix}:{nonce}"))
+}
+
+async fn read_lrclib_error_message(response: reqwest::Response) -> String {
+    let fallback = format!("LRCLIB request failed ({})", response.status());
+
+    match response.text().await {
+        Ok(body) => {
+            let trimmed = body.trim();
+            if trimmed.is_empty() {
+                return fallback;
+            }
+
+            if let Ok(parsed) = serde_json::from_str::<LrclibErrorResponse>(trimmed) {
+                if let Some(message) = parsed.message.filter(|value| !value.trim().is_empty()) {
+                    return message;
+                }
+                if let Some(error) = parsed.error.filter(|value| !value.trim().is_empty()) {
+                    return error;
+                }
+                if let Some(name) = parsed.name.filter(|value| !value.trim().is_empty()) {
+                    return name;
+                }
+            }
+
+            trimmed.to_string()
+        }
+        Err(_) => fallback,
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn lrclib_publish_lyrics(
+    artist_name: String,
+    track_name: String,
+    duration: f64,
+    plain_lyrics: String,
+    synced_lyrics: String,
+    album_name: Option<String>,
+) -> Result<(), String> {
+    let artist_name = artist_name.trim().to_string();
+    let track_name = track_name.trim().to_string();
+    let plain_lyrics = plain_lyrics.trim().to_string();
+    let synced_lyrics = synced_lyrics.trim().to_string();
+    let album_name = album_name.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
+    if artist_name.is_empty() || track_name.is_empty() {
+        return Err("Track artist and title are required for LRCLIB publishing".into());
+    }
+    if duration <= 0.0 || !duration.is_finite() {
+        return Err("Track duration is required for LRCLIB publishing".into());
+    }
+    if plain_lyrics.is_empty() || synced_lyrics.is_empty() {
+        return Err("Plain and synced lyrics are required for LRCLIB publishing".into());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let challenge_response = client
+        .post(format!("{LRCLIB_API_BASE}/request-challenge"))
+        .header(reqwest::header::USER_AGENT, LRCLIB_CLIENT_NAME)
+        .header("Lrclib-Client", LRCLIB_CLIENT_NAME)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !challenge_response.status().is_success() {
+        return Err(read_lrclib_error_message(challenge_response).await);
+    }
+
+    let challenge = challenge_response
+        .json::<LrclibPublishChallenge>()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let publish_token = tauri::async_runtime::spawn_blocking(move || {
+        solve_lrclib_publish_challenge(challenge.prefix, challenge.target)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
+    let payload = serde_json::json!({
+        "artistName": artist_name,
+        "trackName": track_name,
+        "albumName": album_name,
+        "duration": duration,
+        "plainLyrics": plain_lyrics,
+        "syncedLyrics": synced_lyrics,
+    });
+
+    let publish_response = client
+        .post(format!("{LRCLIB_API_BASE}/publish"))
+        .header(reqwest::header::USER_AGENT, LRCLIB_CLIENT_NAME)
+        .header("Lrclib-Client", LRCLIB_CLIENT_NAME)
+        .header("X-Publish-Token", publish_token)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !publish_response.status().is_success() {
+        return Err(read_lrclib_error_message(publish_response).await);
+    }
+
+    Ok(())
 }
 
 /// Switch the main window icon AND the tray icon to one of the bundled
@@ -963,6 +1173,7 @@ pub fn run() {
             refresh_system_fonts,
             read_font_family,
             copy_custom_font,
+            lrclib_publish_lyrics,
             external_http_get,
             save_image_to_downloads,
             media_proxy::media_proxy_apply_settings,
