@@ -54,6 +54,7 @@ import { useTrackPlay } from '../lib/useTrackPlay';
 import { useAuthStore } from '../stores/auth';
 import type { Track } from '../stores/player';
 import { usePlayerStore } from '../stores/player';
+import { useHeaderState } from '../stores/header';
 
 function getProfileDate(value: string | null | undefined): number {
   if (!value) return 0;
@@ -503,6 +504,7 @@ export function UserPage() {
   const { urn } = useParams<{ urn: string }>();
   const { t, i18n } = useTranslation();
   const currentUser = useAuthStore((s) => s.user);
+  const setCompactHeaderVisible = useHeaderState((s) => s.setCompactHeaderVisible);
   const [showFullAvatar, setShowFullAvatar] = useState(false);
   const [showCompactHeader, setShowCompactHeader] = useState(false);
   const pageRootRef = useRef<HTMLDivElement | null>(null);
@@ -576,9 +578,10 @@ export function UserPage() {
   useEffect(() => {
     setShowFullAvatar(false);
     setShowCompactHeader(false);
+    setCompactHeaderVisible(false);
     const scrollContainer = pageRootRef.current?.parentElement;
     scrollContainer?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  }, [urn]);
+  }, [urn, setCompactHeaderVisible]);
 
   const scrollToTop = () => {
     const scrollContainer = pageRootRef.current?.parentElement;
@@ -599,7 +602,12 @@ export function UserPage() {
       const revealThreshold = containerTop + 18;
       const nextVisible = heroBottom <= revealThreshold;
 
-      setShowCompactHeader((prev) => (prev === nextVisible ? prev : nextVisible));
+      setShowCompactHeader((prev) => {
+        if (prev !== nextVisible) {
+          setCompactHeaderVisible(nextVisible);
+        }
+        return prev === nextVisible ? prev : nextVisible;
+      });
     };
 
     const scheduleUpdate = () => {

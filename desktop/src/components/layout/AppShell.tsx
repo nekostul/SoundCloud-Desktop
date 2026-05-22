@@ -26,6 +26,7 @@ import { usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
 import { FullscreenPanels } from '../music/LyricsPanel';
 import { QueuePanel } from '../music/QueuePanel';
+import { FloatingNavigation } from './FloatingNavigation';
 import { MobileNav } from './MobileNav';
 import { NowPlayingBar } from './NowPlayingBar';
 import { Sidebar } from './Sidebar';
@@ -411,6 +412,7 @@ export const AppShell = React.memo(() => {
             backgroundRepeat: themePreset === 'artwork' ? undefined : 'no-repeat',
           }}
         >
+          <FloatingNavigation />
           <div className="absolute inset-0 z-0">
             {themePreset === 'artwork' && pageVisual ? (
               <div
