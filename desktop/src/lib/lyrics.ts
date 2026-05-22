@@ -37,6 +37,7 @@ interface PreparedLyricLine {
 }
 
 export type LyricsSource =
+  | 'local'
   | 'soundcloud'
   | 'lrclib'
   | 'netease'
@@ -204,6 +205,21 @@ function normalizeLyricsResult(result: LyricsResult | null): LyricsResult | null
     plain,
     synced,
   };
+}
+
+export async function saveLyricsResultToCache(
+  trackUrn: string,
+  lyrics: LyricsResult,
+): Promise<LyricsResult | null> {
+  const normalized = normalizeLyricsResult(lyrics);
+  if (!trackUrn || !normalized) return normalized;
+
+  await saveLyricsToCache(trackUrn, {
+    ...normalized,
+    cacheVersion: LYRICS_SEARCH_CACHE_VERSION,
+  });
+
+  return normalized;
 }
 
 function cleanGeniusLyricsText(value: string): string {
@@ -3362,6 +3378,35 @@ async function searchLrclib(
   // 4. Free-text q=
   r = await tryFetch({ q: alphaOnly(`${artist} ${title}`) });
   return r;
+}
+
+export async function searchLrclibSyncedLyricsByUploadMetadata(
+  artist: string,
+  title: string,
+  durationSec?: number | null,
+): Promise<LyricsResult | null> {
+  const uploadArtist = String(artist || '').trim();
+  const uploadTitle = String(title || '').trim();
+  if (!uploadArtist || !uploadTitle) return null;
+
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const profile = buildLyricsSearchProfile(uploadArtist, uploadTitle, {
+      uploaderUsername: uploadArtist,
+      originalTitle: uploadTitle,
+      durationMs:
+        durationSec != null && Number.isFinite(durationSec)
+          ? Math.max(0, durationSec) * 1000
+          : undefined,
+      forceRefresh: true,
+    });
+    const result = await searchLrclib(uploadArtist, uploadTitle, profile, controller.signal, true);
+    return result?.synced?.length ? result : null;
+  } finally {
+    clearTimeout(tid);
+  }
 }
 
 // ── NetEase Cloud Music ───────────────────────────────────────

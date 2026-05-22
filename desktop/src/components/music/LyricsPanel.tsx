@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -14,7 +14,9 @@ import {
 import type { LyricsResult } from '../../lib/lyrics';
 import {
   LYRICS_SEARCH_QUERY_VERSION,
+  saveLyricsResultToCache,
   searchLyrics,
+  searchLrclibSyncedLyricsByUploadMetadata,
   splitArtistTitle,
 } from '../../lib/lyrics';
 import { useCommunityLyricsDraftStore } from '../../stores/communityLyricsDrafts';
@@ -582,6 +584,7 @@ const FullscreenPanels = React.memo(() => {
   );
   const artworkColor = useArtworkColor(track?.artwork_url ?? null);
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const communityDraft = useCommunityLyricsDraftStore((s) =>
     track?.urn ? (s.draftsByTrackUrn[track.urn] ?? null) : null,
   );
@@ -612,7 +615,7 @@ const FullscreenPanels = React.memo(() => {
     null,
   );
   const [communityPublishPending, setCommunityPublishPending] = useState(false);
-  const [communityPublishedLyricsByTrack, setCommunityPublishedLyricsByTrack] = useState<
+  const [communityLyricsOverrideByTrack, setCommunityLyricsOverrideByTrack] = useState<
     Record<string, LyricsResult>
   >({});
   const [communityPublishEditTrackName, setCommunityPublishEditTrackName] = useState('');
@@ -688,8 +691,8 @@ const FullscreenPanels = React.memo(() => {
     retry: 1,
   });
   const displayedLyrics =
-    trackUrn && communityPublishedLyricsByTrack[trackUrn]
-      ? communityPublishedLyricsByTrack[trackUrn]
+    trackUrn && communityLyricsOverrideByTrack[trackUrn]
+      ? communityLyricsOverrideByTrack[trackUrn]
       : lyrics;
   const warmupEnabled = Boolean(mode !== 'none' && generatedFromPlain && !displayedLyrics?.synced);
   const { motionHints, hintLabel } = useAudioTextWarmup(
@@ -737,16 +740,23 @@ const FullscreenPanels = React.memo(() => {
   const communityDraftReadyToPublish =
     communityDraftTotalLines > 0 &&
     Boolean(communityDraft && communityDraft.syncedLyrics.length >= communityDraftTotalLines);
-  const canRetryCommunityDraft = Boolean(communityDraft && !displayedLyrics?.synced?.length);
+  const hasFailedLocalCommunityLyrics = Boolean(
+    communityDraft && displayedLyrics?.source === 'local' && displayedLyrics.synced?.length,
+  );
+  const canRetryCommunityDraft = Boolean(
+    communityDraft && (!displayedLyrics?.synced?.length || hasFailedLocalCommunityLyrics),
+  );
   const communityFlowActive = communitySyncStage !== 'idle';
   const showCommunityActionButton = lyricsStageActive && !communityFlowActive;
-  const communityActionLabel = canRetryCommunityDraft
-    ? communityDraftReadyToPublish
-      ? t('track.communitySyncOpenSavedButton', 'Открыть сохранённую синхронизацию')
-      : t('track.communitySyncResumeButton', 'Продолжить сохранённую синхронизацию')
-    : canCreateCommunitySyncForTrack
-      ? t('track.communitySyncCreateButton', 'Создать синхронизацию')
-      : null;
+  const communityActionLabel = hasFailedLocalCommunityLyrics
+    ? t('track.communitySyncContinueEditingButton', 'Продолжить редактирование')
+    : canRetryCommunityDraft
+      ? communityDraftReadyToPublish
+        ? t('track.communitySyncOpenSavedButton', 'Открыть сохранённую синхронизацию')
+        : t('track.communitySyncResumeButton', 'Продолжить сохранённую синхронизацию')
+      : canCreateCommunitySyncForTrack
+        ? t('track.communitySyncCreateButton', 'Создать синхронизацию')
+        : null;
   const clearNotFoundHint = useCallback(() => {
     if (notFoundHintTimeoutRef.current !== null) {
       window.clearTimeout(notFoundHintTimeoutRef.current);
@@ -1076,6 +1086,41 @@ const FullscreenPanels = React.memo(() => {
     setCommunitySyncStage('confirm');
   }, [communitySyncTrackMeta]);
 
+  const applyCommunityLyricsResult = useCallback(
+    (
+      trackUrnForLyrics: string,
+      result: LyricsResult,
+      extraQueries: LyricsSearchQuery[] = [],
+    ) => {
+      setCommunityLyricsOverrideByTrack((current) => ({
+        ...current,
+        [trackUrnForLyrics]: result,
+      }));
+
+      if (trackUrnForLyrics === trackUrn && activeManualQuery) {
+        manualLyricsRef.current.set(trackUrnForLyrics, {
+          ...activeManualQuery,
+          lyrics: result,
+        });
+      } else {
+        autoLyricsRef.current.set(trackUrnForLyrics, result);
+      }
+
+      const queries = [{ artist: reqArtist, title: reqTitle }, ...extraQueries];
+      for (const query of queries) {
+        queryClient.setQueryData(
+          ['lyrics', LYRICS_SEARCH_QUERY_VERSION, trackUrnForLyrics, query.artist, query.title],
+          result,
+        );
+      }
+
+      void saveLyricsResultToCache(trackUrnForLyrics, result).catch((error) => {
+        console.error('Failed to save community lyrics cache', error);
+      });
+    },
+    [activeManualQuery, queryClient, reqArtist, reqTitle, trackUrn],
+  );
+
   const handleCommunityPublishConfirm = useCallback(async () => {
     const currentSession = communitySyncSessionRef.current;
     if (!communitySyncTrackMeta || !currentSession || !isCommunitySyncSessionComplete(currentSession)) {
@@ -1088,34 +1133,50 @@ const FullscreenPanels = React.memo(() => {
     };
 
     const durationSec = parseInt(communityPublishEditDuration) || 0;
+    const uploadQuery = {
+      artist: communityPublishEditArtistName.trim(),
+      title: communityPublishEditTrackName.trim(),
+    };
 
     setCommunityPublishPending(true);
     try {
       await invoke('lrclib_publish_lyrics', {
-        artistName: communityPublishEditArtistName,
-        trackName: communityPublishEditTrackName,
+        artistName: uploadQuery.artist,
+        trackName: uploadQuery.title,
         duration: durationSec,
         plainLyrics: draft.plainLyrics,
         syncedLyrics: serializeCommunitySyncedLyrics(draft.syncedLyrics),
         albumName: communityPublishEditAlbumName || null,
       });
 
-      removeCommunityDraft(draft.trackUrn);
-      setCommunityPublishedLyricsByTrack((current) => ({
-        ...current,
-        [draft.trackUrn]: {
+      const uploadedLyrics = await searchLrclibSyncedLyricsByUploadMetadata(
+        uploadQuery.artist,
+        uploadQuery.title,
+        durationSec,
+      );
+      const publishedLyrics: LyricsResult =
+        uploadedLyrics ?? {
           plain: draft.plainLyrics,
           synced: draft.syncedLyrics,
           source: 'lrclib',
-        },
-      }));
+        };
+
+      removeCommunityDraft(draft.trackUrn);
+      applyCommunityLyricsResult(draft.trackUrn, publishedLyrics, [uploadQuery]);
       resetCommunitySyncFlow(true);
       toast.success(
         t('track.communitySyncPublished', 'Синхронизация опубликована в LRCLIB'),
       );
     } catch (error) {
+      const localLyrics: LyricsResult = {
+        plain: draft.plainLyrics,
+        synced: draft.syncedLyrics,
+        source: 'local',
+      };
+
       saveCommunityDraft(draft);
-      setCommunitySyncStage('sync');
+      applyCommunityLyricsResult(draft.trackUrn, localLyrics, [uploadQuery]);
+      resetCommunitySyncFlow(true);
       toast.error(t('track.communitySyncPublishFailed', 'Не удалось опубликовать синхронизацию'), {
         description: t(
           'track.communitySyncPublishFailedDesc',
@@ -1132,6 +1193,7 @@ const FullscreenPanels = React.memo(() => {
     communityPublishEditTrackName,
     communityPublishEditAlbumName,
     communityPublishEditDuration,
+    applyCommunityLyricsResult,
     removeCommunityDraft,
     resetCommunitySyncFlow,
     saveCommunityDraft,
@@ -1423,6 +1485,12 @@ const FullscreenPanels = React.memo(() => {
       ...resolvedQuery,
       lyrics: manualSearchResultQuery.data,
     });
+    setCommunityLyricsOverrideByTrack((current) => {
+      if (!current[trackUrn]) return current;
+      const next = { ...current };
+      delete next[trackUrn];
+      return next;
+    });
     setManualQuery(buildTrackScopedLyricsSearchQuery(trackUrn, resolvedQuery));
     setSubmittedSearchQuery(null);
     openLyricsMode();
@@ -1508,9 +1576,9 @@ const FullscreenPanels = React.memo(() => {
           <>
             {!communityFlowActive ? (
               <>
-                {lyrics ? (
+                {displayedLyrics ? (
                   <span className="inline-flex h-9 items-center rounded-full border border-white/[0.06] bg-white/[0.04] px-3 text-[10px] font-semibold text-white/20">
-                    {SOURCE_LABELS[lyrics.source]}
+                    {SOURCE_LABELS[displayedLyrics.source]}
                   </span>
                 ) : null}
                 <button
@@ -1603,7 +1671,7 @@ const FullscreenPanels = React.memo(() => {
                 />
               ) : (
                 <FullscreenLyricsColumn
-                  lyrics={lyrics}
+                  lyrics={displayedLyrics}
                   warmupEnabled={warmupEnabled}
                   motionHints={warmupEnabled ? motionHints : []}
                   pseudoSynced={pseudoSynced}
