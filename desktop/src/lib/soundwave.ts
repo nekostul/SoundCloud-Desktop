@@ -70,55 +70,40 @@ export function useSoundWave(opts: {
   limit?: number;
   mode?: SoundWaveMode;
   hideLiked?: boolean;
+  refreshToken?: number;
+  excludeTrackIds?: string[];
 }) {
   const limit = opts.limit ?? 24;
   const languages = normLanguages(opts.languages);
   const mode: SoundWaveMode = opts.mode ?? 'similar';
   const hideLiked = !!opts.hideLiked;
+  const refreshToken = opts.refreshToken ?? 0;
+  const excludeTrackIds = [...new Set(opts.excludeTrackIds?.map((value) => value.trim()).filter(Boolean))];
+  const excludeKey = excludeTrackIds.join(',');
 
   return useQuery({
-    queryKey: ['soundwave', 'native', limit, languages ?? 'all', mode, hideLiked],
+    queryKey: ['soundwave', 'native', limit, languages ?? 'all', mode, hideLiked, refreshToken, excludeKey],
     enabled: opts.enabled !== false,
     staleTime: SW_STALE_MS,
     gcTime: SW_GC_MS,
     queryFn: async () => {
       const qs = new URLSearchParams({ limit: String(limit), mode });
       if (languages) qs.set('languages', languages);
+      qs.set('refresh', String(refreshToken || Date.now()));
+      if (excludeTrackIds.length) qs.set('exclude', excludeTrackIds.join(','));
 
       const recs = await api<RecommendResult[]>(`/recommendations?${qs}`).catch(
         () => [] as RecommendResult[],
       );
       const hydrated = await hydrateByIds(recs);
+      const excludeUrns = new Set(
+        excludeTrackIds.flatMap((id) =>
+          id.startsWith('soundcloud:tracks:') ? [id] : [id, `soundcloud:tracks:${id}`],
+        ),
+      );
       const tracks = filterSoundWaveTracks(hydrated, {
         hideLiked,
-        minTracks: Math.min(8, limit),
-        includeRecentIfNeeded: true,
-      }).slice(0, limit);
-
-      return { tracks, recs };
-    },
-  });
-}
-
-export function useSoundWaveSearch(opts: { q: string; languages?: string[]; limit?: number }) {
-  const q = opts.q.trim();
-  const limit = opts.limit ?? 24;
-  const languages = normLanguages(opts.languages);
-
-  return useQuery({
-    queryKey: ['soundwave', 'native-search', q, limit, languages ?? 'all'],
-    enabled: q.length >= 2,
-    staleTime: SW_STALE_MS,
-    gcTime: SW_GC_MS,
-    queryFn: async () => {
-      const qs = new URLSearchParams({ q, limit: String(limit) });
-      if (languages) qs.set('languages', languages);
-
-      const recs = await api<RecommendResult[]>(
-        `/recommendations/search?${qs}`,
-        { timeoutMs: 30_000 },
-      ).catch(() => [] as RecommendResult[]);
-      const tracks = filterSoundWaveTracks(await hydrateByIds(recs), {
+        excludeUrns,
         minTracks: Math.min(8, limit),
         includeRecentIfNeeded: true,
       }).slice(0, limit);

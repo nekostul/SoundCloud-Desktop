@@ -1,14 +1,13 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AudioLines,
   pauseBlack14,
   playBlack14,
   RefreshCw,
-  Search,
   Sparkles,
 } from '../../../lib/icons';
-import { useSoundWave, useSoundWaveSearch } from '../../../lib/soundwave';
+import { useSoundWave } from '../../../lib/soundwave';
 import {
   buildWaveQueueFromPlayerContext,
   buildWaveQueueFromSeeds,
@@ -20,18 +19,18 @@ import { usePlayerStore } from '../../../stores/player';
 import { useSettingsStore } from '../../../stores/settings';
 import { CHARACTER_PRESETS, useSoundWaveStore } from '../../../stores/soundwave';
 import { AmbientLayer } from './ambient';
-import { RecommendationsHeader, SearchHeader } from './headers';
+import { RecommendationsHeader } from './headers';
 import { HideLikedToggle } from './hide-liked-toggle';
 import { LanguageFilter } from './language-filter';
 import { ModeToggle } from './mode-toggle';
 import { RecommendationsStrip, SkeletonStrip } from './strip';
 import { WaveTrackHeader } from './track-header';
 import { useInfiniteWave } from './use-infinite-wave';
-import { VibeSearchBar, type VibeSearchBarHandle } from './vibe-search-bar';
 import { LiveWaveform } from './waveform';
 
 const HOME_WAVE_REFILL_TARGET = 12;
 const HOME_WAVE_START_TAIL_TARGET = 18;
+const HOME_WAVE_AUTO_REFRESH_MS = 1000 * 60 * 5;
 
 function appendWaveTailToActiveQueue(tracks: Track[]) {
   if (tracks.length === 0) return;
@@ -64,30 +63,20 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isStartingWave, setIsStartingWave] = useState(false);
-  const [activeQuery, setActiveQuery] = useState('');
-  const searchRef = useRef<VibeSearchBarHandle>(null);
+  const [refreshToken, setRefreshToken] = useState(0);
 
   const stableLanguages = useMemo(() => [...selectedLanguages].sort(), [selectedLanguages]);
 
-  const { data, isLoading, isFetching, refetch } = useSoundWave({
+  const { data, isLoading, isFetching } = useSoundWave({
     enabled: isAuthenticated,
     languages: stableLanguages,
     mode,
     hideLiked,
+    refreshToken,
   });
 
-  const {
-    data: searchData,
-    isLoading: searchLoading,
-    isFetching: searchFetching,
-  } = useSoundWaveSearch({ q: activeQuery, languages: stableLanguages });
-
   const recTracks = useMemo(() => data?.tracks ?? [], [data]);
-  const searchTracks = useMemo(() => searchData?.tracks ?? [], [searchData]);
-
-  const isSearchMode = activeQuery.length >= 2;
-  const tracks = isSearchMode ? searchTracks : recTracks;
-  const searchBusy = searchLoading || searchFetching;
+  const tracks = recTracks;
 
   const waveTrack = currentTrack ?? tracks[0] ?? null;
   const isCurrent = !!currentTrack && waveTrack?.urn === currentTrack.urn;
@@ -116,37 +105,48 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
   );
 
   useInfiniteWave({
-    enabled: isAuthenticated && !isSearchMode,
+    enabled: isAuthenticated,
     tracks: ownedWaveTracks,
     fetchMore,
     minTail: 6,
   });
 
-  const handleSubmitSearch = useCallback((q: string) => {
-    setActiveQuery(q);
-  }, []);
-
-  const handleClearSearch = useCallback(() => {
-    searchRef.current?.clear();
-    setActiveQuery('');
-  }, []);
+  useEffect(() => {
+    if (!isAuthenticated || isWaveQueue) return;
+    const timer = window.setInterval(() => {
+      setRefreshToken((t) => t + 1);
+    }, HOME_WAVE_AUTO_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [isAuthenticated, isWaveQueue]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
-      await refetch();
+      // Обновить рекомендации в секции "для тебя"
+      setRefreshToken((t) => t + 1);
+      
+      // Если волна активна - добавить новые треки в очередь
+      if (isWaveQueue) {
+        const newTracks = await buildWaveQueueFromPlayerContext({
+          languages: stableLanguages,
+          mode,
+          hideLiked,
+          targetSize: HOME_WAVE_REFILL_TARGET,
+        });
+        
+        if (newTracks.length > 0) {
+          appendWaveTailToActiveQueue(newTracks);
+        }
+      }
     } finally {
-      setTimeout(() => setIsRefreshing(false), 350);
+      setTimeout(() => setIsRefreshing(false), 650);
     }
   };
 
   const restartWaveFromTrack = useCallback(
     async (anchorTrack: Track) => {
-      const initialQueue = createInitialSoundWaveQueue([anchorTrack], mode);
-      if (initialQueue.length === 0) return;
-
       await startFromQueue({
-        queue: initialQueue,
+        queue: [anchorTrack],
         seedTracks: [anchorTrack],
         preserveCurrentTrack: true,
         preset: waveSessionPreset,
@@ -219,14 +219,13 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
   );
 
   const spinning = isRefreshing || isFetching;
-  const showCold = !isSearchMode && !isLoading && recTracks.length === 0;
-  const showSearchEmpty = isSearchMode && !searchBusy && searchTracks.length === 0;
+  const showCold = !isLoading && recTracks.length === 0;
 
   if (!isAuthenticated) return null;
 
   return (
     <section
-      className="relative rounded-3xl overflow-hidden glass-featured select-none"
+      className="relative rounded-3xl overflow-visible glass-featured select-none"
       style={{
         boxShadow:
           '0 0 0 1px rgba(255,255,255,0.04) inset, 0 10px 60px rgba(0,0,0,0.45), 0 0 60px var(--color-accent-glow)',
@@ -371,50 +370,19 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
             willChange: 'max-height, opacity, transform, filter',
           }}
         >
-          <div className="flex flex-col gap-5 pt-0.5">
-            <VibeSearchBar
-              ref={searchRef}
-              onSubmit={handleSubmitSearch}
-              onClear={handleClearSearch}
-              loading={searchBusy}
-              active={isSearchMode}
-            />
-
+          <div className="flex flex-col gap-5 pt-0.5 mt-3">
             <div className="min-h-[280px]">
-              {isSearchMode ? (
-                <>
-                  <SearchHeader
-                    query={activeQuery}
-                    count={searchTracks.length}
-                    onClear={handleClearSearch}
-                  />
-                  {searchBusy ? (
-                    <SkeletonStrip />
-                  ) : showSearchEmpty ? (
-                    <EmptyState
-                      icon={<Search size={16} style={{ color: 'var(--color-accent)' }} />}
-                      title={t('soundwave.searchEmptyTitle')}
-                      desc={t('soundwave.searchEmptyDesc')}
-                    />
-                  ) : (
-                    <RecommendationsStrip tracks={searchTracks} />
-                  )}
-                </>
+              <RecommendationsHeader />
+              {isLoading ? (
+                <SkeletonStrip />
+              ) : showCold ? (
+                <EmptyState
+                  icon={<Sparkles size={18} style={{ color: 'var(--color-accent)' }} />}
+                  title={t('soundwave.coldTitle')}
+                  desc={t('soundwave.coldDesc')}
+                />
               ) : (
-                <>
-                  <RecommendationsHeader />
-                  {isLoading ? (
-                    <SkeletonStrip />
-                  ) : showCold ? (
-                    <EmptyState
-                      icon={<Sparkles size={18} style={{ color: 'var(--color-accent)' }} />}
-                      title={t('soundwave.coldTitle')}
-                      desc={t('soundwave.coldDesc')}
-                    />
-                  ) : (
-                    <RecommendationsStrip tracks={recTracks} />
-                  )}
-                </>
+                <RecommendationsStrip tracks={recTracks} />
               )}
             </div>
           </div>

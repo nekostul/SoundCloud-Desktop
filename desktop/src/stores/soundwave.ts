@@ -370,10 +370,18 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     preset = null,
     launchContext = null,
   }) => {
-    const normalizedQueue = filterSoundWaveTracks(queue.filter(isTrackPlayable), {
+    const currentTrack = preserveCurrentTrack ? usePlayerStore.getState().currentTrack : null;
+    const queueInput = currentTrack?.urn ? dedupeTracksByUrn([currentTrack, ...queue]) : queue;
+    let normalizedQueue = filterSoundWaveTracks(queueInput.filter(isTrackPlayable), {
       minTracks: 1,
       includeRecentIfNeeded: true,
     });
+    if (
+      currentTrack?.urn &&
+      !normalizedQueue.some((track) => track.urn === currentTrack.urn)
+    ) {
+      normalizedQueue = [currentTrack, ...normalizedQueue];
+    }
     if (normalizedQueue.length === 0) return;
 
     const { init, stop } = get();

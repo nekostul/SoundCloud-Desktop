@@ -4,7 +4,7 @@ import { api } from '../../../lib/api';
 import { AudioLines, playBlack14, Sparkles } from '../../../lib/icons';
 import { hydrateByIds, type RecommendResult, useSoundWaveSimilar } from '../../../lib/soundwave';
 import type { Track } from '../../../stores/player';
-import { usePlayerStore } from '../../../stores/player';
+import { CHARACTER_PRESETS, useSoundWaveStore } from '../../../stores/soundwave';
 import { AmbientLayer } from './ambient';
 import { RecommendationsStrip, SkeletonStrip } from './strip';
 import { useInfiniteWave } from './use-infinite-wave';
@@ -60,7 +60,11 @@ export const SoundWaveSimilarBlock = React.memo(function SoundWaveSimilarBlock({
 
   const handlePlayAll = () => {
     if (!hasTracks) return;
-    usePlayerStore.getState().play(tracks[0], tracks);
+    void useSoundWaveStore.getState().startFromQueue({
+      queue: tracks,
+      seedTracks: tracks.slice(0, 3),
+      preset: CHARACTER_PRESETS.favorite,
+    });
   };
 
   return (

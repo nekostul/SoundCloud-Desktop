@@ -38,18 +38,20 @@ export class RecommendationsService {
   async getHomeRecommendations(
     token: string,
     _sessionId: string,
-    opts: { limit?: number; mode?: string; languages?: string },
+    opts: { limit?: number; mode?: string; languages?: string; refresh?: string; exclude?: string },
   ): Promise<RecommendResult[]> {
     const limit = this.clampLimit(opts.limit);
     const mode = this.normalizeMode(opts.mode);
-    const sourceLimit = Math.max(limit * 2, 32);
+    const exclude = this.parseExcludeIds(opts.exclude);
+    const sourceLimit = Math.max((limit + exclude.size) * 2, 32);
+    const offset = this.refreshOffset(opts.refresh, limit);
 
     const [feed, likes, likedPlaylists, trending, top] = await Promise.all([
-      this.safeFeed(token, sourceLimit),
-      this.safeLikedTracks(token, Math.min(sourceLimit, 40)),
-      this.safeLikedPlaylists(token, Math.min(sourceLimit, 40)),
-      this.safeCharts(token, 'trending', Math.min(sourceLimit, 50)),
-      this.safeCharts(token, 'top', Math.min(sourceLimit, 50)),
+      this.safeFeed(token, sourceLimit, offset),
+      this.safeLikedTracks(token, Math.min(sourceLimit, 40), offset),
+      this.safeLikedPlaylists(token, Math.min(sourceLimit, 40), offset),
+      this.safeCharts(token, 'trending', Math.min(sourceLimit, 50), offset),
+      this.safeCharts(token, 'top', Math.min(sourceLimit, 50), offset),
     ]);
 
     const likeRelated = await this.relatedFromSeeds(token, likes.slice(0, mode === 'diverse' ? 5 : 4), sourceLimit);
@@ -73,7 +75,7 @@ export class RecommendationsService {
             { source: 'sc-charts', tracks: top },
           ];
 
-    return this.toRecommendResults(sources, limit);
+    return this.toRecommendResults(sources, limit, exclude);
   }
 
   async searchRecommendations(
@@ -161,10 +163,11 @@ export class RecommendationsService {
     return groups.flat();
   }
 
-  private async safeFeed(token: string, limit: number): Promise<ScActivity[]> {
+  private async safeFeed(token: string, limit: number, offset = 0): Promise<ScActivity[]> {
     try {
       const page = await this.meService.getFeed(token, {
         limit,
+        ...(offset > 0 ? { offset } : {}),
         linked_partitioning: true,
         access: 'playable,preview',
       });
@@ -175,10 +178,11 @@ export class RecommendationsService {
     }
   }
 
-  private async safeLikedTracks(token: string, limit: number): Promise<ScTrack[]> {
+  private async safeLikedTracks(token: string, limit: number, offset = 0): Promise<ScTrack[]> {
     try {
       const page = await this.meService.getLikedTracks(token, {
         limit,
+        ...(offset > 0 ? { offset } : {}),
         access: 'playable,preview',
         linked_partitioning: true,
       });
@@ -189,10 +193,11 @@ export class RecommendationsService {
     }
   }
 
-  private async safeLikedPlaylists(token: string, limit: number): Promise<ScPlaylist[]> {
+  private async safeLikedPlaylists(token: string, limit: number, offset = 0): Promise<ScPlaylist[]> {
     try {
       const page = await this.meService.getLikedPlaylists(token, {
         limit,
+        ...(offset > 0 ? { offset } : {}),
         linked_partitioning: true,
         access: 'playable,preview',
       });
@@ -203,12 +208,18 @@ export class RecommendationsService {
     }
   }
 
-  private async safeCharts(token: string, kind: 'top' | 'trending', limit: number): Promise<ScTrack[]> {
+  private async safeCharts(
+    token: string,
+    kind: 'top' | 'trending',
+    limit: number,
+    offset = 0,
+  ): Promise<ScTrack[]> {
     try {
       const page = await this.sc.apiGet<unknown>('/charts', token, {
         kind,
         genre: 'soundcloud:genres:all-music',
         limit,
+        ...(offset > 0 ? { offset } : {}),
         linked_partitioning: true,
       });
       return this.trackCollection(page);
@@ -386,6 +397,12 @@ export class RecommendationsService {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_LIMIT;
     return Math.max(1, Math.min(MAX_LIMIT, Math.floor(parsed)));
+  }
+
+  private refreshOffset(value: unknown, pageSize: number): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return (Math.floor(parsed) % 4) * pageSize;
   }
 
   private normalizeMode(mode?: string): SoundWaveMode {

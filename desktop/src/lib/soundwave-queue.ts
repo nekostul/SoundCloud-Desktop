@@ -61,7 +61,7 @@ export async function buildWaveQueueFromSeeds(
   const anchors = dedupeTracksByUrn([
     ...(context?.recentTracks ?? []),
     ...seedTracks,
-  ]).filter((track) => track.access !== 'blocked');
+  ]).filter((track) => !!track?.urn);
 
   if (anchors.length === 0) return [];
 

@@ -28,7 +28,7 @@ export function HorizontalScroll({
 
   return (
     <div className="relative">
-      <div className="absolute right-0 -top-12 z-10 flex items-center gap-2">
+      <div className="absolute right-2 -top-12 z-10 flex items-center gap-2">
         <button
           type="button"
           onClick={scrollLeft}
@@ -48,7 +48,7 @@ export function HorizontalScroll({
 
       <div
         ref={ref}
-        className={`flex gap-4 overflow-x-hidden scroll-smooth scrollbar-hide pb-2 ${className}`}
+        className={`flex gap-4 overflow-x-hidden scroll-smooth scrollbar-hide pb-2 pr-12 ${className}`}
         style={{
           contentVisibility: 'auto',
           contain: 'layout paint style',

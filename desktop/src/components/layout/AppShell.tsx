@@ -390,7 +390,7 @@ export const AppShell = React.memo(() => {
       <Titlebar />
 
       <div
-        className={`flex flex-1 min-h-0 relative z-0 ${isMobile ? 'mb-[136px]' : 'mb-[96px]'}`}
+        className={`flex flex-1 min-h-0 relative z-0 ${isMobile ? 'mb-[136px]' : 'mb-[103px]'}`}
         style={{
           isolation: 'isolate',
           opacity: shellSuppressed ? 0 : 1,

@@ -2173,6 +2173,7 @@ async function requestDirectChartsTracks(
   kind: 'top' | 'trending',
   limit: number,
   ctx: DirectRequestContext,
+  offset = 0,
 ): Promise<DirectTrackLike[]> {
   const params = new URLSearchParams({
     kind,
@@ -2180,6 +2181,7 @@ async function requestDirectChartsTracks(
     limit: String(limit),
     linked_partitioning: 'true',
   });
+  if (offset > 0) params.set('offset', String(offset));
   return requestDirectTracks(`/charts?${params}`, ctx);
 }
 
@@ -2216,21 +2218,34 @@ async function handleRecommendationsRequest<T>(
   ctx: DirectRequestContext,
 ): Promise<T> {
   const limit = clampInt(Number(searchParams.get('limit') ?? 24), 1, 50);
+  const refreshValue = Number(searchParams.get('refresh') ?? 0);
+  const refreshOffset = Number.isFinite(refreshValue) && refreshValue > 0
+    ? (Math.floor(refreshValue) % 4) * limit
+    : 0;
+  const offsetParam = refreshOffset > 0 ? `&offset=${refreshOffset}` : '';
+  const homeExcludeIds = new Set(
+    (searchParams.get('exclude') ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => normalizeResourceRef(value, 'tracks').id)
+      .filter((value): value is string => !!value),
+  );
 
   if (pathSegments.length === 1) {
-    const sourceLimit = Math.max(limit * 2, 32);
+    const sourceLimit = Math.max((limit + homeExcludeIds.size) * 2, 32);
     const [feed, liked, likedPlaylists, trending, top] = await Promise.all([
-      requestDirectTracks(`/me/feed?limit=${sourceLimit}&linked_partitioning=true`, ctx),
+      requestDirectTracks(`/me/feed?limit=${sourceLimit}${offsetParam}&linked_partitioning=true`, ctx),
       requestDirectTracks(
-        `/me/likes/tracks?limit=${Math.min(sourceLimit, 40)}&linked_partitioning=true&access=playable,preview,blocked`,
+        `/me/likes/tracks?limit=${Math.min(sourceLimit, 40)}${offsetParam}&linked_partitioning=true&access=playable,preview,blocked`,
         ctx,
       ),
       requestDirectTracks(
-        `/me/likes/playlists?limit=${Math.min(sourceLimit, 40)}&linked_partitioning=true&access=playable,preview,blocked`,
+        `/me/likes/playlists?limit=${Math.min(sourceLimit, 40)}${offsetParam}&linked_partitioning=true&access=playable,preview,blocked`,
         ctx,
       ),
-      requestDirectChartsTracks('trending', Math.min(sourceLimit, 50), ctx),
-      requestDirectChartsTracks('top', Math.min(sourceLimit, 50), ctx),
+      requestDirectChartsTracks('trending', Math.min(sourceLimit, 50), ctx, refreshOffset),
+      requestDirectChartsTracks('top', Math.min(sourceLimit, 50), ctx, refreshOffset),
     ]);
     const likesRelated = await requestRelatedFromLikedTracks(liked, sourceLimit, ctx);
     const mode = searchParams.get('mode') === 'diverse' ? 'diverse' : 'similar';
@@ -2239,7 +2254,7 @@ async function handleRecommendationsRequest<T>(
         ? [feed, trending, likesRelated, likedPlaylists, top]
         : [feed, likesRelated, likedPlaylists, trending, top];
 
-    return directRecommendResults(groups, limit) as T;
+    return directRecommendResults(groups, limit, homeExcludeIds) as T;
   }
 
   if (pathSegments[1] === 'search') {

@@ -17,17 +17,23 @@ export class RecommendationsController {
   @ApiQuery({ name: 'limit', required: false, example: 24 })
   @ApiQuery({ name: 'mode', required: false, enum: ['similar', 'diverse'] })
   @ApiQuery({ name: 'languages', required: false, description: 'Comma-separated language codes' })
+  @ApiQuery({ name: 'refresh', required: false, description: 'Refresh token for native source paging' })
+  @ApiQuery({ name: 'exclude', required: false, description: 'Comma-separated track IDs to skip' })
   getHome(
     @AccessToken() token: string,
     @SessionId() sessionId: string,
     @Query('limit') limit?: string,
     @Query('mode') mode?: string,
     @Query('languages') languages?: string,
+    @Query('refresh') refresh?: string,
+    @Query('exclude') exclude?: string,
   ) {
     return this.recommendationsService.getHomeRecommendations(token, sessionId, {
       limit: Number(limit),
       mode,
       languages,
+      refresh,
+      exclude,
     });
   }
 
