@@ -18,7 +18,6 @@ import {
   getCacheFilePath,
   getCacheTargetPath,
   isCached,
-  removeCachedTrack,
 } from './cache';
 import { art } from './formatters';
 import { isTauriRuntime } from './runtime';
@@ -315,6 +314,10 @@ export function getDuration(): number {
 
 function isCurrentPlaybackSourceSeekSafe(): boolean {
   return currentPlaybackSource === 'cache-file';
+}
+
+function isAuthoritativeCachePlaybackActive(): boolean {
+  return currentPlaybackSource === 'cache-file' || playbackBufferSnapshot.fullyCached;
 }
 
 function hasActiveSeekTransition(trackUrn?: string | null) {
@@ -927,7 +930,7 @@ async function recoverFromStartupHang(reason: string) {
   const state = usePlayerStore.getState();
   const track = state.currentTrack;
   if (!track || track.urn !== currentUrn || !state.isPlaying) return;
-  if (playbackBufferSnapshot.phase === 'ready' || playbackBufferSnapshot.fullyCached) return;
+  if (playbackBufferSnapshot.phase === 'ready' || isAuthoritativeCachePlaybackActive()) return;
 
   primeStartupRecoveryWindow(track.urn);
   if (startupRecoveryAttempts >= STARTUP_RECOVERY_MAX_RETRIES) {
@@ -1118,20 +1121,6 @@ async function syncPlaybackBufferFromCompleteCache(
     }
     if (expectedGen != null && expectedGen !== loadGen) {
       return false;
-    }
-
-    if (currentPlaybackSource !== 'cache-file') {
-      const track = usePlayerStore.getState().currentTrack;
-      if (!track || track.urn !== trackUrn) {
-        return false;
-      }
-
-      const position = Math.max(cachedTime, getSmoothCurrentTime());
-      const requestId = latestSeekRequestId;
-      const promoted = await loadTrackFromFullCacheAtSeekTarget(track, position, requestId);
-      if (!promoted) {
-        return false;
-      }
     }
 
     waitForReadyBuffer = false;
@@ -1778,9 +1767,6 @@ async function loadTrackFromFullCacheAtSeekTarget(
     updateMediaPosition();
     return true;
   } catch (error) {
-    if (gen === loadGen && isActiveSeekRequest(track.urn, requestId)) {
-      await removeCachedTrack(track.urn).catch(() => {});
-    }
     console.warn('[Audio] Full cache seek reload failed', error);
     return false;
   }
@@ -1858,7 +1844,29 @@ async function loadTrack(track: Track, skipStop = false) {
         : resolveCrossfadeDurationForLoad(settings, track.duration / 1000, 0);
     const cacheTargetPath = await getCacheTargetPath(urn);
     if (gen !== loadGen) return;
+    let loadedFromCache = false;
     const loadFromNetworkWithFallback = async () => {
+      const lateCachedPath = await getCacheFilePath(urn);
+      if (gen !== loadGen) {
+        return {
+          duration_secs: null,
+          stream_quality: null,
+          stream_content_type: null,
+          stream_codec: null,
+        };
+      }
+      if (lateCachedPath) {
+        const result = await invoke<AudioLoadInvokeResult>('audio_load_file', {
+          eventToken: gen,
+          path: lateCachedPath,
+          cacheKey: urn,
+          crossfadeSecs,
+        });
+        loadedFromCache = true;
+        currentPlaybackSource = 'cache-file';
+        return result;
+      }
+
       usePlayerStore.setState({ downloadProgress: 0 });
 
       const directStreamSource = await getTrackStreamSource(urn);
@@ -1912,7 +1920,6 @@ async function loadTrack(track: Track, skipStop = false) {
         stream_content_type?: string | null;
         stream_codec?: string | null;
       };
-      let loadedFromCache = false;
 
       if (cachedPath) {
         try {
@@ -1931,16 +1938,16 @@ async function loadTrack(track: Track, skipStop = false) {
           currentPlaybackSource = 'cache-file';
         } catch (cacheError) {
           console.warn(
-            '[Audio] Cached file failed to decode, retrying from network...',
+            '[Audio] Cached file failed to decode; authoritative cache prevents network fallback',
             cacheError,
           );
-          await removeCachedTrack(urn);
-          result = await loadFromNetworkWithFallback();
-          currentPlaybackSource = 'network';
+          throw cacheError;
         }
       } else {
         result = await loadFromNetworkWithFallback();
-        currentPlaybackSource = 'network';
+        if (!loadedFromCache) {
+          currentPlaybackSource = 'network';
+        }
       }
 
       const resolvedQuality =
@@ -2175,6 +2182,13 @@ async function recoverFromStall(elapsedMs: number) {
 
     if (now < stallCooldownUntil || now < resumeGuardUntil || now < stallSuppressedUntil) return;
     if (!hasTrack || !usePlayerStore.getState().isPlaying) return;
+    if (isAuthoritativeCachePlaybackActive()) {
+      console.warn(`[Audio] Cached playback stall probe did not advance after ${elapsedMs}ms`);
+      lastTickAt = now;
+      stallCooldownUntil = now + STALL_COOLDOWN_MS;
+      invoke('audio_play').catch(console.error);
+      return;
+    }
 
     console.log(`[Audio] Stall detected (no ticks for ${elapsedMs}ms), reloading track...`);
     lastTickAt = now;
@@ -2185,6 +2199,14 @@ async function recoverFromStall(elapsedMs: number) {
   } catch (error) {
     const now = Date.now();
     if (now >= stallCooldownUntil && now >= resumeGuardUntil && now >= stallSuppressedUntil) {
+      if (isAuthoritativeCachePlaybackActive()) {
+        console.warn('[Audio] Cached playback stall probe failed', error);
+        lastTickAt = now;
+        stallCooldownUntil = now + STALL_COOLDOWN_MS;
+        invoke('audio_play').catch(console.error);
+        return;
+      }
+
       console.warn('[Audio] Stall probe failed, using reload fallback', error);
       lastTickAt = now;
       stallCooldownUntil = now + STALL_COOLDOWN_MS;
@@ -2328,6 +2350,15 @@ function setupTauriBindings() {
   });
 
   listen('audio:device-reconnected', () => {
+    if (isAuthoritativeCachePlaybackActive()) {
+      console.log('[Audio] Device reconnected; keeping authoritative cached playback active');
+      suppressStallDetection(5000);
+      if (usePlayerStore.getState().isPlaying) {
+        invoke('audio_play').catch(console.error);
+      }
+      return;
+    }
+
     console.log('[Audio] Device reconnected (BT profile switch?), reloading track...');
     void reloadCurrentTrack();
   });
@@ -2362,6 +2393,7 @@ function setupTauriBindings() {
   if (typeof navigator !== 'undefined' && navigator.mediaDevices?.addEventListener) {
     navigator.mediaDevices.addEventListener('devicechange', () => {
       if (!hasTrack || !usePlayerStore.getState().isPlaying) return;
+      if (isAuthoritativeCachePlaybackActive()) return;
 
       const now = Date.now();
       if (now < deviceChangeCooldownUntil) return;
@@ -2399,7 +2431,7 @@ function setupTauriBindings() {
     if (nativeStartupPausedForBuffering) return;
     const state = usePlayerStore.getState();
     if (!state.isPlaying || state.currentTrack?.urn !== currentUrn) return;
-    if (playbackBufferSnapshot.phase === 'ready' || playbackBufferSnapshot.fullyCached) return;
+    if (playbackBufferSnapshot.phase === 'ready' || isAuthoritativeCachePlaybackActive()) return;
     if (queuedSeekTarget >= 0 || nativeSeekInFlight || startupRecoveryInFlight) return;
 
     const now = Date.now();
@@ -2444,7 +2476,7 @@ function setupTauriBindings() {
       resumeGuardUntil = Date.now() + 5000;
       if (hasTrack && usePlayerStore.getState().isPlaying && lastTickAt > 0) {
         const idle = Date.now() - lastTickAt;
-        if (idle > 30000) {
+        if (idle > 30000 && !isAuthoritativeCachePlaybackActive()) {
           console.log(
             `[Audio] Resuming after ${Math.round(idle / 1000)}s idle, forcing device reconnect...`,
           );
@@ -2647,7 +2679,14 @@ usePlayerStore.subscribe((state, prev) => {
       updateMetadata(state.currentTrack);
       audioAnalyser.setTrack(state.currentTrack.urn);
       if (previousTrack && previousTrack.urn !== state.currentTrack.urn) {
-        useSoundWaveStore.getState().ingestPlayedTrackFeatures(previousTrack);
+        const sw = useSoundWaveStore.getState();
+        if (prev.queueSource === 'soundwave' && sw.isActive && !sw.isSuspended) {
+          const playedSeconds = getCurrentTime();
+          if (playedSeconds >= 0 && playedSeconds <= 10) {
+            sw.recordFeedback(previousTrack, 'negative');
+          }
+        }
+        sw.ingestPlayedTrackFeatures(previousTrack);
       }
       const shouldSkipStop = crossfadeInProgress;
       crossfadeInProgress = false;

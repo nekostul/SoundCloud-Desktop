@@ -13,9 +13,6 @@ const WHITELIST = [
 /** @type {string | null} */
 const PORT = new URL(sw.location.href).searchParams.get('port');
 
-/** @type {string[]} */
-const HOST_SUFFIX_BYPASS = ['.cloud.qdrant.io', '.qdrant.io'];
-
 sw.addEventListener('install', () => sw.skipWaiting());
 sw.addEventListener('activate', (e) => e.waitUntil(sw.clients.claim()));
 
@@ -36,7 +33,6 @@ function shouldBypassProxy(url, method) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return true;
     if (method === 'OPTIONS') return true;
     if (WHITELIST.some((w) => url.hostname === w)) return true;
-    if (HOST_SUFFIX_BYPASS.some((suffix) => url.hostname.endsWith(suffix))) return true;
     return false;
 }
 

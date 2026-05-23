@@ -119,6 +119,14 @@ export interface CacheBatchResult {
 }
 
 export async function fetchAndCacheTrack(urn: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+  if (isTauriRuntime()) {
+    const existingEntry = await getNativeCacheEntry(urn);
+    if (existingEntry?.complete) {
+      console.log(`[Cache] Authoritative cache hit, skipping download for: ${urn}`);
+      return new ArrayBuffer(0);
+    }
+  }
+
   if (activeDownloads.has(urn)) {
     console.log(`💾[Cache] Reusing active download for: ${urn}`);
     return activeDownloads.get(urn)!;
@@ -174,13 +182,23 @@ export async function fetchAndCacheTrack(urn: string, signal?: AbortSignal): Pro
         }
       } else {
         console.error(`💾 [Cache] Invalid audio received for ${urn}`);
-        await removeCachedTrack(urn);
+        const hasAuthoritativeCache = isTauriRuntime()
+          ? await isCached(urn).catch(() => false)
+          : false;
+        if (!hasAuthoritativeCache) {
+          await removeCachedTrack(urn);
+        }
         throw new Error('Invalid audio');
       }
       return buffer;
     } catch (e: any) {
       if (e.name !== 'AbortError') {
-        await removeCachedTrack(urn);
+        const hasAuthoritativeCache = isTauriRuntime()
+          ? await isCached(urn).catch(() => false)
+          : false;
+        if (!hasAuthoritativeCache) {
+          await removeCachedTrack(urn);
+        }
       }
       if (e.name === 'AbortError') {
         console.warn(`💾[Cache] Fetch ABORTED for ${urn}`);

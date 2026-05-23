@@ -85,7 +85,7 @@ fn complete_stream_cache_exists(final_path: &str) -> bool {
 
     let metadata_path = format!("{final_path}{CACHE_METADATA_EXT}");
     let Ok(raw) = std::fs::read_to_string(metadata_path) else {
-        return false;
+        return true;
     };
     let Ok(metadata) = serde_json::from_str::<StoredStreamCacheMetadata>(&raw) else {
         return false;
@@ -1928,6 +1928,20 @@ fn replace_player_after_seek(
         .as_ref()
         .map(|p| p.is_paused())
         .unwrap_or(false);
+    let paused_output_volume = if was_paused {
+        let vol = *state
+            .volume
+            .try_lock()
+            .map_err(|_| "Seek busy: volume".to_string())?;
+        Some(effective_output_volume(state, vol))
+    } else {
+        None
+    };
+
+    if was_paused {
+        new_player.set_volume(0.0);
+        new_player.pause();
+    }
 
     let old_player = state
         .player
@@ -1956,13 +1970,14 @@ fn replace_player_after_seek(
     state.has_track.store(true, Ordering::Relaxed);
     state.device_error.store(false, Ordering::Relaxed);
 
-    if was_paused {
+    if let Some(output_volume) = paused_output_volume {
         if let Some(ref p) = *state
             .player
             .try_lock()
             .map_err(|_| "Seek busy: player".to_string())?
         {
             p.pause();
+            p.set_volume(output_volume);
         }
     }
 
@@ -2979,6 +2994,13 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
         .try_lock()
         .map_err(|_| "Seek busy: source bytes".to_string())?
         .is_some();
+    let current_output_volume = {
+        let vol = *state
+            .volume
+            .try_lock()
+            .map_err(|_| "Seek busy: volume".to_string())?;
+        effective_output_volume(&state, vol)
+    };
 
     // Try normal seek first
     {
@@ -2987,16 +3009,28 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
             .try_lock()
             .map_err(|_| "Seek busy: player".to_string())?;
         if let Some(ref p) = *player {
+            let was_paused = p.is_paused();
+            if was_paused {
+                p.pause();
+                p.set_volume(0.0);
+            }
+
             let target_within_current_source = target_secs + 0.35 >= local_timeline_start_secs;
             if !has_fallback_source {
                 if let Some(buffered_secs) = estimated_stream_buffered_timeline_secs(&state) {
                     if target_secs > buffered_secs + 1.8 {
+                        if was_paused {
+                            p.set_volume(current_output_volume);
+                        }
                         return Err("Seek target is not buffered yet".into());
                     }
                 } else {
                     let current_timeline_secs =
                         timeline_position_secs_for_output(p.get_pos(), anchor, playback_speed);
                     if target_secs > current_timeline_secs + 6.0 {
+                        if was_paused {
+                            p.set_volume(current_output_volume);
+                        }
                         return Err("Seek target is not buffered yet".into());
                     }
                 }
@@ -3006,12 +3040,21 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
                 let landed_output = p.get_pos();
                 let landed_output_secs = landed_output.as_secs_f64();
                 if (landed_output_secs - local_target_secs).abs() <= 1.25 {
+                    if was_paused {
+                        p.pause();
+                        p.set_volume(current_output_volume);
+                    }
                     set_position_anchor(&state, target_secs, landed_output_secs);
                     state.ended_notified.store(false, Ordering::Relaxed);
                     state.has_track.store(true, Ordering::Relaxed);
                     state.device_error.store(false, Ordering::Relaxed);
                     return Ok(());
                 }
+            }
+
+            if was_paused {
+                p.pause();
+                p.set_volume(current_output_volume);
             }
         }
     }
@@ -3048,10 +3091,17 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
         .volume
         .try_lock()
         .map_err(|_| "Seek busy: volume".to_string())?;
+    let seek_started_paused = state
+        .player
+        .try_lock()
+        .map_err(|_| "Seek busy: player".to_string())?
+        .as_ref()
+        .map(|p| p.is_paused())
+        .unwrap_or(false);
     let (new_player, _) = create_player_from_owned_bytes(
         bytes,
         &mixer,
-        vol,
+        if seek_started_paused { 0.0 } else { vol },
         playback_speed,
         normalization_gain,
         state.eq_params.clone(),
@@ -3062,6 +3112,10 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
             .map_err(|_| "Seek busy: visualizer".to_string())?
             .clone(),
     )?;
+
+    if seek_started_paused {
+        new_player.pause();
+    }
 
     let anchor = if target_secs > 0.015 {
         let target = Duration::from_secs_f64(target_secs);

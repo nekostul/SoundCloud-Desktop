@@ -604,11 +604,8 @@ export const SoundWaveHero: React.FC = () => {
   const stageLabelByKey: Record<string, string> = {
     preset: t('settings.soundwaveStagePreset'),
     init: t('settings.soundwaveStageInit'),
-    qdrant: t('settings.soundwaveStageQdrant'),
     likes: t('settings.soundwaveStageLikes'),
     explore: t('settings.soundwaveStageExplore'),
-    weights: t('settings.soundwaveStageWeights'),
-    seed: t('settings.soundwaveStageSeed'),
     batch: t('settings.soundwaveStageBatch'),
     filter: t('settings.soundwaveStageFilter'),
     language: t('settings.soundwaveStageLanguage'),

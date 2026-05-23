@@ -629,9 +629,56 @@ const FullscreenPanels = React.memo(() => {
   const skipNextArtworkToLyricsSharedTransitionRef = useRef(false);
   const handledMiniPlayerRequestRef = useRef(0);
   const communitySyncSessionRef = useRef<CommunitySyncSession | null>(null);
+  const communitySyncTimingRef = useRef<{
+    trackUrn: string | null;
+    time: number;
+    cursorIndex: number;
+    holdUntil: number;
+  } | null>(null);
   const miniPlayerCollapsedBeforeCommunityFlowRef = useRef<boolean | null>(null);
   const prevTrackUrnRef = useRef<string | null>(null);
   const trackUrn = track?.urn ?? null;
+  const setCommunitySyncTimingReference = useCallback(
+    (time: number, cursorIndex: number) => {
+      communitySyncTimingRef.current = {
+        trackUrn,
+        time: Number.isFinite(time) ? Math.max(0, time) : 0,
+        cursorIndex,
+        holdUntil: Date.now() + 1800,
+      };
+    },
+    [trackUrn],
+  );
+  const getCommunitySyncTimestampSource = useCallback(() => {
+    const playbackTime = getCurrentTime();
+    const timingRef = communitySyncTimingRef.current;
+    if (!timingRef || timingRef.trackUrn !== trackUrn) {
+      return playbackTime;
+    }
+
+    if (Date.now() > timingRef.holdUntil) {
+      communitySyncTimingRef.current = null;
+      return playbackTime;
+    }
+
+    if (playbackTime > timingRef.time + 0.35 || Math.abs(playbackTime - timingRef.time) <= 0.08) {
+      communitySyncTimingRef.current = {
+        ...timingRef,
+        time: playbackTime,
+      };
+      return playbackTime;
+    }
+
+    return timingRef.time;
+  }, [trackUrn]);
+  const seekCommunitySyncPlayback = useCallback(
+    (time: number, cursorIndex: number) => {
+      const targetTime = Number.isFinite(time) ? Math.max(0, time) : 0;
+      setCommunitySyncTimingReference(targetTime, cursorIndex);
+      seek(targetTime, true, true);
+    },
+    [setCommunitySyncTimingReference],
+  );
   const isTrackSwitchingFrame =
     prevTrackUrnRef.current !== null && prevTrackUrnRef.current !== trackUrn;
   const activeManualQuery = getPreferredTrackLyricsSearchQuery(trackUrn, manualQuery, manualQueryRef);
@@ -787,6 +834,8 @@ const FullscreenPanels = React.memo(() => {
 
   const resetCommunitySyncFlow = useCallback((restartTrackIfFinished = false) => {
     setCommunitySyncStage('idle');
+    communitySyncSessionRef.current = null;
+    communitySyncTimingRef.current = null;
     setCommunitySyncSession(null);
     setCommunityPublishPending(false);
     if (restartTrackIfFinished) {
@@ -797,6 +846,10 @@ const FullscreenPanels = React.memo(() => {
   useEffect(() => {
     communitySyncSessionRef.current = communitySyncSession;
   }, [communitySyncSession]);
+
+  useEffect(() => {
+    communitySyncTimingRef.current = null;
+  }, [trackUrn]);
 
   useEffect(() => {
     if (communityFlowActive) {
@@ -847,10 +900,11 @@ const FullscreenPanels = React.memo(() => {
     const syncEditorToPlayback = () => {
       const currentSession = communitySyncSessionRef.current;
       if (!currentSession || currentSession.lines.length === 0) return;
+      const playbackTime = getCommunitySyncTimestampSource();
 
       const nextActiveIndex = getCommunitySyncPlaybackIndex(
         currentSession.lines,
-        getCurrentTime(),
+        playbackTime,
         currentSession.activeIndex,
       );
 
@@ -861,22 +915,24 @@ const FullscreenPanels = React.memo(() => {
 
         const resolvedIndex = getCommunitySyncPlaybackIndex(
           session.lines,
-          getCurrentTime(),
+          getCommunitySyncTimestampSource(),
           session.activeIndex,
         );
 
         if (resolvedIndex === session.activeIndex) return session;
-        return {
+        const nextSession = {
           ...session,
           activeIndex: resolvedIndex,
         };
+        communitySyncSessionRef.current = nextSession;
+        return nextSession;
       });
     };
 
     syncEditorToPlayback();
     const intervalId = window.setInterval(syncEditorToPlayback, 90);
     return () => window.clearInterval(intervalId);
-  }, [communitySyncStage]);
+  }, [communitySyncStage, getCommunitySyncTimestampSource]);
 
   const startCommunitySync = useCallback(() => {
     if (!track || !canCreateCommunitySyncForTrack) return;
@@ -888,6 +944,7 @@ const FullscreenPanels = React.memo(() => {
     }
 
     setIsSearchModalOpen(false);
+    communitySyncSessionRef.current = session;
     setCommunitySyncSession(session);
     setCommunitySyncStage('sync');
   }, [canCreateCommunitySyncForTrack, displayedLyrics, t, track]);
@@ -903,6 +960,7 @@ const FullscreenPanels = React.memo(() => {
       }
 
       setIsSearchModalOpen(false);
+      communitySyncSessionRef.current = session;
       setCommunitySyncSession(session);
       setCommunitySyncStage('sync');
       return;
@@ -945,11 +1003,12 @@ const FullscreenPanels = React.memo(() => {
     if (targetIndex < 0 || targetIndex >= currentSession.lines.length) return;
 
     const { previousTime, nextTime } = getCommunitySyncTimeBounds(currentSession.lines, targetIndex);
+    const timestampSource = getCommunitySyncTimestampSource();
     const nextLines = currentSession.lines.map((line, index) =>
       index === targetIndex
         ? {
             ...line,
-            time: getStampedCommunitySyncTime(getCurrentTime(), previousTime, nextTime),
+            time: getStampedCommunitySyncTime(timestampSource, previousTime, nextTime),
           }
         : line,
     );
@@ -961,9 +1020,10 @@ const FullscreenPanels = React.memo(() => {
       activeIndex: nextPendingIndex >= 0 ? nextPendingIndex : targetIndex,
     };
 
+    communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
     persistCommunitySyncDraft(nextSession);
-  }, [persistCommunitySyncDraft]);
+  }, [getCommunitySyncTimestampSource, persistCommunitySyncDraft]);
 
   const handleCommunitySyncUndo = useCallback(() => {
     const currentSession = communitySyncSessionRef.current;
@@ -991,19 +1051,23 @@ const FullscreenPanels = React.memo(() => {
                 }
               : line,
           );
+    const restoreIndex = findCommunitySyncPreviousStampedIndex(nextLines, targetIndex - 1);
+    const restoreTime =
+      restoreIndex >= 0 && typeof nextLines[restoreIndex]?.time === 'number'
+        ? nextLines[restoreIndex].time
+        : 0;
 
     const nextSession = {
       ...currentSession,
       lines: nextLines,
-      activeIndex: resolveCommunitySyncActiveIndex(
-        nextLines,
-        Math.max(0, Math.min(targetIndex, nextLines.length - 1)),
-      ),
+      activeIndex: restoreIndex >= 0 ? restoreIndex : resolveCommunitySyncActiveIndex(nextLines, -1),
     };
 
+    communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
     persistCommunitySyncDraft(nextSession);
-  }, [persistCommunitySyncDraft]);
+    seekCommunitySyncPlayback(restoreTime, nextSession.activeIndex);
+  }, [persistCommunitySyncDraft, seekCommunitySyncPlayback]);
 
   const handleCommunitySyncInsertPause = useCallback(() => {
     const currentSession = communitySyncSessionRef.current;
@@ -1012,7 +1076,7 @@ const FullscreenPanels = React.memo(() => {
     const insertIndex = getCommunitySyncPauseInsertIndex(currentSession);
     const { previousTime, nextTime } = getCommunitySyncTimeBounds(currentSession.lines, insertIndex);
     const pauseLine = createCommunitySyncPauseLine(
-      getStampedCommunitySyncTime(getCurrentTime(), previousTime, nextTime),
+      getStampedCommunitySyncTime(getCommunitySyncTimestampSource(), previousTime, nextTime),
     );
     const nextLines = [
       ...currentSession.lines.slice(0, insertIndex),
@@ -1026,9 +1090,10 @@ const FullscreenPanels = React.memo(() => {
       activeIndex: Math.max(0, Math.min(insertIndex + 1, nextLines.length - 1)),
     };
 
+    communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
     persistCommunitySyncDraft(nextSession);
-  }, [persistCommunitySyncDraft]);
+  }, [getCommunitySyncTimestampSource, persistCommunitySyncDraft]);
 
   const handleCommunityTimestampCommit = useCallback((index: number, nextTime: number) => {
     const currentSession = communitySyncSessionRef.current;
@@ -1053,6 +1118,7 @@ const FullscreenPanels = React.memo(() => {
       activeIndex: index,
     };
 
+    communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
     persistCommunitySyncDraft(nextSession);
   }, [persistCommunitySyncDraft]);
@@ -1064,16 +1130,17 @@ const FullscreenPanels = React.memo(() => {
     const targetTime = currentSession.lines[index]?.time;
     if (typeof targetTime !== 'number') return;
 
-    seek(targetTime, true, true);
-    setCommunitySyncSession((session) =>
-      session && session.activeIndex !== index
-        ? {
-            ...session,
-            activeIndex: index,
-          }
-        : session,
-    );
-  }, []);
+    seekCommunitySyncPlayback(targetTime, index);
+    setCommunitySyncSession((session) => {
+      if (!session || session.activeIndex === index) return session;
+      const nextSession = {
+        ...session,
+        activeIndex: index,
+      };
+      communitySyncSessionRef.current = nextSession;
+      return nextSession;
+    });
+  }, [seekCommunitySyncPlayback]);
 
   const handleCommunityPublishRequest = useCallback(() => {
     if (!isCommunitySyncSessionComplete(communitySyncSessionRef.current)) return;

@@ -261,7 +261,7 @@ pub struct TrackCacheEntry {
 
 impl TrackCacheEntry {
     fn from_path_and_meta(path: &Path, file_len: u64, meta: Option<TrackCacheMetadata>) -> Self {
-        let complete = meta.as_ref().map(|m| m.complete).unwrap_or(false);
+        let complete = meta.as_ref().map(|m| m.complete).unwrap_or(true);
         Self {
             path: path.to_string_lossy().into_owned(),
             quality: meta.as_ref().map(|m| m.quality.label().to_string()),

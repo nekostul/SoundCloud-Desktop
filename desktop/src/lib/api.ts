@@ -56,7 +56,7 @@ type LocalHistoryEntry = {
   playedAt: string;
 };
 
-type DirectTrackLike = {
+type DirectTrackLike = DirectRecord & {
   id?: number | string | null;
   urn?: string | null;
   likes_count?: number | null;
@@ -67,22 +67,14 @@ type DirectTrackCollection = {
   next_href?: string | null;
 };
 
-type DirectPlaylistLike = {
+type DirectPlaylistLike = DirectRecord & {
   id?: number | string | null;
   urn?: string | null;
+  tracks?: DirectTrackLike[] | null;
 };
 
 type DirectPlaylistCollection = {
   collection?: DirectPlaylistLike[];
-  next_href?: string | null;
-};
-
-type DirectFeedItem = {
-  origin?: DirectTrackLike | null;
-};
-
-type DirectFeedCollection = {
-  collection?: DirectFeedItem[];
   next_href?: string | null;
 };
 
@@ -1120,7 +1112,8 @@ function toRecommendResults(tracks: DirectTrackLike[], limit: number): DirectRec
     const id = extractDirectTrackId(track);
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    results.push({ id });
+    const payload = normalizeTrackEntity(track);
+    results.push(payload ? { id, payload } : { id });
     if (results.length >= limit) {
       break;
     }
@@ -2085,106 +2078,136 @@ async function getPlaylistLikedState(
   return { liked: false };
 }
 
-async function buildPopularRecommendationResults(
+function extractDirectTracksFromUnknown(value: unknown): DirectTrackLike[] {
+  const source = asDirectRecord(value);
+  const rawCollection = Array.isArray(value)
+    ? value
+    : Array.isArray(source?.collection)
+      ? source.collection
+      : [value];
+  const tracks: DirectTrackLike[] = [];
+
+  for (const entry of rawCollection) {
+    const track = normalizeTrackEntity<DirectTrackLike>(entry);
+    if (track) {
+      tracks.push(track);
+      continue;
+    }
+
+    const record = asDirectRecord(entry);
+    const nestedTrack = normalizeTrackEntity<DirectTrackLike>(record?.track ?? record?.origin);
+    if (nestedTrack) {
+      tracks.push(nestedTrack);
+      continue;
+    }
+
+    const playlist = normalizePlaylistEntity<DirectPlaylistLike>(
+      record?.playlist ?? record?.origin ?? entry,
+    );
+    if (Array.isArray(playlist?.tracks)) {
+      tracks.push(
+        ...playlist.tracks
+          .map((playlistTrack) => normalizeTrackEntity<DirectTrackLike>(playlistTrack))
+          .filter((playlistTrack): playlistTrack is DirectTrackLike => playlistTrack !== null),
+      );
+    }
+  }
+
+  return tracks;
+}
+
+async function requestDirectTracks(
+  path: string,
+  ctx: DirectRequestContext,
+): Promise<DirectTrackLike[]> {
+  try {
+    const result = await requestDirectPath<unknown>(path, {}, ctx);
+    return extractDirectTracksFromUnknown(result);
+  } catch {
+    return [];
+  }
+}
+
+async function requestDirectRelatedTracks(
+  trackId: string,
   limit: number,
   ctx: DirectRequestContext,
-): Promise<DirectRecommendResult[]> {
+): Promise<DirectTrackLike[]> {
+  if (!trackId) return [];
   const params = new URLSearchParams({
-    limit: String(Math.max(limit, 20)),
+    limit: String(limit),
     linked_partitioning: 'true',
     access: 'playable,preview,blocked',
   });
-  const result = await requestDirectPath<DirectTrackCollection>(`/tracks?${params.toString()}`, {}, ctx);
-  return toRecommendResults(result.collection ?? [], limit);
+  return requestDirectTracks(`/tracks/${encodeURIComponent(trackId)}/related?${params}`, ctx);
 }
 
-async function gatherRecommendationSeedTrackIds(
-  ctx: DirectRequestContext,
+async function requestDirectStationTracks(
+  trackId: string,
   limit: number,
-): Promise<string[]> {
-  const seeds: string[] = [];
-  const seen = new Set<string>();
+  ctx: DirectRequestContext,
+): Promise<DirectTrackLike[]> {
+  if (!trackId) return [];
 
-  const pushSeed = (id: string | null) => {
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    seeds.push(id);
-  };
+  try {
+    const track = await requestDirectPath<DirectTrackLike>(
+      `/tracks/${encodeURIComponent(trackId)}`,
+      {},
+      ctx,
+    );
+    const stationUrn = typeof track.station_urn === 'string' ? track.station_urn.trim() : '';
+    if (!stationUrn) return [];
 
-  for (const entry of readLocalHistory().slice(0, 10)) {
-    pushSeed(normalizeResourceRef(entry.scTrackId, 'tracks').id);
-    if (seeds.length >= limit) {
-      return seeds;
-    }
+    const params = new URLSearchParams({
+      limit: String(limit),
+      linked_partitioning: 'true',
+      access: 'playable,preview,blocked',
+    });
+    return requestDirectTracks(`/stations/${stationUrn}/tracks?${params}`, ctx);
+  } catch {
+    return [];
   }
-
-  const [liked, following, feed] = await Promise.allSettled([
-    requestDirectPath<DirectTrackCollection>('/me/likes/tracks?limit=40', {}, ctx),
-    requestDirectPath<DirectTrackCollection>('/me/followings/tracks?limit=30', {}, ctx),
-    requestDirectPath<DirectFeedCollection>('/me/feed?limit=20', {}, ctx),
-  ]);
-
-  if (liked.status === 'fulfilled') {
-    for (const track of liked.value.collection ?? []) {
-      pushSeed(extractDirectTrackId(track));
-      if (seeds.length >= limit) return seeds;
-    }
-  }
-
-  if (following.status === 'fulfilled') {
-    for (const track of following.value.collection ?? []) {
-      pushSeed(extractDirectTrackId(track));
-      if (seeds.length >= limit) return seeds;
-    }
-  }
-
-  if (feed.status === 'fulfilled') {
-    for (const item of feed.value.collection ?? []) {
-      pushSeed(extractDirectTrackId(item.origin ?? undefined));
-      if (seeds.length >= limit) return seeds;
-    }
-  }
-
-  return seeds;
 }
 
-async function buildRelatedRecommendationResults(
-  seedTrackIds: string[],
+async function requestDirectChartsTracks(
+  kind: 'top' | 'trending',
   limit: number,
   ctx: DirectRequestContext,
-  excludeIds: Set<string> = new Set(),
-): Promise<DirectRecommendResult[]> {
-  const scoreById = new Map<string, number>();
-  const relatedLimit = clampInt(Math.max(limit * 2, 12), 12, 40);
-  const effectiveSeeds = seedTrackIds.slice(0, 6);
+): Promise<DirectTrackLike[]> {
+  const params = new URLSearchParams({
+    kind,
+    genre: 'soundcloud:genres:all-music',
+    limit: String(limit),
+    linked_partitioning: 'true',
+  });
+  return requestDirectTracks(`/charts?${params}`, ctx);
+}
 
-  const pages = await Promise.allSettled(
-    effectiveSeeds.map((trackId) =>
-      requestDirectPath<DirectTrackCollection>(
-        `/tracks/${encodeURIComponent(trackId)}/related?limit=${relatedLimit}&access=playable,preview,blocked`,
-        {},
-        ctx,
-      ),
+async function requestRelatedFromLikedTracks(
+  likedTracks: DirectTrackLike[],
+  limit: number,
+  ctx: DirectRequestContext,
+): Promise<DirectTrackLike[]> {
+  const groups = await Promise.all(
+    likedTracks.slice(0, 5).map((track) =>
+      requestDirectRelatedTracks(extractDirectTrackId(track) ?? '', limit, ctx),
     ),
   );
+  return groups.flat();
+}
 
-  pages.forEach((page, index) => {
-    if (page.status !== 'fulfilled') return;
-
-    for (const track of page.value.collection ?? []) {
+function directRecommendResults(
+  groups: DirectTrackLike[][],
+  limit: number,
+  excludeIds = new Set<string>(),
+): DirectRecommendResult[] {
+  return toRecommendResults(
+    groups.flat().filter((track) => {
       const id = extractDirectTrackId(track);
-      if (!id || excludeIds.has(id) || effectiveSeeds.includes(id)) continue;
-
-      const popularityBoost = Math.log10((track.likes_count ?? 0) + 1) * 0.08;
-      const seedBoost = Math.max(0.2, 1 - index * 0.12);
-      scoreById.set(id, (scoreById.get(id) ?? 0) + seedBoost + popularityBoost);
-    }
-  });
-
-  return [...scoreById.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([id, score]) => ({ id, score }));
+      return id && !excludeIds.has(id);
+    }),
+    limit,
+  );
 }
 
 async function handleRecommendationsRequest<T>(
@@ -2195,12 +2218,28 @@ async function handleRecommendationsRequest<T>(
   const limit = clampInt(Number(searchParams.get('limit') ?? 24), 1, 50);
 
   if (pathSegments.length === 1) {
-    const seedTrackIds = await gatherRecommendationSeedTrackIds(ctx, 10);
-    const results =
-      seedTrackIds.length > 0
-        ? await buildRelatedRecommendationResults(seedTrackIds, limit, ctx)
-        : [];
-    return (results.length > 0 ? results : await buildPopularRecommendationResults(limit, ctx)) as T;
+    const sourceLimit = Math.max(limit * 2, 32);
+    const [feed, liked, likedPlaylists, trending, top] = await Promise.all([
+      requestDirectTracks(`/me/feed?limit=${sourceLimit}&linked_partitioning=true`, ctx),
+      requestDirectTracks(
+        `/me/likes/tracks?limit=${Math.min(sourceLimit, 40)}&linked_partitioning=true&access=playable,preview,blocked`,
+        ctx,
+      ),
+      requestDirectTracks(
+        `/me/likes/playlists?limit=${Math.min(sourceLimit, 40)}&linked_partitioning=true&access=playable,preview,blocked`,
+        ctx,
+      ),
+      requestDirectChartsTracks('trending', Math.min(sourceLimit, 50), ctx),
+      requestDirectChartsTracks('top', Math.min(sourceLimit, 50), ctx),
+    ]);
+    const likesRelated = await requestRelatedFromLikedTracks(liked, sourceLimit, ctx);
+    const mode = searchParams.get('mode') === 'diverse' ? 'diverse' : 'similar';
+    const groups =
+      mode === 'diverse'
+        ? [feed, trending, likesRelated, likedPlaylists, top]
+        : [feed, likesRelated, likedPlaylists, trending, top];
+
+    return directRecommendResults(groups, limit) as T;
   }
 
   if (pathSegments[1] === 'search') {
@@ -2230,14 +2269,15 @@ async function handleRecommendationsRequest<T>(
         .filter((value): value is string => !!value),
     );
 
-    const results = await buildRelatedRecommendationResults(
-      anchor.id ? [anchor.id] : [],
-      limit,
-      ctx,
-      excludeIds,
-    );
+    if (anchor.id) excludeIds.add(anchor.id);
 
-    return (results.length > 0 ? results : await buildPopularRecommendationResults(limit, ctx)) as T;
+    const station =
+      pathSegments[1] === 'wave'
+        ? await requestDirectStationTracks(anchor.id ?? '', Math.max(limit * 2, 24), ctx)
+        : [];
+    const related = await requestDirectRelatedTracks(anchor.id ?? '', Math.max(limit * 2, 24), ctx);
+
+    return directRecommendResults([station, related], limit, excludeIds) as T;
   }
 
   throw new Error(`Standalone mode does not support /${pathSegments.join('/')}`);

@@ -77,6 +77,18 @@ function getCenteredLyricScrollTop(
   );
 }
 
+function getPauseEndOpacity(progress: number) {
+  const enter = clamp01(progress / 0.18);
+  const leave = clamp01((progress - 0.78) / 0.22);
+  const enterEase = enter * enter * (3 - 2 * enter);
+  const leaveEase = leave * leave * (3 - 2 * leave);
+  return enterEase * (1 - leaveEase);
+}
+
+function applyPauseEndOpacity(lineEl: HTMLElement, progress: number) {
+  lineEl.style.setProperty('--pause-end-opacity', getPauseEndOpacity(progress).toFixed(3));
+}
+
 const ReleaseSyncedLyricsWithProgress = React.memo(
   ({
     lines,
@@ -162,6 +174,7 @@ const ReleaseSyncedLyricsWithProgress = React.memo(
         if (progressBar) {
           progressBar.style.width = `${progress * 100}%`;
         }
+        applyPauseEndOpacity(current, progress);
       }
     };
 
@@ -201,6 +214,7 @@ const ReleaseSyncedLyricsWithProgress = React.memo(
           if (progressBar) {
             progressBar.style.width = filled ? '100%' : '0%';
           }
+          applyPauseEndOpacity(el, filled ? 1 : 0);
         }
 
         if (state !== 'active') {
@@ -389,8 +403,8 @@ if (idx !== activeRef.current) {
       ? 'lyric-line group relative origin-center will-change-transform py-1 text-[clamp(22px,2.35vw,30px)] font-bold tracking-tight antialiased text-white/55 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]'
       : 'lyric-line group relative origin-center will-change-transform py-3 text-[38px] font-bold tracking-tight antialiased text-white/55 transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]';
     const pauseStateClassName = isCommunityPreviewLayout
-      ? 'flex w-full justify-center px-0 pr-0 opacity-52 scale-[0.995] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.08] data-[state=active]:blur-0 data-[state=past-near]:opacity-46 data-[state=past-near]:scale-[0.988] data-[state=past-near]:blur-0 data-[state=past]:opacity-34 data-[state=past]:scale-[0.956] data-[state=past]:blur-[2px] data-[state=next-near]:opacity-76 data-[state=next-near]:scale-[0.99] data-[state=next-near]:blur-0 data-[state=next]:opacity-34 data-[state=next]:scale-[0.952] data-[state=next]:blur-[2px]'
-      : 'flex w-full justify-center px-0 pr-0 opacity-55 scale-[0.995] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.12] data-[state=active]:blur-0 data-[state=past-near]:opacity-40 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-0 data-[state=past]:opacity-30 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-74 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-0 data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]';
+      ? 'lyric-pause-line lyric-pause-line-compact flex w-full justify-center px-0 pr-0 opacity-0 scale-[0.96] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.08] data-[state=active]:blur-0 data-[state=past-near]:opacity-0 data-[state=past-near]:scale-[0.96] data-[state=past-near]:blur-0 data-[state=past]:opacity-0 data-[state=past]:scale-[0.94] data-[state=past]:blur-[2px] data-[state=next-near]:opacity-0 data-[state=next-near]:scale-[0.96] data-[state=next-near]:blur-0 data-[state=next]:opacity-0 data-[state=next]:scale-[0.94] data-[state=next]:blur-[2px]'
+      : 'lyric-pause-line flex w-full justify-center px-0 pr-0 opacity-0 scale-[0.96] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.12] data-[state=active]:blur-0 data-[state=past-near]:opacity-0 data-[state=past-near]:scale-[0.96] data-[state=past-near]:blur-0 data-[state=past]:opacity-0 data-[state=past]:scale-[0.93] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-0 data-[state=next-near]:scale-[0.96] data-[state=next-near]:blur-0 data-[state=next]:opacity-0 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]';
     const lyricStateClassName = isCommunityPreviewLayout
       ? 'cursor-pointer opacity-52 scale-[0.99] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.1] data-[state=active]:blur-0 data-[state=active]:[text-shadow:0_0_24px_rgba(255,255,255,0.2)] data-[state=past-near]:opacity-46 data-[state=past-near]:scale-[0.99] data-[state=past-near]:blur-[1px] data-[state=past]:opacity-34 data-[state=past]:scale-[0.96] data-[state=past]:blur-[2px] data-[state=next-near]:opacity-76 data-[state=next-near]:scale-[0.99] data-[state=next-near]:blur-[1px] data-[state=next]:opacity-34 data-[state=next]:scale-[0.955] data-[state=next]:blur-[2px]'
       : 'cursor-pointer pr-12 opacity-55 scale-[0.985] blur-0 data-[state=active]:opacity-100 data-[state=active]:scale-[1.15] data-[state=active]:blur-0 data-[state=active]:[text-shadow:0_0_32px_rgba(255,255,255,0.22)] data-[state=past-near]:opacity-40 data-[state=past-near]:scale-[0.985] data-[state=past-near]:blur-[2px] data-[state=past]:opacity-30 data-[state=past]:scale-[0.94] data-[state=past]:blur-[3px] data-[state=next-near]:opacity-72 data-[state=next-near]:scale-[0.985] data-[state=next-near]:blur-[2px] data-[state=next]:opacity-30 data-[state=next]:scale-[0.93] data-[state=next]:blur-[4px]';
@@ -449,6 +463,7 @@ const displayText =
                 style={{
                   textRendering: 'optimizeLegibility',
                   ['--lyric-progress' as string]: '0%',
+                  ['--pause-end-opacity' as string]: '0',
                   filter: isUserScrolling ? 'blur(0px)' : undefined,
                   ...(isPauseDisplay ? { cursor: 'default' } : {}),
                 }}
@@ -471,8 +486,17 @@ const displayText =
                 <div
                   className={
                     isPauseDisplay
-                      ? 'flex w-28 flex-col items-center'
+                      ? 'pause-card flex w-28 flex-col items-center'
                       : 'flex w-full flex-col items-center'
+                  }
+                  style={
+                    isPauseDisplay
+                      ? {
+                          opacity: 'var(--pause-end-opacity)',
+                          transition:
+                            'opacity 520ms cubic-bezier(0.16,1,0.3,1), transform 520ms cubic-bezier(0.16,1,0.3,1)',
+                        }
+                      : undefined
                   }
                 >
                   {isPauseDisplay ? (
@@ -660,12 +684,21 @@ const SyncedLyricsWithProgress = React.memo(
       const lineEls = lineElsRef.current;
       const current = lineEls[idx];
       if (!current) return;
+      const currentLine = linesRef.current[idx];
 
       const progress = getStepLineProgress(idx, time);
       const activeChars = current.querySelectorAll<HTMLElement>('[data-char-index]');
 
       applyLyricProgressStyle(current, progress);
       syncActiveChars(activeChars, progress);
+
+      if (isPauseDisplayLine(currentLine)) {
+        const progressBar = current.querySelector('.pause-progress-bar') as HTMLElement | null;
+        if (progressBar) {
+          progressBar.style.width = `${progress * 100}%`;
+        }
+        applyPauseEndOpacity(current, progress);
+      }
     };
 
     const applyStepStates = (idx: number, _prev: number) => {
@@ -709,6 +742,7 @@ const SyncedLyricsWithProgress = React.memo(
           if (progressBar) {
             progressBar.style.width = progress;
           }
+          applyPauseEndOpacity(el, progress === '100%' ? 1 : 0);
         }
 
         if (state !== 'active' && (stateChanged || progressChanged)) {
@@ -813,7 +847,7 @@ const SyncedLyricsWithProgress = React.memo(
     ) => {
       if (!line) return false;
       const text = line.text.trim();
-      return text.length === 0 || text === '♪♪♪' || text === '...';
+      return text.length === 0 || text === PAUSE_MARKER || text === '...';
     };
 
     const updateLineProgress = (idx: number, progress: number) => {
@@ -832,6 +866,7 @@ const SyncedLyricsWithProgress = React.memo(
         if (progressBar) {
           progressBar.style.width = `${progress * 100}%`;
         }
+        applyPauseEndOpacity(current, progress);
       }
     };
 
@@ -876,6 +911,7 @@ const SyncedLyricsWithProgress = React.memo(
           if (progressBar) {
             progressBar.style.width = progress;
           }
+          applyPauseEndOpacity(el, progress === '100%' ? 1 : 0);
         }
 
         if (state !== 'active' && (stateChanged || progressChanged)) {
@@ -1068,11 +1104,11 @@ return (
 
           const displayText =
             line.text.trim().length === 0
-              ? '♪♪♪'
+              ? PAUSE_MARKER
               : line.text;
 
           const isPauseDisplay =
-            displayText === '♪♪♪';
+            displayText === PAUSE_MARKER;
 
           const totalAnimatedChars = Array.from(displayText).filter(
             (char) => !/^\s+$/.test(char),
@@ -1083,7 +1119,7 @@ return (
               key={`${line.time}-${i}-${isPlaceholder ? 'ph' : 'lyric'}`}
               className={`lyric-line group relative flex w-full max-w-[min(100%,880px)] justify-center py-2.5 text-center text-[clamp(28px,3.8vw,48px)] font-bold tracking-tight antialiased text-white/22 transition-all duration-700 ease-[var(--ease-apple)] will-change-transform ${
                 isPauseDisplay
-                  ? 'opacity-55 scale-[0.99] data-[state=active]:opacity-100 data-[state=active]:scale-[1.01] data-[state=past-near]:opacity-72 data-[state=past-near]:scale-[0.992] data-[state=past]:opacity-46 data-[state=past]:scale-[0.985] data-[state=next-near]:opacity-62 data-[state=next-near]:scale-[0.99] data-[state=next]:opacity-26 data-[state=next]:scale-[0.98]'
+                  ? 'lyric-pause-line opacity-0 scale-[0.96] data-[state=active]:opacity-100 data-[state=active]:scale-[1.01] data-[state=past-near]:opacity-0 data-[state=past-near]:scale-[0.96] data-[state=past]:opacity-0 data-[state=past]:scale-[0.94] data-[state=next-near]:opacity-0 data-[state=next-near]:scale-[0.96] data-[state=next]:opacity-0 data-[state=next]:scale-[0.94]'
                   : 'cursor-pointer px-4 opacity-38 scale-[0.974] data-[state=active]:opacity-100 data-[state=active]:scale-[1.055] data-[state=past-near]:opacity-78 data-[state=past-near]:scale-[0.992] data-[state=past]:opacity-48 data-[state=past]:scale-[0.982] data-[state=next-near]:opacity-66 data-[state=next-near]:scale-[0.99] data-[state=next]:opacity-28 data-[state=next]:scale-[0.972]'
               }`}
               style={{
@@ -1095,6 +1131,7 @@ return (
                 ['--lyric-cursor-start' as string]: '0',
                 ['--lyric-cursor-end' as string]: '0',
                 ['--lyric-cursor-opacity' as string]: '0',
+                ['--pause-end-opacity' as string]: '0',
                 filter: isUserScrolling ? 'blur(0px)' : undefined,
                 ...(isPauseDisplay
                   ? { cursor: 'default' }
@@ -1137,8 +1174,17 @@ return (
               <div
                 className={
                   isPauseDisplay
-                    ? 'flex w-28 flex-col items-center'
+                    ? 'pause-card flex w-28 flex-col items-center'
                     : 'flex w-full flex-col items-center'
+                }
+                style={
+                  isPauseDisplay
+                    ? {
+                        opacity: 'var(--pause-end-opacity)',
+                        transition:
+                          'opacity 520ms cubic-bezier(0.16,1,0.3,1), transform 520ms cubic-bezier(0.16,1,0.3,1)',
+                      }
+                    : undefined
                 }
               >
                 {isPauseDisplay ? (

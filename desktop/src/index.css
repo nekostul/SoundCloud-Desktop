@@ -826,6 +826,47 @@ body,
   animation: noteGradientFlow 3.2s linear infinite;
 }
 
+.lyric-pause-line {
+  max-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  transition:
+    max-height 760ms cubic-bezier(0.16, 1, 0.3, 1),
+    margin 760ms cubic-bezier(0.16, 1, 0.3, 1),
+    padding 760ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 620ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 760ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 760ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.lyric-pause-line[data-state="active"] {
+  max-height: 118px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  padding-top: 20px !important;
+  padding-bottom: 20px !important;
+}
+
+.lyric-pause-line.lyric-pause-line-compact[data-state="active"] {
+  max-height: 82px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  padding-top: 12px !important;
+  padding-bottom: 12px !important;
+}
+
+.lyric-pause-line .pause-card {
+  transform: translateY(10px) scale(0.92);
+}
+
+.lyric-pause-line[data-state="active"] .pause-card {
+  transform: translateY(0) scale(1);
+}
+
 .note-gradient-text {
   opacity: 1;
   color: rgba(255, 255, 255, 0.24) !important;

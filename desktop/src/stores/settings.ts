@@ -5,51 +5,6 @@ import { normalizeLanguage, type AppLanguage } from '../i18n/language';
 import { normalizeTargetFramerate } from '../lib/framerate';
 import { tauriStorage } from '../lib/tauri-storage';
 
-const ENCODED_QDRANT_URL =
-  'aHR0cHM6Ly9hZDkzOTEzOS00ODE5LTRkM2EtYjJhMS0xMTQ3YTAzZjU5YWMuc2EtZWFzdC0xLTAuYXdzLmNsb3VkLnFkcmFudC5pby8=';
-const ENCODED_QDRANT_KEY =
-  'ZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SmhZMk5sYzNNaU9pSnRJbjAuZ3ZTVlZEbFNEMms1OWxDb2ktSms2bFQtUUVPXzRYbXBVQmJ6eDNEdDRTOA==';
-const ENCODED_QDRANT_COLLECTION = 'c3dfMTI=';
-
-const decodeBase64 = (str: string): string => {
-  return atob(str);
-};
-
-const STORAGE_KEY_PREFIX = 'enc:qdrant:v1:';
-const STORAGE_KEY_SEED = 'scd_qdrant_seed_v1';
-
-const encodeQdrantKeyForStorage = (value: string): string => {
-  const normalized = value.trim();
-  if (!normalized) return '';
-  const transformed = Array.from(normalized, (char, index) => {
-    const seed = STORAGE_KEY_SEED.charCodeAt(index % STORAGE_KEY_SEED.length);
-    return String.fromCharCode(char.charCodeAt(0) ^ seed);
-  }).join('');
-  return `${STORAGE_KEY_PREFIX}${btoa(transformed)}`;
-};
-
-const decodeQdrantKeyFromStorage = (value: string): string => {
-  if (!value) return '';
-  if (!value.startsWith(STORAGE_KEY_PREFIX)) return value;
-
-  try {
-    const encoded = value.slice(STORAGE_KEY_PREFIX.length);
-    const transformed = atob(encoded);
-    return Array.from(transformed, (char, index) => {
-      const seed = STORAGE_KEY_SEED.charCodeAt(index % STORAGE_KEY_SEED.length);
-      return String.fromCharCode(char.charCodeAt(0) ^ seed);
-    }).join('');
-  } catch {
-    return '';
-  }
-};
-
-const PREDEFINED_QDRANT_URL = decodeBase64(ENCODED_QDRANT_URL);
-const PREDEFINED_QDRANT_KEY = decodeBase64(ENCODED_QDRANT_KEY);
-const PREDEFINED_QDRANT_COLLECTION = decodeBase64(ENCODED_QDRANT_COLLECTION);
-
-const normalizeQdrantUrl = (value: string): string =>
-  value.trim().replace('aws.courd.qdrant.io', 'aws.cloud.qdrant.io');
 const normalizePreferredLanguages = (value: unknown): string[] => {
   const source = Array.isArray(value)
     ? value
@@ -259,15 +214,6 @@ export interface SettingsState {
   discordRpcMode: DiscordRpcMode;
   discordRpcShowButton: boolean;
   discordRpcButtonMode: DiscordRpcButtonMode;
-  qdrantEnabled: boolean;
-  qdrantUrl: string;
-  qdrantKey: string;
-  qdrantCollection: string;
-  regionalTrendSeed: boolean;
-  regionalTrendRegions: string;
-  llmRerankEnabled: boolean;
-  llmEndpoint: string;
-  llmModel: string;
   visualizerStyle: 'Off' | 'Bars' | 'Wave' | 'Pulse';
   visualizerPlaybar: boolean;
   visualizerFullscreen: boolean;
@@ -355,15 +301,6 @@ export interface SettingsState {
   setDiscordRpcMode: (mode: DiscordRpcMode) => void;
   setDiscordRpcShowButton: (show: boolean) => void;
   setDiscordRpcButtonMode: (mode: DiscordRpcButtonMode) => void;
-  setQdrantEnabled: (v: boolean) => void;
-  setQdrantUrl: (v: string) => void;
-  setQdrantKey: (v: string) => void;
-  setQdrantCollection: (v: string) => void;
-  setRegionalTrendSeed: (v: boolean) => void;
-  setRegionalTrendRegions: (v: string) => void;
-  setLlmRerankEnabled: (v: boolean) => void;
-  setLlmEndpoint: (v: string) => void;
-  setLlmModel: (v: string) => void;
   setVisualizerStyle: (style: 'Off' | 'Bars' | 'Wave' | 'Pulse') => void;
   setVisualizerPlaybar: (v: boolean) => void;
   setVisualizerFullscreen: (v: boolean) => void;
@@ -404,31 +341,6 @@ export interface SettingsState {
 }
 
 const DEFAULT_EQ_GAINS = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-const ENV_QDRANT_URL = normalizeQdrantUrl(
-  import.meta.env.VITE_QDRANT_URL?.trim() || PREDEFINED_QDRANT_URL,
-);
-const ENV_QDRANT_KEY = import.meta.env.VITE_QDRANT_API_KEY?.trim() || PREDEFINED_QDRANT_KEY;
-const ENV_QDRANT_COLLECTION =
-  import.meta.env.VITE_QDRANT_COLLECTION?.trim() || PREDEFINED_QDRANT_COLLECTION;
-const ENV_QDRANT_ENABLED_RAW = import.meta.env.VITE_QDRANT_ENABLED;
-const ENV_QDRANT_ENABLED = ENV_QDRANT_ENABLED_RAW
-  ? ['1', 'true', 'yes', 'on'].includes(ENV_QDRANT_ENABLED_RAW.toLowerCase())
-  : Boolean(ENV_QDRANT_URL);
-const ENV_REGIONAL_TREND_SEED =
-  (import.meta.env.VITE_SW_REGIONAL_TRENDS || '').toLowerCase() === 'true';
-const ENV_REGIONAL_TREND_REGIONS =
-  import.meta.env.VITE_SW_REGIONAL_TREND_REGIONS?.trim() || 'us,gb,de,fr,br,jp,kr,mx';
-const ENV_LLM_RERANK = (import.meta.env.VITE_SW_LLM_RERANK || '').toLowerCase() === 'true';
-const ENV_LLM_ENDPOINT = import.meta.env.VITE_SW_LLM_ENDPOINT?.trim() || 'http://127.0.0.1:11434';
-const ENV_LLM_MODEL = import.meta.env.VITE_SW_LLM_MODEL?.trim() || 'qwen2.5:14b';
-
-export const resolveQdrantApiKey = (rawKey: string): string => {
-  const normalized = rawKey.trim();
-  return normalized || ENV_QDRANT_KEY;
-};
-
-export const isDefaultQdrantKeyInUse = (rawKey: string): boolean => rawKey.trim().length === 0;
 
 const DEFAULTS = {
   accentColor: '#ff5500',
@@ -481,15 +393,6 @@ const DEFAULTS = {
   discordRpcMode: 'text' as DiscordRpcMode,
   discordRpcShowButton: true,
   discordRpcButtonMode: 'soundcloud' as DiscordRpcButtonMode,
-  qdrantEnabled: ENV_QDRANT_ENABLED,
-  qdrantUrl: ENV_QDRANT_URL,
-  qdrantKey: '',
-  qdrantCollection: ENV_QDRANT_COLLECTION,
-  regionalTrendSeed: ENV_REGIONAL_TREND_SEED,
-  regionalTrendRegions: ENV_REGIONAL_TREND_REGIONS,
-  llmRerankEnabled: ENV_LLM_RERANK,
-  llmEndpoint: ENV_LLM_ENDPOINT,
-  llmModel: ENV_LLM_MODEL,
   visualizerStyle: 'Wave' as const,
   visualizerPlaybar: true,
   visualizerFullscreen: false,
@@ -633,15 +536,6 @@ export const useSettingsStore = create<SettingsState>()(
       setDiscordRpcMode: (discordRpcMode) => set({ discordRpcMode }),
       setDiscordRpcShowButton: (discordRpcShowButton) => set({ discordRpcShowButton }),
       setDiscordRpcButtonMode: (discordRpcButtonMode) => set({ discordRpcButtonMode }),
-      setQdrantEnabled: (qdrantEnabled) => set({ qdrantEnabled }),
-      setQdrantUrl: (qdrantUrl) => set({ qdrantUrl: normalizeQdrantUrl(qdrantUrl) }),
-      setQdrantKey: (qdrantKey) => set({ qdrantKey: qdrantKey.trim() }),
-      setQdrantCollection: (qdrantCollection) => set({ qdrantCollection }),
-      setRegionalTrendSeed: (regionalTrendSeed) => set({ regionalTrendSeed }),
-      setRegionalTrendRegions: (regionalTrendRegions) => set({ regionalTrendRegions }),
-      setLlmRerankEnabled: (llmRerankEnabled) => set({ llmRerankEnabled }),
-      setLlmEndpoint: (llmEndpoint) => set({ llmEndpoint }),
-      setLlmModel: (llmModel) => set({ llmModel }),
       setVisualizerStyle: (visualizerStyle) => set({ visualizerStyle }),
       setVisualizerPlaybar: (visualizerPlaybar) => set({ visualizerPlaybar }),
       setVisualizerFullscreen: (visualizerFullscreen) => set({ visualizerFullscreen }),
@@ -784,11 +678,6 @@ export const useSettingsStore = create<SettingsState>()(
           appFontCustomPath?: unknown;
           appFontCustomFamily?: unknown;
         };
-        const decodedKey = decodeQdrantKeyFromStorage((state.qdrantKey as string) || '');
-        const normalizedKey = decodedKey.trim();
-        const qdrantKey =
-          normalizedKey && normalizedKey !== ENV_QDRANT_KEY ? normalizedKey : DEFAULTS.qdrantKey;
-        const qdrantUrl = normalizeQdrantUrl((state.qdrantUrl as string) || DEFAULTS.qdrantUrl);
         const pinnedPlaylists = normalizePinnedPlaylists(state.pinnedPlaylists);
         const mediaProxyMode = normalizeMediaProxyMode(state.mediaProxyMode);
         const preferredLanguages = normalizePreferredLanguages(
@@ -812,8 +701,6 @@ export const useSettingsStore = create<SettingsState>()(
           ...restState,
           language,
           themePreset,
-          qdrantUrl,
-          qdrantKey,
           pinnedPlaylists,
           mediaProxyMode,
           mediaConnectivityDialogOpen: false,
@@ -843,11 +730,6 @@ export const useSettingsStore = create<SettingsState>()(
           appFontCustomPath?: unknown;
           appFontCustomFamily?: unknown;
         };
-        const decodedKey = decodeQdrantKeyFromStorage((state.qdrantKey as string) || '');
-        const normalizedKey = decodedKey.trim();
-        const qdrantKey =
-          normalizedKey && normalizedKey !== ENV_QDRANT_KEY ? normalizedKey : DEFAULTS.qdrantKey;
-        const qdrantUrl = normalizeQdrantUrl((state.qdrantUrl as string) || currentState.qdrantUrl);
         const pinnedPlaylists = normalizePinnedPlaylists(state.pinnedPlaylists);
         const mediaProxyMode = normalizeMediaProxyMode(state.mediaProxyMode);
         const preferredLanguages = normalizePreferredLanguages(
@@ -871,8 +753,6 @@ export const useSettingsStore = create<SettingsState>()(
           ...restState,
           language,
           themePreset,
-          qdrantUrl,
-          qdrantKey,
           pinnedPlaylists,
           mediaProxyMode,
           mediaConnectivityDialogOpen: false,
@@ -939,15 +819,6 @@ export const useSettingsStore = create<SettingsState>()(
         discordRpcMode: s.discordRpcMode,
         discordRpcShowButton: s.discordRpcShowButton,
         discordRpcButtonMode: s.discordRpcButtonMode,
-        qdrantEnabled: s.qdrantEnabled,
-        qdrantUrl: s.qdrantUrl,
-        qdrantKey: encodeQdrantKeyForStorage(s.qdrantKey),
-        qdrantCollection: s.qdrantCollection,
-        regionalTrendSeed: s.regionalTrendSeed,
-        regionalTrendRegions: s.regionalTrendRegions,
-        llmRerankEnabled: s.llmRerankEnabled,
-        llmEndpoint: s.llmEndpoint,
-        llmModel: s.llmModel,
         targetFramerate: s.targetFramerate,
         unlockFramerate: s.unlockFramerate,
         showFpsCounter: s.showFpsCounter,
