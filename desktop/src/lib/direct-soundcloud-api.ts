@@ -4,6 +4,7 @@ import { isTauriRuntime } from './runtime';
 const SOUNDCLOUD_TOKEN_KEY = 'sc-direct-access-token';
 const SOUNDCLOUD_REFRESH_TOKEN_KEY = 'sc-direct-refresh-token';
 const SOUNDCLOUD_TOKEN_EXPIRES_KEY = 'sc-direct-token-expires';
+const SOUNDCLOUD_AUTH_SOURCE_KEY = 'sc-direct-auth-source';
 const TOKEN_REFRESH_BUFFER_MS = 60_000;
 
 export interface DirectOAuthTokens {
@@ -51,6 +52,8 @@ type DirectTokenSnapshot = {
   refreshToken: string | null;
   expiresAt: number | null;
 };
+
+type DirectAuthSource = 'custom' | 'shared';
 
 type EnsureDirectAccessTokenOptions = {
   forceRefresh?: boolean;
@@ -130,6 +133,31 @@ function persistDirectTokenSnapshot(snapshot: DirectTokenSnapshot): void {
   }
 }
 
+function readDirectAuthSource(): DirectAuthSource | null {
+  if (!canUseBrowserStorage()) return null;
+
+  try {
+    const source = localStorage.getItem(SOUNDCLOUD_AUTH_SOURCE_KEY);
+    return source === 'custom' || source === 'shared' ? source : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeDirectAuthSource(source: DirectAuthSource | null): void {
+  if (!canUseBrowserStorage()) return;
+
+  try {
+    if (source) {
+      localStorage.setItem(SOUNDCLOUD_AUTH_SOURCE_KEY, source);
+    } else {
+      localStorage.removeItem(SOUNDCLOUD_AUTH_SOURCE_KEY);
+    }
+  } catch (error) {
+    console.warn('[DirectSoundCloudAPI] Failed to persist auth source:', error);
+  }
+}
+
 function isTokenExpired(expiresAt: number | null, bufferMs = 0): boolean {
   return expiresAt != null && Date.now() + bufferMs >= expiresAt;
 }
@@ -147,11 +175,9 @@ async function getDirectStoreSnapshot(): Promise<DirectTokenSnapshot> {
 
 async function applyTokensToDirectStore(tokens: DirectOAuthTokens) {
   const { useDirectAuthStore } = await import('../stores/direct-auth');
-  useDirectAuthStore.getState().setTokens(
-    tokens.accessToken,
-    tokens.refreshToken ?? undefined,
-    tokens.expiresIn ?? undefined,
-  );
+  useDirectAuthStore
+    .getState()
+    .setTokens(tokens.accessToken, tokens.refreshToken ?? undefined, tokens.expiresIn ?? undefined);
 }
 
 async function clearDirectStoreSession() {
@@ -238,6 +264,22 @@ async function invokeRefreshDirectToken(
   };
 }
 
+async function invokeRefreshSharedDirectToken(refreshToken: string): Promise<DirectOAuthTokens> {
+  const tokens = await invoke<{
+    access_token: string;
+    refresh_token?: string | null;
+    expires_in?: number | null;
+  }>('soundcloud_shared_oauth_refresh', {
+    refreshToken,
+  });
+
+  return {
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token ?? refreshToken,
+    expiresIn: tokens.expires_in ?? null,
+  };
+}
+
 async function refreshDirectAccessToken(
   snapshot: DirectTokenSnapshot,
   options: EnsureDirectAccessTokenOptions,
@@ -247,6 +289,36 @@ async function refreshDirectAccessToken(
   }
 
   refreshInFlight = (async () => {
+    const authSource = readDirectAuthSource();
+
+    if (authSource === 'shared') {
+      if (!snapshot.refreshToken) {
+        if (snapshot.accessToken && options.allowExpiredTokenFallback !== false) {
+          return snapshot.accessToken;
+        }
+        return null;
+      }
+
+      try {
+        const refreshed = await invokeRefreshSharedDirectToken(snapshot.refreshToken);
+        await applyTokensToDirectStore(refreshed);
+        return refreshed.accessToken;
+      } catch (error) {
+        if (isRefreshInvalidationError(error)) {
+          await clearDirectStoreSession();
+          throw new DirectAuthRequiredError('Direct SoundCloud session is no longer valid');
+        }
+
+        if (snapshot.accessToken && options.allowExpiredTokenFallback !== false) {
+          return snapshot.accessToken;
+        }
+
+        throw error;
+      } finally {
+        refreshInFlight = null;
+      }
+    }
+
     const credentials = await getSoundCloudOAuthCredentials();
     if (!credentials || !snapshot.refreshToken) {
       if (snapshot.accessToken && options.allowExpiredTokenFallback !== false) {
@@ -324,6 +396,7 @@ export function clearDirectTokens(): void {
     refreshToken: null,
     expiresAt: null,
   });
+  storeDirectAuthSource(null);
 }
 
 export function hasValidDirectToken(bufferMs = 0): boolean {
@@ -519,6 +592,31 @@ export async function startDirectOAuthFlow(
     expiresIn: tokens.expires_in ?? null,
   };
 
+  storeDirectAuthSource('custom');
+  storeDirectTokens(normalized.accessToken, normalized.refreshToken, normalized.expiresIn);
+  return normalized;
+}
+
+export async function startSharedSoundCloudOAuthFlow(locale: string): Promise<DirectOAuthTokens> {
+  if (!isTauriRuntime()) {
+    throw new Error('Shared SoundCloud OAuth requires Tauri runtime');
+  }
+
+  const tokens = await invoke<{
+    access_token: string;
+    refresh_token?: string | null;
+    expires_in?: number | null;
+  }>('soundcloud_shared_oauth_start', {
+    locale,
+  });
+
+  const normalized: DirectOAuthTokens = {
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token ?? null,
+    expiresIn: tokens.expires_in ?? null,
+  };
+
+  storeDirectAuthSource('shared');
   storeDirectTokens(normalized.accessToken, normalized.refreshToken, normalized.expiresIn);
   return normalized;
 }

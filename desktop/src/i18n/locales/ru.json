@@ -78,7 +78,13 @@
     "oauthRequired": "Укажите Client ID и Client Secret, чтобы продолжить.",
     "clientId": "Client ID",
     "clientSecret": "Client Secret",
-    "oauthGetCredentials": "получить здесь"
+    "oauthGetCredentials": "получить здесь",
+    "sharedSignIn": "Войти без настройки",
+    "sharedOAuthPromptTitle": "Общий вход SoundCloud",
+    "sharedOAuthPromptDescription": "Будет использован общий ключ приложения. Если он упрётся в лимиты SoundCloud, некоторые треки могут временно не запускаться.",
+    "sharedOAuthPromptHint": "Для самой стабильной работы лучше создать свой SoundCloud app и войти через свои Client ID и Secret выше.",
+    "sharedOAuthBack": "Вернуться",
+    "sharedOAuthContinue": "Войти через общий ключ"
   },
   "connectivity": {
     "title": "Проблемы с медиасерверами",

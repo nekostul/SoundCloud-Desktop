@@ -13,6 +13,8 @@ const SOUNDCLOUD_AUTHORIZE_URL: &str = "https://secure.soundcloud.com/authorize"
 const SOUNDCLOUD_TOKEN_URL: &str = "https://secure.soundcloud.com/oauth/token";
 const SOUNDCLOUD_DESKTOP_SCHEME: &str = "soundcloud-desktop";
 const SOUNDCLOUD_REDIRECT_URI: &str = "https://sc-auth-redirect.web.app/oauth/callback";
+const SOUNDCLOUD_SHARED_CLIENT_ID: &str = "YDjUAvCVW271AIh64A5KdHUP2xGfhPHI";
+const SOUNDCLOUD_SHARED_TOKEN_URL: &str = "https://sc-auth-token.sc-auth-redirect.workers.dev";
 
 #[derive(Default)]
 pub struct OAuthCallbackState {
@@ -25,6 +27,19 @@ pub struct SoundCloudToken {
     pub refresh_token: Option<String>,
     pub expires_in: Option<i64>,
     pub token_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SharedTokenRequest<'a> {
+    grant_type: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redirect_uri: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code_verifier: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +183,34 @@ impl DirectSoundCloudApi {
         locale: String,
         app: AppHandle,
     ) -> Result<SoundCloudToken, String> {
+        let (payload, verifier) = Self::request_oauth_code(&client_id, locale, app).await?;
+
+        Self::exchange_code_for_token(
+            &payload.code,
+            SOUNDCLOUD_REDIRECT_URI,
+            &client_id,
+            &client_secret,
+            &verifier,
+        )
+        .await
+    }
+
+    pub async fn start_shared_oauth(
+        locale: String,
+        app: AppHandle,
+    ) -> Result<SoundCloudToken, String> {
+        let (payload, verifier) =
+            Self::request_oauth_code(SOUNDCLOUD_SHARED_CLIENT_ID, locale, app).await?;
+
+        Self::exchange_code_for_shared_token(&payload.code, SOUNDCLOUD_REDIRECT_URI, &verifier)
+            .await
+    }
+
+    async fn request_oauth_code(
+        client_id: &str,
+        locale: String,
+        app: AppHandle,
+    ) -> Result<(OAuthCallbackPayload, String), String> {
         let verifier = generate_pkce_verifier();
         let challenge = pkce_challenge(&verifier);
         let state = format!(
@@ -208,14 +251,7 @@ impl DirectSoundCloudApi {
             return Err("OAuth state mismatch".to_string());
         }
 
-        Self::exchange_code_for_token(
-            &payload.code,
-            SOUNDCLOUD_REDIRECT_URI,
-            &client_id,
-            &client_secret,
-            &verifier,
-        )
-        .await
+        Ok((payload, verifier))
     }
 
     fn wait_for_oauth_callback(app: &AppHandle) -> Result<oneshot::Receiver<String>, String> {
@@ -302,6 +338,58 @@ impl DirectSoundCloudApi {
             .json::<SoundCloudToken>()
             .await
             .map_err(|error| format!("Failed to parse refresh response: {error}"))
+    }
+
+    async fn exchange_code_for_shared_token(
+        code: &str,
+        redirect_uri: &str,
+        code_verifier: &str,
+    ) -> Result<SoundCloudToken, String> {
+        Self::send_shared_token_request(SharedTokenRequest {
+            grant_type: "authorization_code",
+            code: Some(code),
+            redirect_uri: Some(redirect_uri),
+            code_verifier: Some(code_verifier),
+            refresh_token: None,
+        })
+        .await
+    }
+
+    async fn refresh_shared_token(refresh_token: &str) -> Result<SoundCloudToken, String> {
+        Self::send_shared_token_request(SharedTokenRequest {
+            grant_type: "refresh_token",
+            code: None,
+            redirect_uri: None,
+            code_verifier: None,
+            refresh_token: Some(refresh_token),
+        })
+        .await
+    }
+
+    async fn send_shared_token_request(
+        payload: SharedTokenRequest<'_>,
+    ) -> Result<SoundCloudToken, String> {
+        let response = Client::new()
+            .post(SOUNDCLOUD_SHARED_TOKEN_URL)
+            .header("accept", "application/json; charset=utf-8")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|error| format!("Shared token request failed: {error}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(format!("Shared token request failed with {status}: {body}"));
+        }
+
+        response
+            .json::<SoundCloudToken>()
+            .await
+            .map_err(|error| format!("Failed to parse shared token response: {error}"))
     }
 
     pub async fn get_track_stream(
@@ -1124,6 +1212,21 @@ pub async fn soundcloud_oauth_refresh(
     refresh_token: String,
 ) -> Result<SoundCloudToken, String> {
     DirectSoundCloudApi::refresh_token(&refresh_token, &client_id, &client_secret).await
+}
+
+#[tauri::command]
+pub async fn soundcloud_shared_oauth_start(
+    locale: Option<String>,
+    app: AppHandle,
+) -> Result<SoundCloudToken, String> {
+    DirectSoundCloudApi::start_shared_oauth(locale.unwrap_or_else(|| "en".to_string()), app).await
+}
+
+#[tauri::command]
+pub async fn soundcloud_shared_oauth_refresh(
+    refresh_token: String,
+) -> Result<SoundCloudToken, String> {
+    DirectSoundCloudApi::refresh_shared_token(&refresh_token).await
 }
 
 #[tauri::command]

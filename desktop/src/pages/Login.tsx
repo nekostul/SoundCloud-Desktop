@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { normalizeLanguage } from '../i18n/language';
 import {
+  type DirectOAuthTokens,
   fetchDirectSoundCloudMe,
   mapDirectUserToAuthUser,
   startDirectOAuthFlow,
+  startSharedSoundCloudOAuthFlow,
 } from '../lib/direct-soundcloud-api';
-import { normalizeLanguage } from '../i18n/language';
-import { checkSoundCloudCdnConnectivity } from '../lib/media-connectivity';
 import { Check, Disc3 } from '../lib/icons';
+import { checkSoundCloudCdnConnectivity } from '../lib/media-connectivity';
 import { queryClient } from '../main';
 import { useAuthStore } from '../stores/auth';
 import { useDirectAuthStore } from '../stores/direct-auth';
@@ -20,7 +22,9 @@ interface LoginProps {
 
 export function Login({ autoStartRequestId = null }: LoginProps) {
   const { t, i18n } = useTranslation();
-  const [settingsHydrated, setSettingsHydrated] = useState(() => useSettingsStore.persist.hasHydrated());
+  const [settingsHydrated, setSettingsHydrated] = useState(() =>
+    useSettingsStore.persist.hasHydrated(),
+  );
   const clearReloginRequest = useAuthStore((s) => s.clearReloginRequest);
   const soundcloudClientId = useSettingsStore((s) => s.soundcloudClientId);
   const soundcloudClientSecret = useSettingsStore((s) => s.soundcloudClientSecret);
@@ -32,6 +36,7 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
   const directSetTokens = useDirectAuthStore((s) => s.setTokens);
   const directSetUser = useDirectAuthStore((s) => s.setUser);
   const [loading, setLoading] = useState(false);
+  const [sharedOAuthPromptOpen, setSharedOAuthPromptOpen] = useState(false);
   const loadingTimeoutRef = useRef<number | null>(null);
   const latestAttemptRef = useRef(0);
   const connectivityProbeInFlightRef = useRef(false);
@@ -47,30 +52,8 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
     }
   }, []);
 
-  const handleDirectOAuth = useCallback(async () => {
-    if (!hasCredentials) {
-      toast.error(t('auth.oauthRequired'));
-      return;
-    }
-
-    const attemptId = latestAttemptRef.current + 1;
-    latestAttemptRef.current = attemptId;
-    clearLoadingTimeout();
-    setLoading(true);
-
-    loadingTimeoutRef.current = window.setTimeout(() => {
-      if (latestAttemptRef.current === attemptId) {
-        setLoading(false);
-      }
-    }, 10_000);
-
-    try {
-      const tokens = await startDirectOAuthFlow(
-        soundcloudClientId.trim(),
-        soundcloudClientSecret.trim(),
-        normalizeLanguage(i18n.resolvedLanguage || i18n.language),
-      );
-
+  const finishOAuthLogin = useCallback(
+    async (tokens: DirectOAuthTokens, attemptId: number) => {
       if (latestAttemptRef.current !== attemptId) {
         return;
       }
@@ -102,6 +85,35 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
       queryClient.invalidateQueries();
       toast.success(t('settings.directOAuthSuccess'));
       window.location.hash = '/';
+    },
+    [clearReloginRequest, directSetTokens, directSetUser, setMediaConnectivityDialogOpen, t],
+  );
+
+  const handleDirectOAuth = useCallback(async () => {
+    if (!hasCredentials) {
+      toast.error(t('auth.oauthRequired'));
+      return;
+    }
+
+    const attemptId = latestAttemptRef.current + 1;
+    latestAttemptRef.current = attemptId;
+    clearLoadingTimeout();
+    setLoading(true);
+
+    loadingTimeoutRef.current = window.setTimeout(() => {
+      if (latestAttemptRef.current === attemptId) {
+        setLoading(false);
+      }
+    }, 10_000);
+
+    try {
+      const tokens = await startDirectOAuthFlow(
+        soundcloudClientId.trim(),
+        soundcloudClientSecret.trim(),
+        normalizeLanguage(i18n.resolvedLanguage || i18n.language),
+      );
+
+      await finishOAuthLogin(tokens, attemptId);
     } catch (error) {
       if (latestAttemptRef.current !== attemptId) {
         return;
@@ -117,16 +129,48 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
     }
   }, [
     clearLoadingTimeout,
-    clearReloginRequest,
-    directSetTokens,
-    directSetUser,
+    finishOAuthLogin,
     hasCredentials,
-    setMediaConnectivityDialogOpen,
     soundcloudClientId,
     soundcloudClientSecret,
     i18n.language,
     i18n.resolvedLanguage,
+    t,
   ]);
+
+  const handleSharedOAuth = useCallback(async () => {
+    const attemptId = latestAttemptRef.current + 1;
+    latestAttemptRef.current = attemptId;
+    setSharedOAuthPromptOpen(false);
+    clearLoadingTimeout();
+    setLoading(true);
+
+    loadingTimeoutRef.current = window.setTimeout(() => {
+      if (latestAttemptRef.current === attemptId) {
+        setLoading(false);
+      }
+    }, 10_000);
+
+    try {
+      const tokens = await startSharedSoundCloudOAuthFlow(
+        normalizeLanguage(i18n.resolvedLanguage || i18n.language),
+      );
+
+      await finishOAuthLogin(tokens, attemptId);
+    } catch (error) {
+      if (latestAttemptRef.current !== attemptId) {
+        return;
+      }
+
+      console.error('[SharedOAuth] Failed:', error);
+      toast.error(`${t('settings.directOAuthFailed')}: ${String(error)}`);
+    } finally {
+      if (latestAttemptRef.current === attemptId) {
+        clearLoadingTimeout();
+        setLoading(false);
+      }
+    }
+  }, [clearLoadingTimeout, finishOAuthLogin, i18n.language, i18n.resolvedLanguage, t]);
 
   useEffect(() => clearLoadingTimeout, [clearLoadingTimeout]);
 
@@ -302,10 +346,60 @@ export function Login({ autoStartRequestId = null }: LoginProps) {
             >
               {t('auth.signIn')}
             </button>
+            <button
+              type="button"
+              onClick={() => setSharedOAuthPromptOpen(true)}
+              className="w-full py-3.5 rounded-2xl border border-white/[0.12] bg-white/[0.1] text-white/90 font-semibold text-sm hover:bg-white/[0.14] active:scale-[0.97] transition-all duration-200 ease-[var(--ease-apple)] cursor-pointer shadow-[0_4px_12px_rgba(0,0,0,0.24)]"
+            >
+              {t('auth.sharedSignIn')}
+            </button>
             <div></div>
           </div>
         )}
       </form>
+
+      {sharedOAuthPromptOpen && !loading && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/55 px-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="shared-oauth-title"
+            className="w-full max-w-sm rounded-[24px] border border-white/[0.08] bg-[#111114]/95 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.5)]"
+          >
+            <div className="space-y-2">
+              <p
+                id="shared-oauth-title"
+                className="text-[13px] font-semibold uppercase tracking-[0.12em] text-white/75"
+              >
+                {t('auth.sharedOAuthPromptTitle')}
+              </p>
+              <p className="text-[13px] leading-relaxed text-white/55">
+                {t('auth.sharedOAuthPromptDescription')}
+              </p>
+              <p className="text-[12px] leading-relaxed text-white/35">
+                {t('auth.sharedOAuthPromptHint')}
+              </p>
+            </div>
+
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setSharedOAuthPromptOpen(false)}
+                className="rounded-2xl border border-white/[0.08] bg-white/[0.05] px-4 py-3 text-[13px] font-semibold text-white/65 hover:bg-white/[0.08] transition-colors"
+              >
+                {t('auth.sharedOAuthBack')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSharedOAuth()}
+                className="rounded-2xl bg-white/[0.14] px-4 py-3 text-[13px] font-semibold text-white/90 hover:bg-white/[0.18] transition-colors"
+              >
+                {t('auth.sharedOAuthContinue')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

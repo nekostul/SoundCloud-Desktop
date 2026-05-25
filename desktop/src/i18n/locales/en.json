@@ -78,7 +78,13 @@
     "oauthRequired": "Enter Client ID and Client Secret to continue.",
     "clientId": "Client ID",
     "clientSecret": "Client Secret",
-    "oauthGetCredentials": "Get them here"
+    "oauthGetCredentials": "Get them here",
+    "sharedSignIn": "Sign in without setup",
+    "sharedOAuthPromptTitle": "Shared SoundCloud access",
+    "sharedOAuthPromptDescription": "This uses the app's shared SoundCloud key. If that key reaches SoundCloud limits, some tracks may not start for a while.",
+    "sharedOAuthPromptHint": "For the most stable playback, create your own SoundCloud app and use your own Client ID and Secret above.",
+    "sharedOAuthBack": "Back",
+    "sharedOAuthContinue": "Use shared access"
   },
   "connectivity": {
     "title": "The media servers are acting up again",
