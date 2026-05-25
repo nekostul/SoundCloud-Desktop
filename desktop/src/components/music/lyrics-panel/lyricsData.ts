@@ -67,7 +67,10 @@ export function getPreferredTrackLyricsSearchQuery(
   query: TrackScopedLyricsSearchQuery | null,
   queryRef: React.MutableRefObject<Map<string, LyricsSearchQuery>>,
 ): LyricsSearchQuery | null {
-  return getActiveTrackScopedLyricsSearchQuery(trackUrn, query) ?? (trackUrn ? (queryRef.current.get(trackUrn) ?? null) : null);
+  return (
+    getActiveTrackScopedLyricsSearchQuery(trackUrn, query) ??
+    (trackUrn ? (queryRef.current.get(trackUrn) ?? null) : null)
+  );
 }
 
 export function getCachedManualLyrics(
@@ -85,8 +88,9 @@ export function getCachedManualLyrics(
   return cachedEntry.lyrics;
 }
 
-
-export function useResolvedLyrics<TManualCache extends Map<string, LyricsResult> | Map<string, ManualLyricsCacheEntry>>(
+export function useResolvedLyrics<
+  TManualCache extends Map<string, LyricsResult> | Map<string, ManualLyricsCacheEntry>,
+>(
   visible: boolean,
   track: Track | null | undefined,
   reqArtist: string,
@@ -98,10 +102,18 @@ export function useResolvedLyrics<TManualCache extends Map<string, LyricsResult>
 ) {
   const trackUrn = track?.urn;
   const legacyLyricsCacheRef = manualLyricsRef as React.MutableRefObject<Map<string, LyricsResult>>;
-  const manualLyricsCacheRef = manualLyricsRef as React.MutableRefObject<Map<string, ManualLyricsCacheEntry>>;
-  const cachedManualLyrics = getCachedManualLyrics(manualLyricsCacheRef, trackUrn ?? null, manualQuery);
+  const manualLyricsCacheRef = manualLyricsRef as React.MutableRefObject<
+    Map<string, ManualLyricsCacheEntry>
+  >;
+  const cachedManualLyrics = getCachedManualLyrics(
+    manualLyricsCacheRef,
+    trackUrn ?? null,
+    manualQuery,
+  );
   const cachedAutoLyrics =
-    !manualQuery && autoLyricsRef && trackUrn ? (autoLyricsRef.current.get(trackUrn) ?? null) : null;
+    !manualQuery && autoLyricsRef && trackUrn
+      ? (autoLyricsRef.current.get(trackUrn) ?? null)
+      : null;
   const cachedLegacyLyrics =
     !manualQuery && !autoLyricsRef && trackUrn
       ? (legacyLyricsCacheRef.current.get(trackUrn) ?? null)
@@ -145,9 +157,7 @@ export function useResolvedLyrics<TManualCache extends Map<string, LyricsResult>
         reqTitle,
       ),
     enabled:
-      visible &&
-      !cachedLyrics &&
-      Boolean(lyricsQuery.data?.plain && !lyricsQuery.data?.synced),
+      visible && !cachedLyrics && Boolean(lyricsQuery.data?.plain && !lyricsQuery.data?.synced),
     staleTime: Number.POSITIVE_INFINITY,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -155,24 +165,22 @@ export function useResolvedLyrics<TManualCache extends Map<string, LyricsResult>
     retry: 1,
   });
 
-const autoLyrics =
-  resolvedQuery.data ?? lyricsQuery.data ?? null;
+  const autoLyrics = resolvedQuery.data ?? lyricsQuery.data ?? null;
 
-if (trackUrn && autoLyrics && !cachedLyrics) {
-  if (manualQuery) {
-    manualLyricsCacheRef.current.set(trackUrn, {
-      ...manualQuery,
-      lyrics: autoLyrics,
-    });
-  } else if (autoLyricsRef) {
-    autoLyricsRef.current.set(trackUrn, autoLyrics);
-  } else {
-    legacyLyricsCacheRef.current.set(trackUrn, autoLyrics);
+  if (trackUrn && autoLyrics && !cachedLyrics) {
+    if (manualQuery) {
+      manualLyricsCacheRef.current.set(trackUrn, {
+        ...manualQuery,
+        lyrics: autoLyrics,
+      });
+    } else if (autoLyricsRef) {
+      autoLyricsRef.current.set(trackUrn, autoLyrics);
+    } else {
+      legacyLyricsCacheRef.current.set(trackUrn, autoLyrics);
+    }
   }
-}
 
-const data =
-  cachedLyrics ?? autoLyrics;
+  const data = cachedLyrics ?? autoLyrics;
 
   const generatedFromPlain = Boolean(
     lyricsQuery.data?.plain && !lyricsQuery.data?.synced && data?.synced,
@@ -182,15 +190,14 @@ const data =
     generatedFromPlain &&
       lyricsQuery.data &&
       data?.source === lyricsQuery.data.source &&
-      (lyricsQuery.data.source === 'genius' || lyricsQuery.data.source === 'musixmatch'),
+      lyricsQuery.data.source === 'genius',
   );
 
   return {
     data,
     loadingPlain: lyricsQuery.data?.plain ?? null,
     loadingSource: lyricsQuery.data?.source ?? null,
-    isLoading:
-      !cachedLyrics && (lyricsQuery.isLoading || resolvedQuery.isLoading),
+    isLoading: !cachedLyrics && (lyricsQuery.isLoading || resolvedQuery.isLoading),
     pseudoSynced,
     generatedFromPlain,
   };
@@ -258,4 +265,3 @@ export type ResolvedLyricsData = {
 export function hasRenderableLyrics(lyrics: ResolvedLyricsData) {
   return Boolean(lyrics?.synced?.length || lyrics?.plain);
 }
-

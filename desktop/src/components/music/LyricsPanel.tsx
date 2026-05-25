@@ -1,25 +1,28 @@
-import { invoke } from '@tauri-apps/api/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { invoke } from '@tauri-apps/api/core';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { getCurrentTime, getDuration, seek } from '../../lib/audio';
 import {
-  Loader2,
-  Maximize2,
-  MicVocal,
-  Search,
-  X,
-} from '../../lib/icons';
+  getConfirmedCurrentTime,
+  getCurrentTime,
+  getDuration,
+  isPlaybackSeekSettling,
+  seek,
+} from '../../lib/audio';
+import { Loader2, Maximize2, MicVocal, Search, X } from '../../lib/icons';
 import type { LyricsResult } from '../../lib/lyrics';
 import {
   LYRICS_SEARCH_QUERY_VERSION,
   saveLyricsResultToCache,
-  searchLyrics,
   searchLrclibSyncedLyricsByUploadMetadata,
+  searchLyrics,
   splitArtistTitle,
 } from '../../lib/lyrics';
-import { useCommunityLyricsDraftStore } from '../../stores/communityLyricsDrafts';
+import {
+  type CommunityLyricsDraft,
+  useCommunityLyricsDraftStore,
+} from '../../stores/communityLyricsDrafts';
 import {
   type CommunitySyncStage,
   useArtworkStore,
@@ -40,11 +43,11 @@ import {
   useArtworkLightboxState,
 } from './lyrics-panel/artwork';
 import {
-  canCreateCommunitySync,
   CommunitySyncEditor,
   CommunitySyncPublishConfirm,
   type CommunitySyncSession,
   type CommunitySyncTrackMeta,
+  canCreateCommunitySync,
   createCommunitySyncPauseLine,
   createCommunitySyncSession,
   createCommunitySyncSessionFromDraft,
@@ -62,12 +65,9 @@ import {
   resolveCommunitySyncActiveIndex,
   serializeCommunitySyncedLyrics,
   toCommunitySyncDraft,
+  updateCommunitySyncSessionPlainLyrics,
 } from './lyrics-panel/communitySync';
 import { LyricsSearchModal } from './lyrics-panel/LyricsSearchModal';
-import {
-  FullscreenLyricsColumn,
-  FullscreenLyricsMiniPlayerOverlay,
-} from './lyrics-panel/lyricsMiniPlayer';
 import {
   buildTrackScopedLyricsSearchQuery,
   getCachedManualLyrics,
@@ -83,15 +83,27 @@ import {
   type TrackScopedLyricsSearchQuery,
   useResolvedLyrics,
 } from './lyrics-panel/lyricsData';
-import { SOURCE_LABELS } from './lyrics-panel/sourceLabels';
 import {
-  PlainLyrics,
-  StaticSyncedLyrics,
-  useAudioTextWarmup,
-} from './lyrics-panel/syncedLyrics';
+  FullscreenLyricsColumn,
+  FullscreenLyricsMiniPlayerOverlay,
+} from './lyrics-panel/lyricsMiniPlayer';
+import { SOURCE_LABELS } from './lyrics-panel/sourceLabels';
+import { PlainLyrics, StaticSyncedLyrics, useAudioTextWarmup } from './lyrics-panel/syncedLyrics';
 import { StreamQualityBadge } from './StreamQualityBadge';
 
 export { SyncedLyrics } from './lyrics-panel/syncedLyrics';
+
+const COMMUNITY_SYNC_SEEK_HOLD_MS = 9000;
+const COMMUNITY_SYNC_SEEK_MIN_HOLD_MS = 700;
+const COMMUNITY_SYNC_SEEK_LAND_EPSILON_SEC = 0.75;
+
+type CommunitySyncSeekHold = {
+  trackUrn: string | null;
+  time: number;
+  cursorIndex: number;
+  startedAt: number;
+  holdUntil: number;
+};
 
 /* ── Source Badge ─────────────────────────────────────────── */
 
@@ -118,68 +130,55 @@ export const LyricsPanel = React.memo(
     const track = usePlayerStore((s) => s.currentTrack);
     const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
     const { t } = useTranslation();
-const artworkColor = useArtworkColor(track?.artwork_url ?? null);
+    const artworkColor = useArtworkColor(track?.artwork_url ?? null);
 
-const [isEditing, setIsEditing] = useState(false);
+    const [isEditing, setIsEditing] = useState(false);
 
-const manualQueryRef = useRef(
-  new Map<string, LyricsSearchQuery>(),
-);
+    const manualQueryRef = useRef(new Map<string, LyricsSearchQuery>());
 
-const [manualQuery, setManualQuery] = useState<TrackScopedLyricsSearchQuery | null>(null);
+    const [manualQuery, setManualQuery] = useState<TrackScopedLyricsSearchQuery | null>(null);
 
-const [editArtist, setEditArtist] = useState('');
-const [editTitle, setEditTitle] = useState('');
-const [isResizingSplit, setIsResizingSplit] = useState(false);
-const splitLayoutRef = useRef<HTMLDivElement>(null);
-const splitDraggingRef = useRef(false);
+    const [editArtist, setEditArtist] = useState('');
+    const [editTitle, setEditTitle] = useState('');
+    const [isResizingSplit, setIsResizingSplit] = useState(false);
+    const splitLayoutRef = useRef<HTMLDivElement>(null);
+    const splitDraggingRef = useRef(false);
 
     const trackUrn = track?.urn ?? null;
-    const activeManualQuery = getPreferredTrackLyricsSearchQuery(trackUrn, manualQuery, manualQueryRef);
+    const activeManualQuery = getPreferredTrackLyricsSearchQuery(
+      trackUrn,
+      manualQuery,
+      manualQueryRef,
+    );
     const reqArtist = activeManualQuery ? activeManualQuery.artist : (track?.user.username ?? '');
     const reqTitle = activeManualQuery ? activeManualQuery.title : (track?.title ?? '');
-    const manualLyricsRef = useRef(
-  new Map<string, ManualLyricsCacheEntry>(),
-);
-    const autoLyricsRef = useRef(
-  new Map<string, LyricsResult>(),
-);
-    const {
-      data: lyrics,
-      generatedFromPlain,
-      } = useResolvedLyrics(
-        interactiveVisible,
-        track,
-        reqArtist,
-        reqTitle,
-        getTrackDurationMs(track),
-        manualLyricsRef,
-        activeManualQuery,
-        autoLyricsRef,
-      );
-const warmupEnabled =
-  interactiveVisible && generatedFromPlain;
-    useAudioTextWarmup(
-      warmupEnabled,
+    const manualLyricsRef = useRef(new Map<string, ManualLyricsCacheEntry>());
+    const autoLyricsRef = useRef(new Map<string, LyricsResult>());
+    const { data: lyrics, generatedFromPlain } = useResolvedLyrics(
+      interactiveVisible,
       track,
       reqArtist,
       reqTitle,
-      lyrics,
+      getTrackDurationMs(track),
+      manualLyricsRef,
+      activeManualQuery,
+      autoLyricsRef,
     );
+    const warmupEnabled = interactiveVisible && generatedFromPlain;
+    useAudioTextWarmup(warmupEnabled, track, reqArtist, reqTitle, lyrics);
 
-    // biome-ignore lint/correctness/useExhaustiveDependencies: reset editor state only on track switch
-useEffect(() => {
-  if (!trackUrn) {
-    setManualQuery(null);
-    return;
-  }
+    useEffect(() => {
+      if (!trackUrn) {
+        setManualQuery(null);
+        return;
+      }
 
-  const savedManualQuery = manualQueryRef.current.get(trackUrn) ?? null;
-  setManualQuery(
-    savedManualQuery ? buildTrackScopedLyricsSearchQuery(trackUrn, savedManualQuery) : null,
-  );
-  setIsEditing(false);
-}, [trackUrn]);
+      const savedManualQuery = manualQueryRef.current.get(trackUrn) ?? null;
+      setManualQuery(
+        savedManualQuery ? buildTrackScopedLyricsSearchQuery(trackUrn, savedManualQuery) : null,
+      );
+      setIsEditing(false);
+    }, [trackUrn]);
 
     useEffect(() => {
       if (!interactiveVisible) return;
@@ -220,87 +219,95 @@ useEffect(() => {
 
     return (
       <>
-      <div className={rootClassName} style={panelStyle}>
-        <FullscreenBackground
-          key={`${track.urn}-bg`}
-          artworkSources={backgroundArtSources}
-          trackKey={track.urn}
-          color={artworkColor}
-        />
-
-        <div className="absolute top-6 left-6 z-20 pointer-events-none">
-          <StreamQualityBadge
-            quality={track.streamQuality}
-            codec={track.streamCodec}
-            access={track.access}
-            className="backdrop-blur-sm"
+        <div className={rootClassName} style={panelStyle}>
+          <FullscreenBackground
+            key={`${track.urn}-bg`}
+            artworkSources={backgroundArtSources}
+            trackKey={track.urn}
+            color={artworkColor}
           />
-        </div>
 
-        {/* Close */}
-        <div
-          className="relative z-10 flex justify-end items-center gap-2 px-6 pt-5 pb-2"
-          data-tauri-drag-region
-        >
-          <button
-            type="button"
-            onClick={() => {
-              useLyricsStore.setState({ open: false, communitySyncStage: 'idle' });
-              useFullscreenPanelStore.getState().setOpenAnimation('default');
-              useFullscreenPanelStore.getState().setTransitionDirection('toArtwork');
-              useFullscreenPanelStore.getState().setMode('artwork');
-              setTimeout(
-                () => useFullscreenPanelStore.getState().setTransitionDirection('none'),
-                500,
-              );
-              useArtworkStore.setState({ open: true });
-            }}
-            className="h-9 rounded-full px-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white/45 hover:text-white/80 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
-          >
-            <Maximize2 size={14} />
-            <span>{t('nav.fullscreen', 'Fullscreen')}</span>
-          </button>
-          <button
-            type="button"
-            onClick={close}
-            className="w-9 h-9 rounded-full flex items-center justify-center text-white/25 hover:text-white/70 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
-        {/* 50/50 */}
-        <div
-          ref={splitLayoutRef}
-          className={`relative z-10 grid flex-1 min-h-0 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${isResizingSplit ? 'select-none' : ''} ${
-            forceOpen ? 'lyrics-fullscreen-layout' : ''
-          }`}
-          style={{
-            isolation: 'isolate',
-            gridTemplateColumns: forceOpen ? '0% 1fr' : '30% 70%',
-          }}
-        >
-          <div className={`min-w-0 min-h-0 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-            forceOpen ? 'player-column-compact' : ''
-          }`}>
-            <TrackColumn key={track.urn} track={track} />
+          <div className="absolute top-6 left-6 z-20 pointer-events-none">
+            <StreamQualityBadge
+              quality={track.streamQuality}
+              codec={track.streamCodec}
+              access={track.access}
+              className="backdrop-blur-sm"
+            />
           </div>
 
-          {/* Divider */}
+          {/* Close */}
+          <div
+            className="relative z-10 flex justify-end items-center gap-2 px-6 pt-5 pb-2"
+            data-tauri-drag-region
+          >
+            <button
+              type="button"
+              onClick={() => {
+                useLyricsStore.setState({ open: false, communitySyncStage: 'idle' });
+                useFullscreenPanelStore.getState().setOpenAnimation('default');
+                useFullscreenPanelStore.getState().setTransitionDirection('toArtwork');
+                useFullscreenPanelStore.getState().setMode('artwork');
+                setTimeout(
+                  () => useFullscreenPanelStore.getState().setTransitionDirection('none'),
+                  500,
+                );
+                useArtworkStore.setState({ open: true });
+              }}
+              className="h-9 rounded-full px-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white/45 hover:text-white/80 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+            >
+              <Maximize2 size={14} />
+              <span>{t('nav.fullscreen', 'Fullscreen')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={close}
+              className="w-9 h-9 rounded-full flex items-center justify-center text-white/25 hover:text-white/70 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* 50/50 */}
+          <div
+            ref={splitLayoutRef}
+            className={`relative z-10 grid flex-1 min-h-0 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${isResizingSplit ? 'select-none' : ''} ${
+              forceOpen ? 'lyrics-fullscreen-layout' : ''
+            }`}
+            style={{
+              isolation: 'isolate',
+              gridTemplateColumns: forceOpen ? '0% 1fr' : '30% 70%',
+            }}
+          >
+            <div
+              className={`min-w-0 min-h-0 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                forceOpen ? 'player-column-compact' : ''
+              }`}
+            >
+              <TrackColumn key={track.urn} track={track} />
+            </div>
+
+            {/* Divider */}
             <div
               className={`absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-                forceOpen ? 'opacity-0 pointer-events-none' : `transition-colors duration-150 ${
-                isResizingSplit ? 'bg-white/20' : 'bg-white/[0.04] group-hover/splitter:bg-white/10'
-              }`
+                forceOpen
+                  ? 'opacity-0 pointer-events-none'
+                  : `transition-colors duration-150 ${
+                      isResizingSplit
+                        ? 'bg-white/20'
+                        : 'bg-white/[0.04] group-hover/splitter:bg-white/10'
+                    }`
               }`}
             />
             <div
               className={`absolute left-1/2 top-1/2 flex h-14 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-                forceOpen ? 'opacity-0 pointer-events-none' : `duration-150 ${
-                isResizingSplit
-                  ? 'border-white/18 bg-white/[0.12] shadow-[0_0_20px_rgba(255,255,255,0.08)]'
-                  : 'border-white/[0.08] bg-white/[0.04] group-hover/splitter:border-white/14 group-hover/splitter:bg-white/[0.08]'
-              }`
+                forceOpen
+                  ? 'opacity-0 pointer-events-none'
+                  : `duration-150 ${
+                      isResizingSplit
+                        ? 'border-white/18 bg-white/[0.12] shadow-[0_0_20px_rgba(255,255,255,0.08)]'
+                        : 'border-white/[0.08] bg-white/[0.04] group-hover/splitter:border-white/14 group-hover/splitter:bg-white/[0.08]'
+                    }`
               }`}
             >
               <div className="flex flex-col gap-1.5">
@@ -312,9 +319,11 @@ useEffect(() => {
           </div>
 
           {/* Right: lyrics */}
-          <div className={`min-w-0 min-h-0 flex flex-col relative transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-            forceOpen ? 'lyrics-fullscreen-active' : ''
-          }`}>
+          <div
+            className={`min-w-0 min-h-0 flex flex-col relative transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+              forceOpen ? 'lyrics-fullscreen-active' : ''
+            }`}
+          >
             {isEditing ? (
               <div className="flex-1 flex flex-col items-center justify-center gap-4 px-12 animate-fade-in-up">
                 <h3 className="text-white/80 font-bold mb-2">
@@ -342,18 +351,18 @@ useEffect(() => {
                   </button>
                   <button
                     type="button"
-                      onClick={() => {
-                        const query = {
-                          artist: editArtist.trim(),
-                          title: editTitle.trim(),
-                        };
-                        if (!trackUrn || !query.artist || !query.title) return;
+                    onClick={() => {
+                      const query = {
+                        artist: editArtist.trim(),
+                        title: editTitle.trim(),
+                      };
+                      if (!trackUrn || !query.artist || !query.title) return;
 
-                        manualQueryRef.current.set(trackUrn, query);
-                        setManualQuery(buildTrackScopedLyricsSearchQuery(trackUrn, query));
+                      manualQueryRef.current.set(trackUrn, query);
+                      setManualQuery(buildTrackScopedLyricsSearchQuery(trackUrn, query));
 
-                        setIsEditing(false);
-                      }}
+                      setIsEditing(false);
+                    }}
                     className="px-6 py-2 rounded-full text-[13px] font-bold bg-white/20 hover:bg-white/30 text-white transition-colors"
                   >
                     {t('track.search', 'Search')}
@@ -367,7 +376,8 @@ useEffect(() => {
                   onSearch={() => {
                     const parsed = splitArtistTitle(track?.title ?? '');
                     setEditArtist(
-                      activeManualQuery?.artist || (parsed ? parsed[0] : track?.user.username || ''),
+                      activeManualQuery?.artist ||
+                        (parsed ? parsed[0] : track?.user.username || ''),
                     );
                     setEditTitle(
                       activeManualQuery?.title || (parsed ? parsed[1] : track?.title || ''),
@@ -376,7 +386,7 @@ useEffect(() => {
                   }}
                 />
                 {interactiveVisible ? (
-<StaticSyncedLyrics lines={lyrics.synced} />
+                  <StaticSyncedLyrics lines={lyrics.synced} />
                 ) : (
                   <StaticSyncedLyrics lines={lyrics.synced} />
                 )}
@@ -388,7 +398,8 @@ useEffect(() => {
                   onSearch={() => {
                     const parsed = splitArtistTitle(track?.title ?? '');
                     setEditArtist(
-                      activeManualQuery?.artist || (parsed ? parsed[0] : track?.user.username || ''),
+                      activeManualQuery?.artist ||
+                        (parsed ? parsed[0] : track?.user.username || ''),
                     );
                     setEditTitle(
                       activeManualQuery?.title || (parsed ? parsed[1] : track?.title || ''),
@@ -405,7 +416,8 @@ useEffect(() => {
                   onClick={() => {
                     const parsed = splitArtistTitle(track?.title ?? '');
                     setEditArtist(
-                      activeManualQuery?.artist || (parsed ? parsed[0] : track?.user.username || ''),
+                      activeManualQuery?.artist ||
+                        (parsed ? parsed[0] : track?.user.username || ''),
                     );
                     setEditTitle(
                       activeManualQuery?.title || (parsed ? parsed[1] : track?.title || ''),
@@ -419,12 +431,12 @@ useEffect(() => {
               </div>
             )}
           </div>
-      </div>
+        </div>
 
-      {live && visualizerFullscreen && <FullscreenVisualizer />}
-    </>
-  );
-},
+        {live && visualizerFullscreen && <FullscreenVisualizer />}
+      </>
+    );
+  },
 );
 
 /* ── Artwork Fullscreen Panel ─────────────────────────────── */
@@ -578,7 +590,9 @@ const FullscreenPanels = React.memo(() => {
   const setCommunitySyncStageInStore = useLyricsStore((s) => s.setCommunitySyncStage);
   const track = usePlayerStore((s) => s.currentTrack);
   const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
-  const lyricsMiniPlayerControlsCollapsed = useSettingsStore((s) => s.lyricsMiniPlayerControlsCollapsed);
+  const lyricsMiniPlayerControlsCollapsed = useSettingsStore(
+    (s) => s.lyricsMiniPlayerControlsCollapsed,
+  );
   const setLyricsMiniPlayerControlsCollapsed = useSettingsStore(
     (s) => s.setLyricsMiniPlayerControlsCollapsed,
   );
@@ -614,6 +628,7 @@ const FullscreenPanels = React.memo(() => {
   const [communitySyncSession, setCommunitySyncSession] = useState<CommunitySyncSession | null>(
     null,
   );
+  const [communitySyncSeekPending, setCommunitySyncSeekPending] = useState(false);
   const [communityPublishPending, setCommunityPublishPending] = useState(false);
   const [communityLyricsOverrideByTrack, setCommunityLyricsOverrideByTrack] = useState<
     Record<string, LyricsResult>
@@ -635,6 +650,7 @@ const FullscreenPanels = React.memo(() => {
     cursorIndex: number;
     holdUntil: number;
   } | null>(null);
+  const communitySyncSeekHoldRef = useRef<CommunitySyncSeekHold | null>(null);
   const miniPlayerCollapsedBeforeCommunityFlowRef = useRef<boolean | null>(null);
   const prevTrackUrnRef = useRef<string | null>(null);
   const trackUrn = track?.urn ?? null;
@@ -644,12 +660,36 @@ const FullscreenPanels = React.memo(() => {
         trackUrn,
         time: Number.isFinite(time) ? Math.max(0, time) : 0,
         cursorIndex,
-        holdUntil: Date.now() + 1800,
+        holdUntil: Date.now() + COMMUNITY_SYNC_SEEK_HOLD_MS,
       };
     },
     [trackUrn],
   );
+  const getActiveCommunitySyncSeekHold = useCallback(() => {
+    const hold = communitySyncSeekHoldRef.current;
+    if (!hold) return null;
+
+    if (hold.trackUrn !== trackUrn) {
+      communitySyncSeekHoldRef.current = null;
+      return null;
+    }
+
+    if (Date.now() > hold.holdUntil && !isPlaybackSeekSettling()) {
+      communitySyncSeekHoldRef.current = null;
+      return null;
+    }
+
+    return hold;
+  }, [trackUrn]);
+  const isCommunitySyncSeekBlocked = useCallback(
+    () => isPlaybackSeekSettling() || getActiveCommunitySyncSeekHold() !== null,
+    [getActiveCommunitySyncSeekHold],
+  );
   const getCommunitySyncTimestampSource = useCallback(() => {
+    if (isPlaybackSeekSettling()) {
+      return getConfirmedCurrentTime();
+    }
+
     const playbackTime = getCurrentTime();
     const timingRef = communitySyncTimingRef.current;
     if (!timingRef || timingRef.trackUrn !== trackUrn) {
@@ -674,14 +714,27 @@ const FullscreenPanels = React.memo(() => {
   const seekCommunitySyncPlayback = useCallback(
     (time: number, cursorIndex: number) => {
       const targetTime = Number.isFinite(time) ? Math.max(0, time) : 0;
+      const now = Date.now();
+      communitySyncSeekHoldRef.current = {
+        trackUrn,
+        time: targetTime,
+        cursorIndex,
+        startedAt: now,
+        holdUntil: now + COMMUNITY_SYNC_SEEK_HOLD_MS,
+      };
+      setCommunitySyncSeekPending(true);
       setCommunitySyncTimingReference(targetTime, cursorIndex);
       seek(targetTime, true, true);
     },
-    [setCommunitySyncTimingReference],
+    [setCommunitySyncTimingReference, trackUrn],
   );
   const isTrackSwitchingFrame =
     prevTrackUrnRef.current !== null && prevTrackUrnRef.current !== trackUrn;
-  const activeManualQuery = getPreferredTrackLyricsSearchQuery(trackUrn, manualQuery, manualQueryRef);
+  const activeManualQuery = getPreferredTrackLyricsSearchQuery(
+    trackUrn,
+    manualQuery,
+    manualQueryRef,
+  );
   const activeSubmittedSearchQuery =
     submittedSearchQuery && submittedSearchQuery.trackUrn === trackUrn
       ? submittedSearchQuery
@@ -689,27 +742,23 @@ const FullscreenPanels = React.memo(() => {
 
   const reqArtist = activeManualQuery ? activeManualQuery.artist : (track?.user?.username ?? '');
   const reqTitle = activeManualQuery ? activeManualQuery.title : (track?.title ?? '');
-  const manualLyricsRef = useRef(
-  new Map<string, ManualLyricsCacheEntry>(),
-);
-  const autoLyricsRef = useRef(
-  new Map<string, LyricsResult>(),
-);
+  const manualLyricsRef = useRef(new Map<string, ManualLyricsCacheEntry>());
+  const autoLyricsRef = useRef(new Map<string, LyricsResult>());
   const {
     data: lyrics,
     isLoading,
     pseudoSynced,
     generatedFromPlain,
-} = useResolvedLyrics(
-  mode !== 'none',
-  track,
-  reqArtist,
-  reqTitle,
-  getTrackDurationMs(track),
-  manualLyricsRef,
-  activeManualQuery,
-  autoLyricsRef,
-);
+  } = useResolvedLyrics(
+    mode !== 'none',
+    track,
+    reqArtist,
+    reqTitle,
+    getTrackDurationMs(track),
+    manualLyricsRef,
+    activeManualQuery,
+    autoLyricsRef,
+  );
   const manualSearchResultQuery = useQuery({
     queryKey: [
       'lyrics-manual-search',
@@ -787,15 +836,44 @@ const FullscreenPanels = React.memo(() => {
   const communityDraftReadyToPublish =
     communityDraftTotalLines > 0 &&
     Boolean(communityDraft && communityDraft.syncedLyrics.length >= communityDraftTotalLines);
-  const hasFailedLocalCommunityLyrics = Boolean(
-    communityDraft && displayedLyrics?.source === 'local' && displayedLyrics.synced?.length,
+  const localCommunityDraft = useMemo<CommunityLyricsDraft | null>(() => {
+    if (
+      !communitySyncTrackMeta ||
+      displayedLyrics?.source !== 'local' ||
+      !displayedLyrics.synced?.length
+    ) {
+      return null;
+    }
+
+    const plainLyrics =
+      displayedLyrics.plain?.trim() ||
+      displayedLyrics.synced
+        .map((line) => line.text.trim())
+        .filter(Boolean)
+        .join('\n');
+    if (!plainLyrics) return null;
+
+    return {
+      ...communitySyncTrackMeta,
+      plainLyrics,
+      syncedLyrics: displayedLyrics.synced,
+      createdAt: new Date().toISOString(),
+      source: 'local',
+    };
+  }, [communitySyncTrackMeta, displayedLyrics]);
+  const localCommunitySession = useMemo(
+    () => (localCommunityDraft ? createCommunitySyncSessionFromDraft(localCommunityDraft) : null),
+    [localCommunityDraft],
+  );
+  const hasLocalCommunitySyncSession = Boolean(
+    displayedLyrics?.source === 'local' && localCommunitySession,
   );
   const canRetryCommunityDraft = Boolean(
-    communityDraft && (!displayedLyrics?.synced?.length || hasFailedLocalCommunityLyrics),
+    communityDraft && (!displayedLyrics?.synced?.length || hasLocalCommunitySyncSession),
   );
   const communityFlowActive = communitySyncStage !== 'idle';
   const showCommunityActionButton = lyricsStageActive && !communityFlowActive;
-  const communityActionLabel = hasFailedLocalCommunityLyrics
+  const communityActionLabel = hasLocalCommunitySyncSession
     ? t('track.communitySyncContinueEditingButton', 'Продолжить редактирование')
     : canRetryCommunityDraft
       ? communityDraftReadyToPublish
@@ -832,23 +910,34 @@ const FullscreenPanels = React.memo(() => {
     player.resume();
   }, []);
 
-  const resetCommunitySyncFlow = useCallback((restartTrackIfFinished = false) => {
-    setCommunitySyncStage('idle');
-    communitySyncSessionRef.current = null;
-    communitySyncTimingRef.current = null;
-    setCommunitySyncSession(null);
-    setCommunityPublishPending(false);
-    if (restartTrackIfFinished) {
-      restartFinishedCommunitySyncTrack();
-    }
-  }, [restartFinishedCommunitySyncTrack]);
+  const resetCommunitySyncFlow = useCallback(
+    (restartTrackIfFinished = false) => {
+      setCommunitySyncStage('idle');
+      communitySyncSessionRef.current = null;
+      communitySyncTimingRef.current = null;
+      communitySyncSeekHoldRef.current = null;
+      setCommunitySyncSession(null);
+      setCommunitySyncSeekPending(false);
+      setCommunityPublishPending(false);
+      if (restartTrackIfFinished) {
+        restartFinishedCommunitySyncTrack();
+      }
+    },
+    [restartFinishedCommunitySyncTrack],
+  );
 
   useEffect(() => {
     communitySyncSessionRef.current = communitySyncSession;
   }, [communitySyncSession]);
 
   useEffect(() => {
-    communitySyncTimingRef.current = null;
+    if (communitySyncTimingRef.current?.trackUrn !== trackUrn) {
+      communitySyncTimingRef.current = null;
+    }
+    if (communitySyncSeekHoldRef.current?.trackUrn !== trackUrn) {
+      communitySyncSeekHoldRef.current = null;
+      setCommunitySyncSeekPending(false);
+    }
   }, [trackUrn]);
 
   useEffect(() => {
@@ -895,11 +984,68 @@ const FullscreenPanels = React.memo(() => {
   useEffect(() => () => setCommunitySyncStageInStore('idle'), [setCommunitySyncStageInStore]);
 
   useEffect(() => {
+    if (communitySyncStage !== 'sync') {
+      communitySyncSeekHoldRef.current = null;
+      setCommunitySyncSeekPending(false);
+      return;
+    }
+
+    const tickSeekPending = () => {
+      const audioSeekPending = isPlaybackSeekSettling();
+      const now = Date.now();
+      const hold = communitySyncSeekHoldRef.current;
+      let syncSeekPending = false;
+
+      if (hold) {
+        if (hold.trackUrn !== trackUrn) {
+          communitySyncSeekHoldRef.current = null;
+        } else {
+          const elapsed = now - hold.startedAt;
+          const confirmedTime = getConfirmedCurrentTime();
+          const landed =
+            elapsed >= COMMUNITY_SYNC_SEEK_MIN_HOLD_MS &&
+            (!usePlayerStore.getState().isPlaying ||
+              Math.abs(confirmedTime - hold.time) <= COMMUNITY_SYNC_SEEK_LAND_EPSILON_SEC);
+
+          if ((landed || now > hold.holdUntil) && !audioSeekPending) {
+            communitySyncSeekHoldRef.current = null;
+          } else {
+            syncSeekPending = true;
+          }
+        }
+      }
+
+      setCommunitySyncSeekPending(audioSeekPending || syncSeekPending);
+    };
+    tickSeekPending();
+    const intervalId = window.setInterval(tickSeekPending, 90);
+    return () => window.clearInterval(intervalId);
+  }, [communitySyncStage, trackUrn]);
+
+  useEffect(() => {
     if (communitySyncStage !== 'sync') return;
 
     const syncEditorToPlayback = () => {
       const currentSession = communitySyncSessionRef.current;
       if (!currentSession || currentSession.lines.length === 0) return;
+      const seekHold = getActiveCommunitySyncSeekHold();
+      if (seekHold) {
+        const heldIndex = Math.max(
+          0,
+          Math.min(seekHold.cursorIndex, currentSession.lines.length - 1),
+        );
+        if (currentSession.activeIndex !== heldIndex) {
+          const nextSession = {
+            ...currentSession,
+            activeIndex: heldIndex,
+          };
+          communitySyncSessionRef.current = nextSession;
+          setCommunitySyncSession(nextSession);
+        }
+        return;
+      }
+      if (isPlaybackSeekSettling()) return;
+
       const playbackTime = getCommunitySyncTimestampSource();
 
       const nextActiveIndex = getCommunitySyncPlaybackIndex(
@@ -932,14 +1078,16 @@ const FullscreenPanels = React.memo(() => {
     syncEditorToPlayback();
     const intervalId = window.setInterval(syncEditorToPlayback, 90);
     return () => window.clearInterval(intervalId);
-  }, [communitySyncStage, getCommunitySyncTimestampSource]);
+  }, [communitySyncStage, getActiveCommunitySyncSeekHold, getCommunitySyncTimestampSource]);
 
   const startCommunitySync = useCallback(() => {
     if (!track || !canCreateCommunitySyncForTrack) return;
 
     const session = createCommunitySyncSession(displayedLyrics.plain, displayedLyrics.source);
     if (!session) {
-      toast.error(t('track.communitySyncNoLines', 'Не удалось подготовить строки для синхронизации'));
+      toast.error(
+        t('track.communitySyncNoLines', 'Не удалось подготовить строки для синхронизации'),
+      );
       return;
     }
 
@@ -950,12 +1098,16 @@ const FullscreenPanels = React.memo(() => {
   }, [canCreateCommunitySyncForTrack, displayedLyrics, t, track]);
 
   const handleCommunityAction = useCallback(() => {
-    if (canRetryCommunityDraft) {
-      if (!communityDraft) return;
-
-      const session = createCommunitySyncSessionFromDraft(communityDraft);
+    if (hasLocalCommunitySyncSession || canRetryCommunityDraft) {
+      const session = localCommunitySession
+        ? localCommunitySession
+        : communityDraft
+          ? createCommunitySyncSessionFromDraft(communityDraft)
+          : null;
       if (!session) {
-        toast.error(t('track.communitySyncNoLines', 'Не удалось подготовить строки для синхронизации'));
+        toast.error(
+          t('track.communitySyncNoLines', 'Не удалось подготовить строки для синхронизации'),
+        );
         return;
       }
 
@@ -970,6 +1122,8 @@ const FullscreenPanels = React.memo(() => {
   }, [
     canRetryCommunityDraft,
     communityDraft,
+    hasLocalCommunitySyncSession,
+    localCommunitySession,
     startCommunitySync,
     t,
   ]);
@@ -982,27 +1136,35 @@ const FullscreenPanels = React.memo(() => {
     setCommunitySyncStage('sync');
   }, []);
 
-  const persistCommunitySyncDraft = useCallback((session: CommunitySyncSession) => {
-    if (!communitySyncTrackMeta) return;
+  const persistCommunitySyncDraft = useCallback(
+    (session: CommunitySyncSession) => {
+      if (!communitySyncTrackMeta) return;
 
-    if (!hasCommunitySyncStampedLines(session.lines)) {
-      removeCommunityDraft(communitySyncTrackMeta.trackUrn);
-      return;
-    }
+      if (!hasCommunitySyncStampedLines(session.lines)) {
+        removeCommunityDraft(communitySyncTrackMeta.trackUrn);
+        return;
+      }
 
-    saveCommunityDraft({
-      ...toCommunitySyncDraft(communitySyncTrackMeta, session),
-      createdAt: new Date().toISOString(),
-    });
-  }, [communitySyncTrackMeta, removeCommunityDraft, saveCommunityDraft]);
+      saveCommunityDraft({
+        ...toCommunitySyncDraft(communitySyncTrackMeta, session),
+        createdAt: new Date().toISOString(),
+      });
+    },
+    [communitySyncTrackMeta, removeCommunityDraft, saveCommunityDraft],
+  );
 
   const handleCommunitySyncLine = useCallback(() => {
+    if (isCommunitySyncSeekBlocked()) return;
+
     const currentSession = communitySyncSessionRef.current;
     if (!currentSession) return;
     const targetIndex = getCommunitySyncStampTargetIndex(currentSession);
     if (targetIndex < 0 || targetIndex >= currentSession.lines.length) return;
 
-    const { previousTime, nextTime } = getCommunitySyncTimeBounds(currentSession.lines, targetIndex);
+    const { previousTime, nextTime } = getCommunitySyncTimeBounds(
+      currentSession.lines,
+      targetIndex,
+    );
     const timestampSource = getCommunitySyncTimestampSource();
     const nextLines = currentSession.lines.map((line, index) =>
       index === targetIndex
@@ -1023,9 +1185,11 @@ const FullscreenPanels = React.memo(() => {
     communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
     persistCommunitySyncDraft(nextSession);
-  }, [getCommunitySyncTimestampSource, persistCommunitySyncDraft]);
+  }, [getCommunitySyncTimestampSource, isCommunitySyncSeekBlocked, persistCommunitySyncDraft]);
 
   const handleCommunitySyncUndo = useCallback(() => {
+    if (isCommunitySyncSeekBlocked()) return;
+
     const currentSession = communitySyncSessionRef.current;
     if (!currentSession) return;
 
@@ -1035,7 +1199,10 @@ const FullscreenPanels = React.memo(() => {
         ? findCommunitySyncNextStampedIndex(currentSession.lines, 0)
         : activeLine && typeof activeLine.time === 'number'
           ? currentSession.activeIndex
-          : findCommunitySyncPreviousStampedIndex(currentSession.lines, currentSession.activeIndex - 1);
+          : findCommunitySyncPreviousStampedIndex(
+              currentSession.lines,
+              currentSession.activeIndex - 1,
+            );
 
     if (targetIndex < 0) return;
 
@@ -1060,21 +1227,27 @@ const FullscreenPanels = React.memo(() => {
     const nextSession = {
       ...currentSession,
       lines: nextLines,
-      activeIndex: restoreIndex >= 0 ? restoreIndex : resolveCommunitySyncActiveIndex(nextLines, -1),
+      activeIndex:
+        restoreIndex >= 0 ? restoreIndex : resolveCommunitySyncActiveIndex(nextLines, -1),
     };
 
     communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
     persistCommunitySyncDraft(nextSession);
     seekCommunitySyncPlayback(restoreTime, nextSession.activeIndex);
-  }, [persistCommunitySyncDraft, seekCommunitySyncPlayback]);
+  }, [isCommunitySyncSeekBlocked, persistCommunitySyncDraft, seekCommunitySyncPlayback]);
 
   const handleCommunitySyncInsertPause = useCallback(() => {
+    if (isCommunitySyncSeekBlocked()) return;
+
     const currentSession = communitySyncSessionRef.current;
     if (!currentSession) return;
 
     const insertIndex = getCommunitySyncPauseInsertIndex(currentSession);
-    const { previousTime, nextTime } = getCommunitySyncTimeBounds(currentSession.lines, insertIndex);
+    const { previousTime, nextTime } = getCommunitySyncTimeBounds(
+      currentSession.lines,
+      insertIndex,
+    );
     const pauseLine = createCommunitySyncPauseLine(
       getStampedCommunitySyncTime(getCommunitySyncTimestampSource(), previousTime, nextTime),
     );
@@ -1093,59 +1266,65 @@ const FullscreenPanels = React.memo(() => {
     communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
     persistCommunitySyncDraft(nextSession);
-  }, [getCommunitySyncTimestampSource, persistCommunitySyncDraft]);
+  }, [getCommunitySyncTimestampSource, isCommunitySyncSeekBlocked, persistCommunitySyncDraft]);
 
-  const handleCommunityTimestampCommit = useCallback((index: number, nextTime: number) => {
-    const currentSession = communitySyncSessionRef.current;
-    if (!currentSession || index < 0 || index >= currentSession.lines.length) return;
+  const handleCommunityTimestampCommit = useCallback(
+    (index: number, nextTime: number) => {
+      const currentSession = communitySyncSessionRef.current;
+      if (!currentSession || index < 0 || index >= currentSession.lines.length) return;
 
-    const { previousTime, nextTime: followingTime } = getCommunitySyncTimeBounds(
-      currentSession.lines,
-      index,
-    );
-    const resolvedTime = getStampedCommunitySyncTime(nextTime, previousTime, followingTime);
+      const { previousTime, nextTime: followingTime } = getCommunitySyncTimeBounds(
+        currentSession.lines,
+        index,
+      );
+      const resolvedTime = getStampedCommunitySyncTime(nextTime, previousTime, followingTime);
 
-    const nextSession = {
-      ...currentSession,
-      lines: currentSession.lines.map((line, lineIndex) =>
-        lineIndex === index
-          ? {
-              ...line,
-              time: resolvedTime,
-            }
-          : line,
-      ),
-      activeIndex: index,
-    };
-
-    communitySyncSessionRef.current = nextSession;
-    setCommunitySyncSession(nextSession);
-    persistCommunitySyncDraft(nextSession);
-  }, [persistCommunitySyncDraft]);
-
-  const handleCommunitySyncSeekLine = useCallback((index: number) => {
-    const currentSession = communitySyncSessionRef.current;
-    if (!currentSession || index < 0 || index >= currentSession.lines.length) return;
-
-    const targetTime = currentSession.lines[index]?.time;
-    if (typeof targetTime !== 'number') return;
-
-    seekCommunitySyncPlayback(targetTime, index);
-    setCommunitySyncSession((session) => {
-      if (!session || session.activeIndex === index) return session;
       const nextSession = {
-        ...session,
+        ...currentSession,
+        lines: currentSession.lines.map((line, lineIndex) =>
+          lineIndex === index
+            ? {
+                ...line,
+                time: resolvedTime,
+              }
+            : line,
+        ),
         activeIndex: index,
       };
+
       communitySyncSessionRef.current = nextSession;
-      return nextSession;
-    });
-  }, [seekCommunitySyncPlayback]);
+      setCommunitySyncSession(nextSession);
+      persistCommunitySyncDraft(nextSession);
+    },
+    [persistCommunitySyncDraft],
+  );
+
+  const handleCommunitySyncSeekLine = useCallback(
+    (index: number) => {
+      const currentSession = communitySyncSessionRef.current;
+      if (!currentSession || index < 0 || index >= currentSession.lines.length) return;
+
+      const targetTime = currentSession.lines[index]?.time;
+      if (typeof targetTime !== 'number') return;
+
+      seekCommunitySyncPlayback(targetTime, index);
+      setCommunitySyncSession((session) => {
+        if (!session || session.activeIndex === index) return session;
+        const nextSession = {
+          ...session,
+          activeIndex: index,
+        };
+        communitySyncSessionRef.current = nextSession;
+        return nextSession;
+      });
+    },
+    [seekCommunitySyncPlayback],
+  );
 
   const handleCommunityPublishRequest = useCallback(() => {
     if (!isCommunitySyncSessionComplete(communitySyncSessionRef.current)) return;
     if (!communitySyncTrackMeta) return;
-    
+
     setCommunityPublishEditTrackName(communitySyncTrackMeta.trackName);
     setCommunityPublishEditArtistName(communitySyncTrackMeta.artistName);
     setCommunityPublishEditAlbumName('');
@@ -1154,11 +1333,7 @@ const FullscreenPanels = React.memo(() => {
   }, [communitySyncTrackMeta]);
 
   const applyCommunityLyricsResult = useCallback(
-    (
-      trackUrnForLyrics: string,
-      result: LyricsResult,
-      extraQueries: LyricsSearchQuery[] = [],
-    ) => {
+    (trackUrnForLyrics: string, result: LyricsResult, extraQueries: LyricsSearchQuery[] = []) => {
       setCommunityLyricsOverrideByTrack((current) => ({
         ...current,
         [trackUrnForLyrics]: result,
@@ -1188,9 +1363,59 @@ const FullscreenPanels = React.memo(() => {
     [activeManualQuery, queryClient, reqArtist, reqTitle, trackUrn],
   );
 
+  const handleCommunityPlainLyricsUpdate = useCallback(
+    (plainLyrics: string) => {
+      const currentSession = communitySyncSessionRef.current;
+      if (!trackUrn || !currentSession) return;
+
+      const nextSessionBase = updateCommunitySyncSessionPlainLyrics(currentSession, plainLyrics);
+      if (!nextSessionBase) {
+        toast.error(
+          t('track.communitySyncNoLines', 'Не удалось подготовить строки для синхронизации'),
+        );
+        return;
+      }
+
+      const nextSession: CommunitySyncSession = {
+        ...nextSessionBase,
+        activeIndex: getCommunitySyncPlaybackIndex(
+          nextSessionBase.lines,
+          getCommunitySyncTimestampSource(),
+          nextSessionBase.activeIndex,
+        ),
+      };
+      const synced = nextSession.lines.flatMap((line) =>
+        typeof line.time === 'number'
+          ? [{ time: line.time, text: line.kind === 'pause' ? '' : line.text }]
+          : [],
+      );
+      const localLyrics: LyricsResult = {
+        plain: nextSession.plainLyrics,
+        synced: synced.length > 0 ? synced : null,
+        source: 'local',
+      };
+
+      communitySyncSessionRef.current = nextSession;
+      setCommunitySyncSession(nextSession);
+      persistCommunitySyncDraft(nextSession);
+      applyCommunityLyricsResult(trackUrn, localLyrics);
+    },
+    [
+      applyCommunityLyricsResult,
+      getCommunitySyncTimestampSource,
+      persistCommunitySyncDraft,
+      t,
+      trackUrn,
+    ],
+  );
+
   const handleCommunityPublishConfirm = useCallback(async () => {
     const currentSession = communitySyncSessionRef.current;
-    if (!communitySyncTrackMeta || !currentSession || !isCommunitySyncSessionComplete(currentSession)) {
+    if (
+      !communitySyncTrackMeta ||
+      !currentSession ||
+      !isCommunitySyncSessionComplete(currentSession)
+    ) {
       return;
     }
 
@@ -1199,7 +1424,7 @@ const FullscreenPanels = React.memo(() => {
       createdAt: new Date().toISOString(),
     };
 
-    const durationSec = parseInt(communityPublishEditDuration) || 0;
+    const durationSec = parseInt(communityPublishEditDuration, 10) || 0;
     const uploadQuery = {
       artist: communityPublishEditArtistName.trim(),
       title: communityPublishEditTrackName.trim(),
@@ -1221,19 +1446,16 @@ const FullscreenPanels = React.memo(() => {
         uploadQuery.title,
         durationSec,
       );
-      const publishedLyrics: LyricsResult =
-        uploadedLyrics ?? {
-          plain: draft.plainLyrics,
-          synced: draft.syncedLyrics,
-          source: 'lrclib',
-        };
+      const publishedLyrics: LyricsResult = uploadedLyrics ?? {
+        plain: draft.plainLyrics,
+        synced: draft.syncedLyrics,
+        source: 'lrclib',
+      };
 
       removeCommunityDraft(draft.trackUrn);
       applyCommunityLyricsResult(draft.trackUrn, publishedLyrics, [uploadQuery]);
       resetCommunitySyncFlow(true);
-      toast.success(
-        t('track.communitySyncPublished', 'Синхронизация опубликована в LRCLIB'),
-      );
+      toast.success(t('track.communitySyncPublished', 'Синхронизация опубликована в LRCLIB'));
     } catch (error) {
       const localLyrics: LyricsResult = {
         plain: draft.plainLyrics,
@@ -1354,13 +1576,16 @@ const FullscreenPanels = React.memo(() => {
     runDocumentViewTransition(applyModeChange);
   }, [clearNotFoundHint, resetCommunitySyncFlow]);
 
-  const handleManualSearch = useCallback((artist: string, title: string) => {
-    if (!trackUrn) return;
-    const nextQuery = { artist: artist.trim(), title: title.trim() };
-    if (!nextQuery.artist || !nextQuery.title) return;
-    pendingManualSearchResolveRef.current = true;
-    setSubmittedSearchQuery(buildTrackScopedLyricsSearchQuery(trackUrn, nextQuery));
-  }, [trackUrn]);
+  const handleManualSearch = useCallback(
+    (artist: string, title: string) => {
+      if (!trackUrn) return;
+      const nextQuery = { artist: artist.trim(), title: title.trim() };
+      if (!nextQuery.artist || !nextQuery.title) return;
+      pendingManualSearchResolveRef.current = true;
+      setSubmittedSearchQuery(buildTrackScopedLyricsSearchQuery(trackUrn, nextQuery));
+    },
+    [trackUrn],
+  );
 
   const handleLyricsAction = useCallback(() => {
     clearNotFoundHint();
@@ -1466,8 +1691,9 @@ const FullscreenPanels = React.memo(() => {
         nextUrn,
         savedManualQuery,
       );
-      const cachedAutoLyricsForNewTrack =
-        !savedManualQuery ? (autoLyricsRef.current.get(nextUrn) ?? null) : null;
+      const cachedAutoLyricsForNewTrack = !savedManualQuery
+        ? (autoLyricsRef.current.get(nextUrn) ?? null)
+        : null;
       const cachedLyricsForNewTrack = cachedManualLyricsForNewTrack ?? cachedAutoLyricsForNewTrack;
       const hasImmediateLyrics = Boolean(cachedLyricsForNewTrack);
 
@@ -1532,7 +1758,11 @@ const FullscreenPanels = React.memo(() => {
 
   useEffect(() => {
     if (!pendingManualSearchResolveRef.current) return;
-    if (activeSubmittedSearchQuery === null || manualSearchResultQuery.isLoading || isTrackSwitchingFrame) {
+    if (
+      activeSubmittedSearchQuery === null ||
+      manualSearchResultQuery.isLoading ||
+      isTrackSwitchingFrame
+    ) {
       return;
     }
 
@@ -1609,39 +1839,38 @@ const FullscreenPanels = React.memo(() => {
         className={`fixed inset-0 z-[60] flex flex-col overflow-hidden bg-[#08080a] ${animClass}`}
         style={{ pointerEvents: closingToMiniPlayer ? 'none' : 'auto' }}
       >
-      <FullscreenBackground
-        key={`${track.urn}-bg`}
-        artworkSources={backgroundArtSources}
-        trackKey={track.urn}
-        color={artworkColor}
-      />
-
-      <div className="absolute left-6 top-6 z-20 flex max-w-[min(380px,calc(100vw-3rem))] flex-col items-start gap-2 pointer-events-none">
-        <StreamQualityBadge
-          quality={track.streamQuality}
-          codec={track.streamCodec}
-          access={track.access}
-          className="backdrop-blur-sm"
+        <FullscreenBackground
+          key={`${track.urn}-bg`}
+          artworkSources={backgroundArtSources}
+          trackKey={track.urn}
+          color={artworkColor}
         />
-        {showCommunityActionButton && communityActionLabel ? (
-          <button
-            type="button"
-            onClick={handleCommunityAction}
-            className="pointer-events-auto inline-flex min-h-9 items-center rounded-full border border-white/[0.08] bg-[rgba(12,12,16,0.38)] px-3.5 py-2 text-left text-[11px] font-medium text-white/70 shadow-[0_18px_40px_rgba(0,0,0,0.24)] backdrop-blur-[20px] transition-all duration-300 hover:border-white/[0.14] hover:bg-[rgba(18,18,24,0.52)] hover:text-white hover:shadow-[0_0_26px_rgba(255,255,255,0.08)]"
-          >
-            {communityActionLabel}
-          </button>
-        ) : null}
-      </div>
 
-      {/* Header */}
-      <div
-        className="relative z-10 flex justify-end items-center gap-2 px-6 pt-5 pb-2"
-        data-tauri-drag-region
-      >
-        {lyricsStageActive ? (
-          <>
-            {!communityFlowActive ? (
+        <div className="absolute left-6 top-6 z-20 flex max-w-[min(380px,calc(100vw-3rem))] flex-col items-start gap-2 pointer-events-none">
+          <StreamQualityBadge
+            quality={track.streamQuality}
+            codec={track.streamCodec}
+            access={track.access}
+            className="backdrop-blur-sm"
+          />
+          {showCommunityActionButton && communityActionLabel ? (
+            <button
+              type="button"
+              onClick={handleCommunityAction}
+              className="pointer-events-auto inline-flex min-h-9 items-center rounded-full border border-white/[0.08] bg-[rgba(12,12,16,0.38)] px-3.5 py-2 text-left text-[11px] font-medium text-white/70 shadow-[0_18px_40px_rgba(0,0,0,0.24)] backdrop-blur-[20px] transition-all duration-300 hover:border-white/[0.14] hover:bg-[rgba(18,18,24,0.52)] hover:text-white hover:shadow-[0_0_26px_rgba(255,255,255,0.08)]"
+            >
+              {communityActionLabel}
+            </button>
+          ) : null}
+        </div>
+
+        {/* Header */}
+        <div
+          className="relative z-10 flex justify-end items-center gap-2 px-6 pt-5 pb-2"
+          data-tauri-drag-region
+        >
+          {lyricsStageActive ? (
+            !communityFlowActive ? (
               <>
                 {displayedLyrics ? (
                   <span className="inline-flex h-9 items-center rounded-full border border-white/[0.06] bg-white/[0.04] px-3 text-[10px] font-semibold text-white/20">
@@ -1664,105 +1893,106 @@ const FullscreenPanels = React.memo(() => {
                   <span>{t('nav.fullscreen')}</span>
                 </button>
               </>
-            ) : null}
-          </>
-        ) : (
-          <div className="relative flex flex-col items-end">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={openSearchModal}
-                className="relative h-9 w-9 rounded-full flex items-center justify-center text-white/52 hover:text-white/82 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
-              >
-                <Search size={14} />
-                {isLoading ? (
-                  <span className="pointer-events-none absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-white/[0.12] bg-black/38 text-white/65 shadow-[0_4px_18px_rgba(0,0,0,0.24)] backdrop-blur-sm">
-                    <Loader2 size={10} className="animate-spin" />
-                  </span>
-                ) : null}
-              </button>
-              <button
-                type="button"
-                onClick={handleLyricsAction}
-                className={`h-9 rounded-full px-3 inline-flex items-center gap-1.5 text-[12px] font-semibold transition-all duration-200 cursor-pointer outline-none ${
-                  lyricsSessionRequested
-                    ? 'bg-white/[0.08] text-white/88 shadow-[0_8px_28px_rgba(0,0,0,0.18)]'
-                    : 'text-white/58 hover:text-white/84 hover:bg-white/[0.08]'
+            ) : null
+          ) : (
+            <div className="relative flex flex-col items-end">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={openSearchModal}
+                  className="relative h-9 w-9 rounded-full flex items-center justify-center text-white/52 hover:text-white/82 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+                >
+                  <Search size={14} />
+                  {isLoading ? (
+                    <span className="pointer-events-none absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-white/[0.12] bg-black/38 text-white/65 shadow-[0_4px_18px_rgba(0,0,0,0.24)] backdrop-blur-sm">
+                      <Loader2 size={10} className="animate-spin" />
+                    </span>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLyricsAction}
+                  className={`h-9 rounded-full px-3 inline-flex items-center gap-1.5 text-[12px] font-semibold transition-all duration-200 cursor-pointer outline-none ${
+                    lyricsSessionRequested
+                      ? 'bg-white/[0.08] text-white/88 shadow-[0_8px_28px_rgba(0,0,0,0.18)]'
+                      : 'text-white/58 hover:text-white/84 hover:bg-white/[0.08]'
+                  }`}
+                >
+                  <MicVocal size={14} />
+                  <span>{t('track.lyrics')}</span>
+                </button>
+              </div>
+              <div
+                className={`pointer-events-none absolute right-0 top-full mt-2 transition-all duration-300 ${
+                  showNotFoundHint ? 'translate-y-0 opacity-100' : '-translate-y-1 opacity-0'
                 }`}
               >
-                <MicVocal size={14} />
-                <span>{t('track.lyrics')}</span>
-              </button>
-            </div>
-            <div
-              className={`pointer-events-none absolute right-0 top-full mt-2 transition-all duration-300 ${
-                showNotFoundHint ? 'translate-y-0 opacity-100' : '-translate-y-1 opacity-0'
-              }`}
-            >
-              <div className="rounded-full border border-white/[0.12] bg-black/42 px-3 py-1.5 text-[11px] font-medium text-white/72 shadow-[0_10px_35px_rgba(0,0,0,0.34)] backdrop-blur-md whitespace-nowrap">
-                {t('track.lyricsNotFoundHint', 'Try searching on Genius.com')}
+                <div className="rounded-full border border-white/[0.12] bg-black/42 px-3 py-1.5 text-[11px] font-medium text-white/72 shadow-[0_10px_35px_rgba(0,0,0,0.34)] backdrop-blur-md whitespace-nowrap">
+                  {t('track.lyricsNotFoundHint', 'Try searching on Genius.com')}
+                </div>
               </div>
             </div>
-          </div>
-        )}
-        <button
-          type="button"
-          onClick={() => useFullscreenPanelStore.getState().beginClose()}
-          className="w-9 h-9 rounded-full flex items-center justify-center text-white/25 hover:text-white/70 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
-        >
-          <X size={18} />
-        </button>
-      </div>
+          )}
+          <button
+            type="button"
+            onClick={() => useFullscreenPanelStore.getState().beginClose()}
+            className="w-9 h-9 rounded-full flex items-center justify-center text-white/25 hover:text-white/70 hover:bg-white/[0.08] transition-all duration-200 cursor-pointer outline-none"
+          >
+            <X size={18} />
+          </button>
+        </div>
 
-      <div className="relative z-10 flex-1 min-h-0" style={{ isolation: 'isolate' }}>
-        {lyricsStageActive ? (
-          <div className="mx-auto flex h-full w-full max-w-[min(1240px,calc(100vw-2rem))] items-center justify-center px-[clamp(20px,4vw,72px)] pb-[clamp(44px,8vh,96px)]">
-            <div className="h-full min-h-0 w-full">
-              {/* artwork mode: column width scales with viewport height — */}
-              {/* clamps between 280px (very short windows) and 640px (4K). */}
-              {/* Reserves ~460px for title + slider + controls + panel + */}
-              {/* gaps + fullscreen header. If still not enough, the column */}
-              {(communitySyncStage === 'sync' || communitySyncStage === 'confirm') &&
-              communitySyncSession ? (
-                <CommunitySyncEditor
-                  session={communitySyncSession}
-                  onSyncLine={handleCommunitySyncLine}
-                  onInsertPause={handleCommunitySyncInsertPause}
-                  onUndo={handleCommunitySyncUndo}
-                  onPublish={handleCommunityPublishRequest}
-                  publishPending={communityPublishPending}
-                  onSeekLine={handleCommunitySyncSeekLine}
-                  onUpdateTimestamp={handleCommunityTimestampCommit}
-                  onCancel={closeCommunitySyncWithoutSave}
-                  t={t}
-                />
-              ) : (
-                <FullscreenLyricsColumn
-                  lyrics={displayedLyrics}
-                  warmupEnabled={warmupEnabled}
-                  motionHints={warmupEnabled ? motionHints : []}
-                  pseudoSynced={pseudoSynced}
-                  hintLabel={hintLabel}
-                  suppressFallback={suppressLyricsStage}
-                />
-              )}
+        <div className="relative z-10 flex-1 min-h-0" style={{ isolation: 'isolate' }}>
+          {lyricsStageActive ? (
+            <div className="mx-auto flex h-full w-full max-w-[min(1240px,calc(100vw-2rem))] items-center justify-center px-[clamp(20px,4vw,72px)] pb-[clamp(44px,8vh,96px)]">
+              <div className="h-full min-h-0 w-full">
+                {/* artwork mode: column width scales with viewport height — */}
+                {/* clamps between 280px (very short windows) and 640px (4K). */}
+                {/* Reserves ~460px for title + slider + controls + panel + */}
+                {/* gaps + fullscreen header. If still not enough, the column */}
+                {(communitySyncStage === 'sync' || communitySyncStage === 'confirm') &&
+                communitySyncSession ? (
+                  <CommunitySyncEditor
+                    session={communitySyncSession}
+                    onSyncLine={handleCommunitySyncLine}
+                    onInsertPause={handleCommunitySyncInsertPause}
+                    onUndo={handleCommunitySyncUndo}
+                    onPublish={handleCommunityPublishRequest}
+                    publishPending={communityPublishPending}
+                    seekPending={communitySyncSeekPending}
+                    onSeekLine={handleCommunitySyncSeekLine}
+                    onUpdateTimestamp={handleCommunityTimestampCommit}
+                    onUpdatePlainLyrics={handleCommunityPlainLyricsUpdate}
+                    onCancel={closeCommunitySyncWithoutSave}
+                    t={t}
+                  />
+                ) : (
+                  <FullscreenLyricsColumn
+                    lyrics={displayedLyrics}
+                    warmupEnabled={warmupEnabled}
+                    motionHints={warmupEnabled ? motionHints : []}
+                    pseudoSynced={pseudoSynced}
+                    hintLabel={hintLabel}
+                    suppressFallback={suppressLyricsStage}
+                  />
+                )}
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className="flex h-full min-h-0 items-center justify-center">
-            <TrackColumn
-              key={track.urn}
-              track={track}
-              maxArt="max-w-[min(640px,max(280px,calc(100vh-460px)))]"
-              onOpenArtworkLightbox={(sourceElement) =>
-                openArtworkLightbox('track-column', sourceElement)
-              }
-            />
-          </div>
-        )}
-      </div>
+          ) : (
+            <div className="flex h-full min-h-0 items-center justify-center">
+              <TrackColumn
+                key={track.urn}
+                track={track}
+                maxArt="max-w-[min(640px,max(280px,calc(100vh-460px)))]"
+                onOpenArtworkLightbox={(sourceElement) =>
+                  openArtworkLightbox('track-column', sourceElement)
+                }
+              />
+            </div>
+          )}
+        </div>
 
-      {visualizerFullscreen && <FullscreenVisualizer />}
+        {visualizerFullscreen && <FullscreenVisualizer />}
       </div>
 
       {lyricsStageActive && (
@@ -1825,4 +2055,3 @@ const FullscreenPanels = React.memo(() => {
 });
 
 export { FullscreenPanels };
-

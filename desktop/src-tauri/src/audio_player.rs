@@ -931,6 +931,7 @@ fn wrap_source_into_player<S>(
     eq_params: Arc<RwLock<EqParams>>,
     pitch_params: Arc<RwLock<PitchParams>>,
     vis_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
+    start_paused: bool,
 ) -> Result<(Player, Option<f64>), String>
 where
     S: Source<Item = f32> + Send + 'static,
@@ -941,7 +942,11 @@ where
     }
 
     let player = Player::connect_new(mixer);
-    player.set_volume(volume.clamp(0.0, 1.0));
+    let output_volume = volume.clamp(0.0, 1.0);
+    player.set_volume(if start_paused { 0.0 } else { output_volume });
+    if start_paused {
+        player.pause();
+    }
     #[cfg(target_os = "macos")]
     player.set_speed(playback_speed);
     #[cfg(not(target_os = "macos"))]
@@ -956,6 +961,9 @@ where
     } else {
         player.append(pitch_source);
     }
+    if start_paused {
+        player.set_volume(output_volume);
+    }
 
     Ok((player, duration))
 }
@@ -969,6 +977,7 @@ fn create_player_from_owned_bytes(
     eq_params: Arc<RwLock<EqParams>>,
     pitch_params: Arc<RwLock<PitchParams>>,
     vis_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
+    start_paused: bool,
 ) -> Result<(Player, Option<f64>), String> {
     if let Ok(source) = Decoder::new(Cursor::new(bytes.clone())) {
         return wrap_source_into_player(
@@ -980,6 +989,7 @@ fn create_player_from_owned_bytes(
             eq_params,
             pitch_params,
             vis_tx,
+            start_paused,
         );
     }
 
@@ -993,6 +1003,7 @@ fn create_player_from_owned_bytes(
         eq_params,
         pitch_params,
         vis_tx,
+        start_paused,
     )
 }
 
@@ -1183,6 +1194,7 @@ fn create_player_from_stream_reader(
     eq_params: Arc<RwLock<EqParams>>,
     pitch_params: Arc<RwLock<PitchParams>>,
     vis_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
+    start_paused: bool,
 ) -> Result<(Player, Option<f64>), String> {
     let (hint, normalized_mime) = decoder_hint_from_stream(url, content_type);
     let mut builder = Decoder::builder().with_data(reader);
@@ -1206,6 +1218,7 @@ fn create_player_from_stream_reader(
         eq_params,
         pitch_params,
         vis_tx,
+        start_paused,
     )
 }
 
@@ -1991,6 +2004,7 @@ pub fn audio_load_file(
     path: String,
     cache_key: Option<String>,
     crossfade_secs: Option<f64>,
+    start_paused: Option<bool>,
     app: tauri::AppHandle,
     state: tauri::State<'_, AudioState>,
 ) -> Result<AudioLoadResult, String> {
@@ -2027,6 +2041,7 @@ pub fn audio_load_file(
         state.eq_params.clone(),
         state.pitch_params.clone(),
         state.visualizer_tx.lock().unwrap().clone(),
+        start_paused.unwrap_or(false),
     )?;
     let new_player = Arc::new(new_player);
     *state.normalization_gain.lock().unwrap() = normalization_gain;
@@ -2120,6 +2135,7 @@ pub async fn audio_load_url(
     crossfade_secs: Option<f64>,
     expected_duration_secs: Option<f64>,
     range_seek_target_secs: Option<f64>,
+    start_paused: Option<bool>,
     app: tauri::AppHandle,
     state: tauri::State<'_, AudioState>,
 ) -> Result<AudioLoadResult, String> {
@@ -2127,8 +2143,7 @@ pub async fn audio_load_url(
     let event_token = progress_token.unwrap_or(gen);
     let range_seek_target_secs =
         range_seek_target_secs.filter(|secs| secs.is_finite() && *secs > 0.0);
-    let range_seek_duration_secs = range_seek_target_secs
-        .and_then(|_| expected_duration_secs);
+    let range_seek_duration_secs = range_seek_target_secs.and_then(|_| expected_duration_secs);
     let is_ranged_seek_load = range_seek_target_secs.is_some();
 
     let normalization_cache_dir = app
@@ -2803,6 +2818,7 @@ pub async fn audio_load_url(
         state.eq_params.clone(),
         state.pitch_params.clone(),
         state.visualizer_tx.lock().unwrap().clone(),
+        start_paused.unwrap_or(false),
     )
     .map_err(|error| {
         cancel_download.store(true, Ordering::Relaxed);
@@ -3111,6 +3127,7 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
             .try_lock()
             .map_err(|_| "Seek busy: visualizer".to_string())?
             .clone(),
+        seek_started_paused,
     )?;
 
     if seek_started_paused {

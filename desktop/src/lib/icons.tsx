@@ -45,13 +45,14 @@ import {
   PanelLeftClose as _PanelLeftClose,
   PanelLeftOpen as _PanelLeftOpen,
   Pause as _Pause,
+  PencilLine as _PencilLine,
   Play as _Play,
   Plus as _Plus,
   Power as _Power,
+  RefreshCw as _RefreshCw,
   Repeat as _Repeat,
   Repeat1 as _Repeat1,
   Repeat2 as _Repeat2,
-  RefreshCw as _RefreshCw,
   RotateCcw as _RotateCcw,
   Search as _Search,
   Send as _Send,
@@ -133,6 +134,7 @@ export const Music = memo(_Music);
 export const PanelLeftClose = memo(_PanelLeftClose);
 export const PanelLeftOpen = memo(_PanelLeftOpen);
 export const Pause = memo(_Pause);
+export const PencilLine = memo(_PencilLine);
 export const Play = memo(_Play);
 export const Plus = memo(_Plus);
 export const Repeat = memo(_Repeat);

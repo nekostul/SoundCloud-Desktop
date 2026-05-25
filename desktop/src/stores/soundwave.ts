@@ -1,15 +1,15 @@
 import { create } from 'zustand';
 import { api } from '../lib/api';
 import { type FeedItem, fetchAllLikedTracks, type Playlist } from '../lib/hooks';
+import type { TrackLanguageProfile } from '../lib/language-detection';
 import { initLikedUrns } from '../lib/likes';
+import { hydrateByIds, type RecommendResult, type SoundWaveMode } from '../lib/soundwave';
 import {
   blockSoundWaveTrackForToday,
   filterSoundWaveTracks,
   markSoundWaveTrackPlayed,
 } from '../lib/soundwave-freshness';
 import { buildWaveQueueFromPlayerContext, dedupeTracksByUrn } from '../lib/soundwave-queue';
-import { hydrateByIds, type RecommendResult, type SoundWaveMode } from '../lib/soundwave';
-import type { TrackLanguageProfile } from '../lib/language-detection';
 import { useDislikesStore } from './dislikes';
 import { type Track, usePlayerStore } from './player';
 import { useSettingsStore } from './settings';
@@ -126,6 +126,7 @@ interface SoundWaveState {
     preserveCurrentTrack?: boolean;
     preset?: SoundWavePreset | null;
     launchContext?: SoundWaveLaunchContext | null;
+    continuationStrategy?: SoundWaveContinuationStrategy | null;
   }) => Promise<void>;
   stop: () => void;
   suspendForExternalPlayback: (queue: Track[], queueIndex: number) => void;
@@ -152,7 +153,7 @@ function isTrackPlayable(track: Track | null | undefined): track is Track {
 function extractPlaylistTracks(
   input: { collection?: Playlist[] } | Playlist[] | null | undefined,
 ): Track[] {
-  const collection = Array.isArray(input) ? input : input?.collection ?? [];
+  const collection = Array.isArray(input) ? input : (input?.collection ?? []);
   return collection.flatMap((playlist) => playlist.tracks ?? []).filter(isTrackPlayable);
 }
 
@@ -369,6 +370,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     preserveCurrentTrack = false,
     preset = null,
     launchContext = null,
+    continuationStrategy = 'contextual-tail',
   }) => {
     const currentTrack = preserveCurrentTrack ? usePlayerStore.getState().currentTrack : null;
     const queueInput = currentTrack?.urn ? dedupeTracksByUrn([currentTrack, ...queue]) : queue;
@@ -376,10 +378,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       minTracks: 1,
       includeRecentIfNeeded: true,
     });
-    if (
-      currentTrack?.urn &&
-      !normalizedQueue.some((track) => track.urn === currentTrack.urn)
-    ) {
+    if (currentTrack?.urn && !normalizedQueue.some((track) => track.urn === currentTrack.urn)) {
       normalizedQueue = [currentTrack, ...normalizedQueue];
     }
     if (normalizedQueue.length === 0) return;
@@ -402,7 +401,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     set({
       isActive: true,
       isSuspended: false,
-      continuationStrategy: 'contextual-tail',
+      continuationStrategy,
       currentPreset: preset,
       launchContext,
       playedUrns: new Set(),

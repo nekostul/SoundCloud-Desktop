@@ -3,9 +3,9 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { toast } from 'sonner';
 import i18n from '../i18n';
 import { useAppStatusStore } from '../stores/app-status';
+import { useAuthStore } from '../stores/auth';
 import { waitForAuthHydration } from './auth-hydration';
 import { buildApiUrl } from './constants';
-import { useAuthStore } from '../stores/auth';
 import { isTauriRuntime } from './runtime';
 
 let sessionId: string | null = null;
@@ -29,6 +29,7 @@ const DIRECT_API_SUPPORTED_PREFIXES = [
   '/me',
   '/tracks',
   '/playlists',
+  '/stations',
   '/users',
   '/resolve',
   '/likes',
@@ -283,9 +284,7 @@ function extractMonthlyAudienceSnippet(
 function extractYandexArtistIdsFromSearchHtml(html: string): string[] {
   return [
     ...new Set(
-      [...html.matchAll(/\/artist\/(\d+)/g)]
-        .map((match) => match[1] || '')
-        .filter(Boolean),
+      [...html.matchAll(/\/artist\/(\d+)/g)].map((match) => match[1] || '').filter(Boolean),
     ),
   ];
 }
@@ -407,8 +406,7 @@ async function resolveYandexHtmlFallback(
       )
       .sort(
         (a, b) =>
-          b.score - a.score ||
-          Number(b.match.audience || 0) - Number(a.match.audience || 0),
+          b.score - a.score || Number(b.match.audience || 0) - Number(a.match.audience || 0),
       )[0]?.match || null
   );
 }
@@ -751,9 +749,7 @@ function normalizeUserEntity<T = DirectRecord>(value: unknown): T | null {
 
   const fallbackUrn = buildFallbackUrn('users', user.id);
   const permalink =
-    typeof user.permalink === 'string' && user.permalink.trim()
-      ? user.permalink.trim()
-      : null;
+    typeof user.permalink === 'string' && user.permalink.trim() ? user.permalink.trim() : null;
   const permalinkUrl =
     typeof user.permalink_url === 'string' && user.permalink_url.trim()
       ? user.permalink_url
@@ -763,10 +759,7 @@ function normalizeUserEntity<T = DirectRecord>(value: unknown): T | null {
 
   return {
     ...user,
-    urn:
-      typeof user.urn === 'string' && user.urn.trim()
-        ? user.urn
-        : fallbackUrn ?? user.urn,
+    urn: typeof user.urn === 'string' && user.urn.trim() ? user.urn : (fallbackUrn ?? user.urn),
     permalink_url: permalinkUrl,
   } as T;
 }
@@ -783,10 +776,7 @@ function normalizeTrackEntity<T = DirectRecord>(
 
   return {
     ...track,
-    urn:
-      typeof track.urn === 'string' && track.urn.trim()
-        ? track.urn
-        : fallbackUrn ?? track.urn,
+    urn: typeof track.urn === 'string' && track.urn.trim() ? track.urn : (fallbackUrn ?? track.urn),
     uri:
       typeof track.uri === 'string' && track.uri.trim()
         ? track.uri
@@ -818,7 +808,7 @@ function normalizePlaylistEntity<T = DirectRecord>(
     urn:
       typeof playlist.urn === 'string' && playlist.urn.trim()
         ? playlist.urn
-        : fallbackUrn ?? playlist.urn,
+        : (fallbackUrn ?? playlist.urn),
     uri:
       typeof playlist.uri === 'string' && playlist.uri.trim()
         ? playlist.uri
@@ -916,7 +906,9 @@ function normalizeDirectResponse(path: string, value: unknown): unknown {
     }
 
     if (pathSegments[1] === 'likes' && pathSegments[2] === 'tracks') {
-      return normalizeCollectionResponse(value, (entry) => normalizeTrackEntity(entry, { liked: true }));
+      return normalizeCollectionResponse(value, (entry) =>
+        normalizeTrackEntity(entry, { liked: true }),
+      );
     }
 
     if (pathSegments[1] === 'likes' && pathSegments[2] === 'playlists') {
@@ -951,7 +943,10 @@ function normalizeDirectResponse(path: string, value: unknown): unknown {
       return normalizeUserEntity(value) ?? value;
     }
 
-    if (pathSegments[2] === 'tracks' || (pathSegments[2] === 'likes' && pathSegments[3] === 'tracks')) {
+    if (
+      pathSegments[2] === 'tracks' ||
+      (pathSegments[2] === 'likes' && pathSegments[3] === 'tracks')
+    ) {
       return normalizeCollectionResponse(value, normalizeTrackEntity);
     }
 
@@ -1027,11 +1022,7 @@ function buildPath(pathSegments: string[], searchParams?: URLSearchParams) {
   return query ? `${pathname}?${query}` : pathname;
 }
 
-function ensureDefaultSearchParam(
-  searchParams: URLSearchParams,
-  key: string,
-  value: string,
-) {
+function ensureDefaultSearchParam(searchParams: URLSearchParams, key: string, value: string) {
   if (!searchParams.has(key)) {
     searchParams.set(key, value);
   }
@@ -1314,9 +1305,7 @@ async function waitForRateLimitWindow() {
 }
 
 function applyRateLimitWindow(retryAfterMs: number | null) {
-  const waitMs =
-    Math.max(retryAfterMs ?? RATE_LIMIT_FALLBACK_MS, 500) +
-    Math.random() * 700;
+  const waitMs = Math.max(retryAfterMs ?? RATE_LIMIT_FALLBACK_MS, 500) + Math.random() * 700;
 
   const until = Date.now() + waitMs;
 
@@ -1531,7 +1520,11 @@ async function fetchExternalText(url: string): Promise<string | null> {
 }
 
 function parseBingRssResults(xml: string): SearchResult[] {
-  return [...xml.matchAll(/<item><title>([\s\S]*?)<\/title><link>([\s\S]*?)<\/link><description>([\s\S]*?)<\/description>/g)]
+  return [
+    ...xml.matchAll(
+      /<item><title>([\s\S]*?)<\/title><link>([\s\S]*?)<\/link><description>([\s\S]*?)<\/description>/g,
+    ),
+  ]
     .map((match) => ({
       title: decodeHtmlEntities(match[1] || '').trim(),
       url: decodeHtmlEntities(match[2] || '').trim(),
@@ -1570,19 +1563,13 @@ function pickBestPlatformSearchResultByAudience(
         result,
         score: Math.max(
           ...artistNames.map((artistName) =>
-            computeArtistMatchScore(
-              artistName,
-              `${result.title} ${result.snippet} ${result.url}`,
-            ),
+            computeArtistMatchScore(artistName, `${result.title} ${result.snippet} ${result.url}`),
           ),
         ),
       }))
       .filter((entry) => entry.score >= 0.45)
-      .sort(
-        (a, b) =>
-          Number(b.audience || 0) - Number(a.audience || 0) ||
-          b.score - a.score,
-      )[0] || null
+      .sort((a, b) => Number(b.audience || 0) - Number(a.audience || 0) || b.score - a.score)[0] ||
+    null
   );
 }
 
@@ -1597,12 +1584,10 @@ async function fetchSpotifyPlatform(
   const primaryArtistName = normalizedArtistNames[0] || '';
   if (!primaryArtistName) return null;
 
-  const searchQueries = buildPlatformSearchVariants(normalizedArtistNames).map((artistName) =>
-    `site:open.spotify.com/artist "${artistName}" "monthly listeners"`,
+  const searchQueries = buildPlatformSearchVariants(normalizedArtistNames).map(
+    (artistName) => `site:open.spotify.com/artist "${artistName}" "monthly listeners"`,
   );
-  const searchResults = (
-    await Promise.all(searchQueries.map((query) => searchBing(query)))
-  ).flat();
+  const searchResults = (await Promise.all(searchQueries.map((query) => searchBing(query)))).flat();
   const match = pickBestPlatformSearchResultByAudience(
     searchResults,
     normalizedArtistNames,
@@ -1657,7 +1642,7 @@ async function fetchYandexMusicPlatform(
     ratingsMonth: number;
     likesCount: number;
   }> = [];
-  let searchDebug: Array<{ query: string; count: number }> = [];
+  const searchDebug: Array<{ query: string; count: number }> = [];
 
   if (artistId) {
     const profileHtmlMatch = await fetchYandexArtistHtmlMatch(
@@ -1739,7 +1724,11 @@ async function fetchYandexMusicPlatform(
     const candidates = [...candidatesMap.values()];
 
     if (candidates.length === 0) {
-      const htmlMatch = await resolveYandexHtmlFallback(normalizedArtistNames, profileUrl, artistId);
+      const htmlMatch = await resolveYandexHtmlFallback(
+        normalizedArtistNames,
+        profileUrl,
+        artistId,
+      );
       if (htmlMatch) {
         artistId = htmlMatch.artistId;
         matchedName = htmlMatch.matchedName;
@@ -1793,7 +1782,8 @@ async function fetchYandexMusicPlatform(
               )
               .sort(
                 (a, b) =>
-                  Number(b.candidate.ratings?.month || 0) - Number(a.candidate.ratings?.month || 0) ||
+                  Number(b.candidate.ratings?.month || 0) -
+                    Number(a.candidate.ratings?.month || 0) ||
                   Number(b.candidate.likesCount || 0) - Number(a.candidate.likesCount || 0) ||
                   b.score - a.score,
               );
@@ -1836,18 +1826,18 @@ async function fetchYandexMusicPlatform(
                   audience:
                     roundAudience(briefInfo?.result?.stats?.lastMonthListeners) ??
                     roundAudience(candidate.ratings?.month),
-                  matchedName: briefInfo?.result?.artist?.name || candidate.name || primaryArtistName,
+                  matchedName:
+                    briefInfo?.result?.artist?.name || candidate.name || primaryArtistName,
                 };
               }),
             )
-          )
-            .sort(
-              (a, b) =>
-                Number(b.audience || 0) - Number(a.audience || 0) ||
-                b.score - a.score ||
-                Number(b.candidate.ratings?.month || 0) - Number(a.candidate.ratings?.month || 0) ||
-                Number(b.candidate.likesCount || 0) - Number(a.candidate.likesCount || 0),
-            )[0] ?? null;
+          ).sort(
+            (a, b) =>
+              Number(b.audience || 0) - Number(a.audience || 0) ||
+              b.score - a.score ||
+              Number(b.candidate.ratings?.month || 0) - Number(a.candidate.ratings?.month || 0) ||
+              Number(b.candidate.likesCount || 0) - Number(a.candidate.likesCount || 0),
+          )[0] ?? null;
 
         const fallbackMatch = fallbackCandidates[0];
         const selectedMatch = detailedMatch ?? {
@@ -2056,7 +2046,11 @@ async function getPlaylistLikedState(
 
     const found = (page.collection ?? []).some((playlist) => {
       const playlistId =
-        playlist.id != null ? String(playlist.id) : playlist.urn ? normalizeResourceRef(playlist.urn, 'playlists').id : null;
+        playlist.id != null
+          ? String(playlist.id)
+          : playlist.urn
+            ? normalizeResourceRef(playlist.urn, 'playlists').id
+            : null;
       return playlist.urn === target.urn || (target.id && playlistId === target.id);
     });
 
@@ -2191,9 +2185,9 @@ async function requestRelatedFromLikedTracks(
   ctx: DirectRequestContext,
 ): Promise<DirectTrackLike[]> {
   const groups = await Promise.all(
-    likedTracks.slice(0, 5).map((track) =>
-      requestDirectRelatedTracks(extractDirectTrackId(track) ?? '', limit, ctx),
-    ),
+    likedTracks
+      .slice(0, 5)
+      .map((track) => requestDirectRelatedTracks(extractDirectTrackId(track) ?? '', limit, ctx)),
   );
   return groups.flat();
 }
@@ -2219,9 +2213,8 @@ async function handleRecommendationsRequest<T>(
 ): Promise<T> {
   const limit = clampInt(Number(searchParams.get('limit') ?? 24), 1, 50);
   const refreshValue = Number(searchParams.get('refresh') ?? 0);
-  const refreshOffset = Number.isFinite(refreshValue) && refreshValue > 0
-    ? (Math.floor(refreshValue) % 4) * limit
-    : 0;
+  const refreshOffset =
+    Number.isFinite(refreshValue) && refreshValue > 0 ? (Math.floor(refreshValue) % 4) * limit : 0;
   const offsetParam = refreshOffset > 0 ? `&offset=${refreshOffset}` : '';
   const homeExcludeIds = new Set(
     (searchParams.get('exclude') ?? '')
@@ -2235,7 +2228,10 @@ async function handleRecommendationsRequest<T>(
   if (pathSegments.length === 1) {
     const sourceLimit = Math.max((limit + homeExcludeIds.size) * 2, 32);
     const [feed, liked, likedPlaylists, trending, top] = await Promise.all([
-      requestDirectTracks(`/me/feed?limit=${sourceLimit}${offsetParam}&linked_partitioning=true`, ctx),
+      requestDirectTracks(
+        `/me/feed?limit=${sourceLimit}${offsetParam}&linked_partitioning=true`,
+        ctx,
+      ),
       requestDirectTracks(
         `/me/likes/tracks?limit=${Math.min(sourceLimit, 40)}${offsetParam}&linked_partitioning=true&access=playable,preview,blocked`,
         ctx,
@@ -2269,7 +2265,11 @@ async function handleRecommendationsRequest<T>(
       linked_partitioning: 'true',
       access: 'playable,preview,blocked',
     });
-    const result = await requestDirectPath<DirectTrackCollection>(`/tracks?${params.toString()}`, {}, ctx);
+    const result = await requestDirectPath<DirectTrackCollection>(
+      `/tracks?${params.toString()}`,
+      {},
+      ctx,
+    );
     return toRecommendResults(result.collection ?? [], limit) as T;
   }
 
@@ -2309,7 +2309,10 @@ async function handleDirectRoute<T>(
 
   const method = (requestOptions.method ?? 'GET').toUpperCase();
   const { pathname, searchParams } = splitPathAndSearch(path);
-  const pathSegments = pathname.split('/').filter(Boolean).map((segment) => decodeURIComponent(segment));
+  const pathSegments = pathname
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => decodeURIComponent(segment));
 
   if (pathSegments.length === 0) {
     return DIRECT_NO_MATCH;
@@ -2370,7 +2373,9 @@ async function handleDirectRoute<T>(
   if (pathSegments[0] === 'me') {
     if (method === 'GET') {
       if (
-        ['feed', 'followers', 'followings', 'playlists', 'tracks'].includes(pathSegments[1] ?? '') ||
+        ['feed', 'followers', 'followings', 'playlists', 'tracks'].includes(
+          pathSegments[1] ?? '',
+        ) ||
         (pathSegments[1] === 'likes' && ['tracks', 'playlists'].includes(pathSegments[2] ?? '')) ||
         (pathSegments[1] === 'followings' && pathSegments[2] === 'tracks')
       ) {
@@ -2413,18 +2418,20 @@ async function handleDirectRoute<T>(
           ['followings', normalizeResourceRef(pathSegments[3], 'users').id ?? pathSegments[3]],
           searchParams,
         );
-        const result = await requestDirectPath<{ urn?: string | null; id?: number | string | null } | boolean>(
-          userPath,
-          requestOptions,
-          ctx,
-        );
+        const result = await requestDirectPath<
+          { urn?: string | null; id?: number | string | null } | boolean
+        >(userPath, requestOptions, ctx);
         if (typeof result === 'boolean') {
           return result as T;
         }
 
         const target = normalizeResourceRef(pathSegments[3], 'users');
         const resultId =
-          result.id != null ? String(result.id) : result.urn ? normalizeResourceRef(result.urn, 'users').id : null;
+          result.id != null
+            ? String(result.id)
+            : result.urn
+              ? normalizeResourceRef(result.urn, 'users').id
+              : null;
         return Boolean(result.urn === target.urn || (target.id && resultId === target.id)) as T;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) {
@@ -2476,7 +2483,12 @@ async function handleDirectRoute<T>(
       }
 
       return requestDirectPath<T>(
-        buildNormalizedResourcePath('playlists', pathSegments[1], pathSegments.slice(2), searchParams),
+        buildNormalizedResourcePath(
+          'playlists',
+          pathSegments[1],
+          pathSegments.slice(2),
+          searchParams,
+        ),
         requestOptions,
         ctx,
       );
@@ -2532,10 +2544,7 @@ async function performStandaloneRequest<T>(
   return requestDirectPath<T>(path, requestOptions, ctx);
 }
 
-export async function api<T = unknown>(
-  path: string,
-  options: ApiRequestOptions = {},
-): Promise<T> {
+export async function api<T = unknown>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const {
     quietHttpErrors = false,
     timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
@@ -2556,10 +2565,9 @@ export async function api<T = unknown>(
   }
 
   const requestPromise = (async () => {
-    const {
-      ensureDirectAccessToken,
-      isDirectSoundCloudAuthError,
-    } = await import('./direct-soundcloud-api');
+    const { ensureDirectAccessToken, isDirectSoundCloudAuthError } = await import(
+      './direct-soundcloud-api'
+    );
     const directAccessToken = await ensureDirectAccessToken({
       reason: `api:${path}`,
       allowExpiredTokenFallback: true,
@@ -2576,11 +2584,10 @@ export async function api<T = unknown>(
 
     if (directAccessToken) {
       try {
-        const result = await performStandaloneRequest<T>(
-          path,
-          requestOptions,
-          { accessToken: directAccessToken, timeoutMs },
-        );
+        const result = await performStandaloneRequest<T>(path, requestOptions, {
+          accessToken: directAccessToken,
+          timeoutMs,
+        });
         if (isArtistInsightsRequest) {
           console.log('[artist-insights][api][direct-result]', {
             path,
@@ -2597,11 +2604,10 @@ export async function api<T = unknown>(
           });
 
           if (refreshedToken) {
-            const retried = await performStandaloneRequest<T>(
-              path,
-              requestOptions,
-              { accessToken: refreshedToken, timeoutMs },
-            );
+            const retried = await performStandaloneRequest<T>(path, requestOptions, {
+              accessToken: refreshedToken,
+              timeoutMs,
+            });
             if (isArtistInsightsRequest) {
               console.log('[artist-insights][api][direct-retried-result]', {
                 path,
@@ -2625,8 +2631,7 @@ export async function api<T = unknown>(
 
     const headers = new Headers(requestOptions.headers);
 
-    const effectiveSessionId =
-      sessionId ?? useAuthStore.getState().sessionId;
+    const effectiveSessionId = sessionId ?? useAuthStore.getState().sessionId;
 
     if (effectiveSessionId) {
       headers.set('x-session-id', effectiveSessionId);
@@ -2648,9 +2653,7 @@ export async function api<T = unknown>(
       });
 
       if ([502, 503, 504].includes(res.status)) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, 450 + Math.random() * 350),
-        );
+        await new Promise((resolve) => setTimeout(resolve, 450 + Math.random() * 350));
 
         res = await requestWithFallback(buildApiUrl(path), {
           ...requestOptions,
@@ -2661,13 +2664,8 @@ export async function api<T = unknown>(
 
       useAppStatusStore.getState().setBackendReachable(true);
     } catch (error) {
-      if (
-        error instanceof Error &&
-        /network|socket|reset|fetch/i.test(error.message)
-      ) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, 250 + Math.random() * 350),
-        );
+      if (error instanceof Error && /network|socket|reset|fetch/i.test(error.message)) {
+        await new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 350));
 
         res = await requestWithFallback(buildApiUrl(path), {
           ...requestOptions,
@@ -2692,16 +2690,11 @@ export async function api<T = unknown>(
       const err = new ApiError(res.status, body, retryAfterMs);
 
       const shouldHandleUnauthorized =
-        res.status === 401 &&
-        !path.includes('/stream') &&
-        handleUnauthorized();
+        res.status === 401 && !path.includes('/stream') && handleUnauthorized();
 
       if (!quietHttpErrors) {
         if (res.status >= 500) {
-          if (
-            Date.now() - lastServerErrorToastAt >
-            SERVER_ERROR_TOAST_COOLDOWN_MS
-          ) {
+          if (Date.now() - lastServerErrorToastAt > SERVER_ERROR_TOAST_COOLDOWN_MS) {
             lastServerErrorToastAt = Date.now();
             toast.error(`Server error (${res.status})`);
           }
@@ -2788,9 +2781,7 @@ export interface DirectTrackStreamSource {
 export async function getTrackStreamSource(trackUrn: string): Promise<DirectTrackStreamSource> {
   const trackId = extractTrackId(trackUrn);
 
-  const { resolveDirectTrackStream } = await import(
-    './direct-soundcloud-api'
-  );
+  const { resolveDirectTrackStream } = await import('./direct-soundcloud-api');
   return resolveDirectTrackStream(trackId);
 }
 
@@ -2883,21 +2874,21 @@ export async function getTrackComments(trackUrn: string): Promise<TrackComment[]
   try {
     const urnParts = trackUrn.split(':');
     const id = urnParts[urnParts.length - 1]; // get the numeric ID part
-const res = await api<{ collection: TrackComment[] }>(
-  `/tracks/${id}/comments?limit=200&offset=0&threaded=0`,
-  {
-    quietHttpErrors: true,
-    timeoutMs: 7000,
-  },
-);
+    const res = await api<{ collection: TrackComment[] }>(
+      `/tracks/${id}/comments?limit=200&offset=0&threaded=0`,
+      {
+        quietHttpErrors: true,
+        timeoutMs: 7000,
+      },
+    );
     return res.collection || [];
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') {
       return [];
     }
     if (!(e instanceof ApiError && [401, 403, 404].includes(e.status))) {
-  console.error('Failed to fetch comments', e);
-}
+      console.error('Failed to fetch comments', e);
+    }
     return [];
   }
 }

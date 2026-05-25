@@ -25,7 +25,6 @@ import {
   useRecommendedTracks,
   useRelatedPool,
 } from '../lib/hooks';
-import { useMountFrameGate } from '../lib/useMountFrameGate';
 import {
   Compass,
   Headphones,
@@ -43,6 +42,7 @@ import {
   Repeat2,
   Sparkles,
 } from '../lib/icons';
+import { useMountFrameGate } from '../lib/useMountFrameGate';
 import { useTrackPlay } from '../lib/useTrackPlay';
 import { useAuthStore } from '../stores/auth';
 import type { Track } from '../stores/player';
@@ -61,23 +61,23 @@ function SectionHeader({
   icon: React.ReactNode;
   onSeeAll?: () => void;
 }) {
-  const {} = useTranslation();
-  return (<div className="flex items-center justify-between mb-2 pr-20">
-  <button
-    type="button"
-    onClick={onSeeAll}
-    className="flex items-center gap-2.5 cursor-pointer group"
-  >
-    <div className="w-8 h-8 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center">
-      {icon}
-    </div>
+  return (
+    <div className="flex items-center justify-between mb-2 pr-20">
+      <button
+        type="button"
+        onClick={onSeeAll}
+        className="flex items-center gap-2.5 cursor-pointer group"
+      >
+        <div className="w-8 h-8 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center">
+          {icon}
+        </div>
 
-    <h2 className="text-[15px] font-semibold tracking-tight text-white/90 group-hover:text-white transition-colors">
-      {title}
-    </h2>
-  </button>
-</div>
-);
+        <h2 className="text-[15px] font-semibold tracking-tight text-white/90 group-hover:text-white transition-colors">
+          {title}
+        </h2>
+      </button>
+    </div>
+  );
 }
 
 /* ── Skeletons ────────────────────────────────────────────── */
@@ -230,9 +230,7 @@ const FeedTrackCard = React.memo(
       </div>
     );
   },
-  (prev, next) => 
-    prev.item.origin.urn === next.item.origin.urn &&
-    prev.queue === next.queue,
+  (prev, next) => prev.item.origin.urn === next.item.origin.urn && prev.queue === next.queue,
 );
 
 /* ── Feed Playlist Card ───────────────────────────────────── */
@@ -264,53 +262,52 @@ const FeedPlaylistCard = React.memo(
       () => new Set((origin.tracks ?? []).map((t: Track) => t.urn)),
       [origin.tracks],
     );
-    
+
     // Use single selector instead of multiple
-    const isPlayingFromThis = usePlayerStore(
-      (s) => {
-        if (!s.isPlaying || s.currentTrack == null) return false;
-        return trackUrns.has(s.currentTrack.urn);
-      },
-    );
-    const isPausedFromThis = usePlayerStore(
-      (s) => {
-        if (s.isPlaying || s.currentTrack == null) return false;
-        return trackUrns.has(s.currentTrack.urn);
-      },
-    );
+    const isPlayingFromThis = usePlayerStore((s) => {
+      if (!s.isPlaying || s.currentTrack == null) return false;
+      return trackUrns.has(s.currentTrack.urn);
+    });
+    const isPausedFromThis = usePlayerStore((s) => {
+      if (s.isPlaying || s.currentTrack == null) return false;
+      return trackUrns.has(s.currentTrack.urn);
+    });
 
-    const handlePlay = useCallback(async (e: React.MouseEvent) => {
-      e.stopPropagation();
-      const { play, pause, resume } = usePlayerStore.getState();
-      if (isPlayingFromThis) {
-        pause();
-        return;
-      }
-      if (isPausedFromThis) {
-        resume();
-        return;
-      }
-
-      if (origin.tracks && origin.tracks.length > 0) {
-        play(origin.tracks[0], origin.tracks);
-        return;
-      }
-
-      setLoading(true);
-      try {
-        const data = await import('../lib/api').then((m) =>
-          m.api<{ collection: Track[] }>(`/playlists/${encodeURIComponent(origin.urn)}/tracks`),
-        );
-        const tracks = data.collection;
-        if (tracks.length > 0) {
-          play(tracks[0], tracks);
+    const handlePlay = useCallback(
+      async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        const { play, pause, resume } = usePlayerStore.getState();
+        if (isPlayingFromThis) {
+          pause();
+          return;
         }
-      } catch {
-        navigate(`/playlist/${encodeURIComponent(origin.urn)}`);
-      } finally {
-        setLoading(false);
-      }
-    }, [isPlayingFromThis, isPausedFromThis, origin, navigate]);
+        if (isPausedFromThis) {
+          resume();
+          return;
+        }
+
+        if (origin.tracks && origin.tracks.length > 0) {
+          play(origin.tracks[0], origin.tracks);
+          return;
+        }
+
+        setLoading(true);
+        try {
+          const data = await import('../lib/api').then((m) =>
+            m.api<{ collection: Track[] }>(`/playlists/${encodeURIComponent(origin.urn)}/tracks`),
+          );
+          const tracks = data.collection;
+          if (tracks.length > 0) {
+            play(tracks[0], tracks);
+          }
+        } catch {
+          navigate(`/playlist/${encodeURIComponent(origin.urn)}`);
+        } finally {
+          setLoading(false);
+        }
+      },
+      [isPlayingFromThis, isPausedFromThis, origin, navigate],
+    );
 
     return (
       <div
@@ -429,17 +426,17 @@ const FallbackShelf = React.memo(function FallbackShelf() {
         {fallbackLoading ? (
           <ShelfSkeleton count={3} />
         ) : (
-            fallbackTracks.map((track) => (
-              <div key={track.urn} className="w-[180px] shrink-0">
-                <TrackCard
-                  track={track}
-                  queue={fallbackTracks}
-                  variant="shelf"
-                  disableTilt
-                  disableHoverPreload
-                />
-              </div>
-            ))
+          fallbackTracks.map((track) => (
+            <div key={track.urn} className="w-[180px] shrink-0">
+              <TrackCard
+                track={track}
+                queue={fallbackTracks}
+                variant="shelf"
+                disableTilt
+                disableHoverPreload
+              />
+            </div>
+          ))
         )}
       </HorizontalScroll>
     </section>
@@ -470,17 +467,17 @@ const LikedShelf = React.memo(function LikedShelf({
         {isLoading ? (
           <ShelfSkeleton />
         ) : (
-            displayTracks.map((track) => (
-              <div key={track.urn} className="w-[180px] shrink-0">
-                <TrackCard
-                  track={track}
-                  queue={likedTracks}
-                  variant="shelf"
-                  disableTilt
-                  disableHoverPreload
-                />
-              </div>
-            ))
+          displayTracks.map((track) => (
+            <div key={track.urn} className="w-[180px] shrink-0">
+              <TrackCard
+                track={track}
+                queue={likedTracks}
+                variant="shelf"
+                disableTilt
+                disableHoverPreload
+              />
+            </div>
+          ))
         )}
       </HorizontalScroll>
     </section>
@@ -504,17 +501,17 @@ const FollowingShelf = React.memo(function FollowingShelf() {
         {isLoading ? (
           <ShelfSkeleton />
         ) : (
-            followingTracks.map((track) => (
-              <div key={track.urn} className="w-[180px] shrink-0">
-                <TrackCard
-                  track={track}
-                  queue={followingTracks}
-                  variant="shelf"
-                  disableTilt
-                  disableHoverPreload
-                />
-              </div>
-            ))
+          followingTracks.map((track) => (
+            <div key={track.urn} className="w-[180px] shrink-0">
+              <TrackCard
+                track={track}
+                queue={followingTracks}
+                variant="shelf"
+                disableTilt
+                disableHoverPreload
+              />
+            </div>
+          ))
         )}
       </HorizontalScroll>
     </section>
@@ -691,24 +688,24 @@ const FeedStream = React.memo(function FeedStream() {
       {isLoading ? (
         <FeedSkeleton />
       ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(380px,1fr))] gap-2.5">
-            {streamItems.map((item) => (
-              <div
-                key={item.origin.urn}
-                style={{
-                  contentVisibility: 'auto',
-                  contain: 'layout paint style',
-                  containIntrinsicSize: '380px 110px',
-                }}
-              >
-                {item.type.includes('track') ? (
-                  <FeedTrackCard item={item} queue={feedTrackQueue} />
-                ) : (
-                  <FeedPlaylistCard item={item} />
-                )}
-              </div>
-            ))}
-          </div>
+        <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(380px,1fr))] gap-2.5">
+          {streamItems.map((item) => (
+            <div
+              key={item.origin.urn}
+              style={{
+                contentVisibility: 'auto',
+                contain: 'layout paint style',
+                containIntrinsicSize: '380px 110px',
+              }}
+            >
+              {item.type.includes('track') ? (
+                <FeedTrackCard item={item} queue={feedTrackQueue} />
+              ) : (
+                <FeedPlaylistCard item={item} />
+              )}
+            </div>
+          ))}
+        </div>
       )}
 
       {/* Sentinel for infinite scroll */}
@@ -736,26 +733,30 @@ export function Home() {
   const { data: pool, isLoading: isPoolLoading } = useRelatedPool(likedTracks);
 
   return (
-    <div className="p-6 pb-6 space-y-12">
+    <div className="min-h-full">
       {heavyContentReady ? (
         <>
           <SoundWaveBlock />
-          <MixShelf pool={pool} isLoading={isPoolLoading} />
-          <FallbackShelf />
-          <LikedShelf likedTracks={likedTracks} isLoading={isLikesLoading} />
-          <FollowingShelf />
-          <DiscoverSection likedTracks={likedTracks} pool={pool} isLoading={isPoolLoading} />
-          <FeedStream />
+          <div className="space-y-12 px-6 pt-10 pb-6">
+            <MixShelf pool={pool} isLoading={isPoolLoading} />
+            <FallbackShelf />
+            <LikedShelf likedTracks={likedTracks} isLoading={isLikesLoading} />
+            <FollowingShelf />
+            <DiscoverSection likedTracks={likedTracks} pool={pool} isLoading={isPoolLoading} />
+            <FeedStream />
+          </div>
         </>
       ) : (
         <>
-          <div className="glass-featured rounded-3xl min-h-[420px]" />
-          <section>
-            <HorizontalScroll>
-              <ShelfSkeleton count={6} />
-            </HorizontalScroll>
-          </section>
-          <FeedSkeleton count={4} />
+          <div className="min-h-[calc(100dvh-198px)] lg:min-h-[calc(100dvh-165px)] bg-white/[0.02]" />
+          <div className="space-y-12 px-6 pt-10 pb-6">
+            <section>
+              <HorizontalScroll>
+                <ShelfSkeleton count={6} />
+              </HorizontalScroll>
+            </section>
+            <FeedSkeleton count={4} />
+          </div>
         </>
       )}
     </div>

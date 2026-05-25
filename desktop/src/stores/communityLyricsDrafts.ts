@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import type { LyricLine } from '../lib/lyrics';
 import { tauriStorage } from '../lib/tauri-storage';
 
-export type CommunityLyricsDraftSource = 'genius' | 'soundcloud';
+export type CommunityLyricsDraftSource = 'genius' | 'soundcloud' | 'local';
 
 export interface CommunityLyricsDraft {
   trackUrn: string;
