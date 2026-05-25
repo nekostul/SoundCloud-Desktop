@@ -57,6 +57,9 @@ bytes = "1"
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 soundtouch = { version = "0.5.4", features = ["bundled"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
+
 [patch.crates-io]
 soundtouch-ffi = { path = "vendor/soundtouch-ffi" }
 

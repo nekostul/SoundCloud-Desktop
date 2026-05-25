@@ -3,10 +3,19 @@ import { isTauriRuntime } from './runtime';
 
 type VisibilityListener = () => void;
 
-let appVisible = typeof document === 'undefined' ? true : document.visibilityState !== 'hidden';
+let documentVisible =
+  typeof document === 'undefined' ? true : document.visibilityState !== 'hidden';
+let nativeWindowVisible = true;
+let appVisible = documentVisible && nativeWindowVisible;
 const listeners = new Set<VisibilityListener>();
 let initialized = false;
 let tauriUnlisten: (() => void) | null = null;
+
+function applyVisibilityClass() {
+  if (typeof document === 'undefined') return;
+
+  document.documentElement.classList.toggle('app-backgrounded', !appVisible);
+}
 
 function emitChange() {
   for (const listener of listeners) {
@@ -17,7 +26,12 @@ function emitChange() {
 function setAppVisible(nextVisible: boolean) {
   if (appVisible === nextVisible) return;
   appVisible = nextVisible;
+  applyVisibilityClass();
   emitChange();
+}
+
+function updateAppVisible() {
+  setAppVisible(documentVisible && nativeWindowVisible);
 }
 
 export function isAppVisible() {
@@ -40,22 +54,26 @@ async function initAppVisibilityBridge() {
   initialized = true;
 
   const syncFromDocument = () => {
-    setAppVisible(document.visibilityState !== 'hidden');
+    documentVisible = document.visibilityState !== 'hidden';
+    updateAppVisible();
   };
 
   const markVisible = () => {
-    setAppVisible(true);
+    documentVisible = true;
+    updateAppVisible();
   };
 
   document.addEventListener('visibilitychange', syncFromDocument);
   window.addEventListener('focus', markVisible);
   window.addEventListener('pageshow', markVisible);
   syncFromDocument();
+  applyVisibilityClass();
 
   if (isTauriRuntime()) {
     try {
       tauriUnlisten = await listen<boolean>('app:window-visibility', (event) => {
-        setAppVisible(Boolean(event.payload));
+        nativeWindowVisible = Boolean(event.payload);
+        updateAppVisible();
       });
     } catch (error) {
       console.warn('[Visibility] Failed to subscribe to app:window-visibility', error);
@@ -69,6 +87,7 @@ async function initAppVisibilityBridge() {
     tauriUnlisten?.();
     tauriUnlisten = null;
     initialized = false;
+    document.documentElement.classList.remove('app-backgrounded');
   });
 }
 

@@ -1,3 +1,5 @@
+import { isAppBackgrounded, subscribeAppVisibility } from './app-visibility';
+
 export const FPS_PRESETS = [15, 30, 60, 120] as const;
 
 type FrameLimiterRoot = Window &
@@ -5,11 +7,13 @@ type FrameLimiterRoot = Window &
     __scdNativeRequestAnimationFrame?: typeof window.requestAnimationFrame;
     __scdNativeCancelAnimationFrame?: typeof window.cancelAnimationFrame;
     __scdFrameLimiterInstalled?: boolean;
+    __scdFrameLimiterVisibilitySubscribed?: boolean;
     __scdFrameLimiterState?: {
       nextId: number;
       lastFlushTs: number;
       frameBudgetMs: number;
       schedulerId: number | null;
+      paused: boolean;
       pending: Map<number, FrameRequestCallback>;
       nativeRequestAnimationFrame: typeof window.requestAnimationFrame;
       nativeCancelAnimationFrame: typeof window.cancelAnimationFrame;
@@ -61,6 +65,7 @@ function ensureFrameLimiterInstalled() {
       lastFlushTs: 0,
       frameBudgetMs: 1000 / 60,
       schedulerId: null,
+      paused: isAppBackgrounded(),
       pending: new Map<number, FrameRequestCallback>(),
       nativeRequestAnimationFrame,
       nativeCancelAnimationFrame,
@@ -71,12 +76,20 @@ function ensureFrameLimiterInstalled() {
   const state = root.__scdFrameLimiterState;
 
   const pump = () => {
+    if (state.paused) {
+      return;
+    }
+
     if (state.schedulerId != null) {
       return;
     }
 
     state.schedulerId = state.nativeRequestAnimationFrame((timestamp) => {
       state.schedulerId = null;
+
+      if (state.paused) {
+        return;
+      }
 
       if (state.pending.size === 0) {
         return;
@@ -126,6 +139,27 @@ function ensureFrameLimiterInstalled() {
     }) as typeof window.cancelAnimationFrame;
 
     root.__scdFrameLimiterInstalled = true;
+  }
+
+  if (!root.__scdFrameLimiterVisibilitySubscribed) {
+    subscribeAppVisibility(() => {
+      state.paused = isAppBackgrounded();
+      state.lastFlushTs = 0;
+
+      if (state.paused) {
+        if (state.schedulerId != null) {
+          state.nativeCancelAnimationFrame(state.schedulerId);
+          state.schedulerId = null;
+        }
+        return;
+      }
+
+      if (state.pending.size > 0) {
+        state.pump();
+      }
+    });
+
+    root.__scdFrameLimiterVisibilitySubscribed = true;
   }
 
   return state;

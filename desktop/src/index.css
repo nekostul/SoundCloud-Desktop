@@ -75,6 +75,13 @@
   box-sizing: border-box;
 }
 
+html.app-backgrounded *,
+html.app-backgrounded *::before,
+html.app-backgrounded *::after {
+  animation-play-state: paused !important;
+  transition-property: none !important;
+}
+
 html,
 body,
 #root {

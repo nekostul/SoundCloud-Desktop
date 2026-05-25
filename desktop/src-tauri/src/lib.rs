@@ -12,6 +12,7 @@ mod spotify_import;
 mod static_server;
 mod track_cache;
 mod tray;
+mod window_visibility;
 mod ym_import;
 mod ytmusic_import;
 
@@ -875,6 +876,36 @@ pub(crate) fn emit_window_visibility(app: &tauri::AppHandle, visible: bool) {
     let _ = app.emit("app:window-visibility", visible);
 }
 
+fn emit_current_window_visibility(window: &tauri::Window) {
+    emit_window_visibility(
+        &window.app_handle(),
+        window_visibility::is_window_visible_to_user(window),
+    );
+}
+
+fn start_window_visibility_monitor(app: tauri::AppHandle) {
+    let _ = std::thread::Builder::new()
+        .name("window-visibility".into())
+        .spawn(move || {
+            let mut last_visible = None;
+
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+
+                let Some(window) = app.get_webview_window("main") else {
+                    continue;
+                };
+                let visible = window_visibility::is_webview_window_visible_to_user(&window);
+                if last_visible == Some(visible) {
+                    continue;
+                }
+
+                last_visible = Some(visible);
+                emit_window_visibility(&app, visible);
+            }
+        });
+}
+
 fn append_bootstrap_error_log(message: &str) {
     let base_dir = resolve_startup_logs_base_dir();
     let Some(base_dir) = base_dir else {
@@ -1092,6 +1123,7 @@ pub fn run() {
             audio_player::start_tick_emitter(app.handle());
             audio_player::start_media_controls(app.handle());
             audio_player::start_visualizer_thread(app.handle());
+            start_window_visibility_monitor(app.handle().clone());
 
             let tray_available = match tray::setup_tray(app) {
                 Ok(()) => true,
@@ -1106,8 +1138,8 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 let tray_available = window
                     .app_handle()
                     .state::<TrayAvailabilityState>()
@@ -1121,6 +1153,12 @@ pub fn run() {
                 let _ = window.hide();
                 emit_window_visibility(&window.app_handle(), false);
             }
+            tauri::WindowEvent::Focused(_)
+            | tauri::WindowEvent::Resized(_)
+            | tauri::WindowEvent::Moved(_) => {
+                emit_current_window_visibility(window);
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             server::get_server_ports,
