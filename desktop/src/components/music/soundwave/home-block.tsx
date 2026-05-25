@@ -376,19 +376,34 @@ async function buildSoundCloudFlowQueue(options: {
 }
 
 function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
+  const volume = usePlayerStore((state) => state.volume);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const speedRef = useRef(0.12);
-  const ampRef = useRef(0.65);
-  const playWeightRef = useRef(0);
+  const playingRef = useRef(isPlaying);
+  const volumeRef = useRef(volume);
+
+  useEffect(() => {
+    playingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    volumeRef.current = volume;
+  }, [volume]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     let animationFrameId = 0;
+    let unlistenAudio: (() => void) | null = null;
+    let disposed = false;
+    let lastAudioAt = 0;
     let phase = 0;
+    let colorPhase = Math.random() * Math.PI * 2;
+    const energy = { bass: 0, mid: 0, high: 0, overall: 0 };
+    const target = { bass: 0, mid: 0, high: 0, overall: 0 };
 
     const resizeCanvas = () => {
       const rect = canvas.getBoundingClientRect();
@@ -404,35 +419,26 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
       resizeObserver.observe(canvas.parentElement);
     }
 
-    const particles: Array<{
-      x: number;
-      y: number;
-      speedY: number;
-      speedX: number;
-      size: number;
-      hueOffset: number;
-      lightness: number;
-      alpha: number;
-      life: number;
-      maxLife: number;
-    }> = [];
-
-    let unlistenAudio: (() => void) | null = null;
-    const energy = { bass: 0, mid: 0, high: 0, overall: 0 };
-    const targetEnergy = { bass: 0, mid: 0, high: 0, overall: 0 };
-
     const setupAudio = async () => {
       try {
-        unlistenAudio = await listen<number[]>('audio:visualizer', (event) => {
+        const unlisten = await listen<number[]>('audio:visualizer', (event) => {
           const bins = event.payload;
-          if (!bins?.length || !isPlaying) return;
+          if (!bins?.length) return;
 
           const bands = readAudioBands(bins);
-          targetEnergy.bass = bands.bass;
-          targetEnergy.mid = bands.mid;
-          targetEnergy.high = bands.high;
-          targetEnergy.overall = bands.overall;
+          lastAudioAt = performance.now();
+          target.bass = playingRef.current ? bands.bass : 0;
+          target.mid = playingRef.current ? bands.mid : 0;
+          target.high = playingRef.current ? bands.high : 0;
+          target.overall = playingRef.current ? bands.overall : 0;
         });
+
+        if (disposed) {
+          unlisten();
+          return;
+        }
+
+        unlistenAudio = unlisten;
       } catch {
         unlistenAudio = null;
       }
@@ -440,299 +446,224 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
 
     void setupAudio();
 
-    const spawnParticle = (width: number, height: number, initInCore: boolean) => {
-      const cx = width / 2;
-      const cy = height / 2;
-      let x = cx + (Math.random() * 160 - 80);
-      let y = cy + (Math.random() * 160 - 80);
+    const createRibbonPath = (
+      width: number,
+      height: number,
+      yShift: number,
+      phaseOffset: number,
+      amplitude: number,
+      high: number,
+    ) => {
+      const path = new Path2D();
+      const count = 128;
+      const startX = -width * 0.24;
+      const span = width * 1.5;
+      const baseY =
+        height * 0.5 +
+        Math.sin(phase * 0.18 + phaseOffset) * height * 0.052 +
+        Math.cos(phase * 0.11 - phaseOffset * 0.7) * height * 0.024 +
+        yShift;
 
-      if (!initInCore) {
-        x = Math.random() * width;
-        y = cy + (Math.random() * 180 - 45);
+      for (let index = 0; index <= count; index++) {
+        const t = index / count;
+        const localPhase = phase + Math.sin(phase * 0.13 + phaseOffset) * 1.4;
+        const x =
+          startX +
+          span * t +
+          Math.sin(t * Math.PI * 1.45 + localPhase * 0.26 + phaseOffset) * width * 0.026;
+        const envelope = 0.3 + Math.sin(Math.PI * t) * 0.92;
+        const mainWave =
+          Math.sin(t * Math.PI * 2.28 + localPhase * 0.52 + phaseOffset) *
+          amplitude *
+          (0.82 + Math.sin(localPhase * 0.17 + t * Math.PI) * 0.18);
+        const foldWave =
+          Math.sin(t * Math.PI * 4.35 - localPhase * 0.34 + phaseOffset * 1.7) * amplitude * 0.36;
+        const detailWave =
+          Math.sin(t * Math.PI * 8.9 + localPhase * 0.8 + phaseOffset) *
+          amplitude *
+          0.045 *
+          (0.35 + high);
+        const driftWave =
+          Math.sin(t * Math.PI * 1.08 - localPhase * 0.21 + phaseOffset * 0.7) * amplitude * 0.2;
+        const y = baseY + (mainWave + foldWave + detailWave + driftWave) * envelope;
+
+        if (index === 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
       }
 
-      return {
-        x,
-        y,
-        speedY: (Math.random() * 0.95 + 0.35) * -1,
-        speedX: Math.random() * 0.8 - 0.4,
-        size: Math.random() * 2.2 + 1.2,
-        hueOffset: Math.random() * 50 - 25,
-        lightness: Math.random() * 15 + 68,
-        alpha: Math.random() * 0.85 + 0.15,
-        life: 0,
-        maxLife: Math.random() * 180 + 70,
-      };
+      return path;
     };
 
-    const getDynamicColor = (hueOffset: number, sat: number, lit: number, alpha = 1) => {
-      const audioHue = energy.bass * 24 + energy.mid * 38 + energy.high * 54;
-      const activeHue = (340 + phase * 18 + hueOffset + audioHue) % 360;
-      const pausedHue = (22 + Math.sin(phase * 0.15) * 8 + hueOffset) % 360;
-      let diff = activeHue - pausedHue;
-      while (diff < -180) diff += 360;
-      while (diff > 180) diff -= 360;
-
-      const baseHue = (pausedHue + diff * playWeightRef.current + 360) % 360;
-      return `hsla(${baseHue}, ${sat}%, ${lit}%, ${alpha})`;
-    };
-
-    const drawOrganicBlob = (
-      cx: number,
-      cy: number,
-      baseRadius: number,
-      phaseOffset: number,
-      amp: number,
-      color1: string,
-      color2: string,
-      color3: string,
-      numPoints: number,
+    const drawStroke = (
+      path: Path2D,
+      strokeStyle: string | CanvasGradient,
+      lineWidth: number,
       blurPx: number,
-      opacity: number,
-      layerIndex: number,
+      alpha: number,
+      composite: GlobalCompositeOperation = 'lighter',
     ) => {
       ctx.save();
-      ctx.filter = `blur(${blurPx}px)`;
-      ctx.globalAlpha = opacity;
-
-      const driftX = Math.sin(phase * 0.42 + layerIndex * 1.5) * baseRadius * 0.28;
-      const driftY = Math.cos(phase * 0.33 + layerIndex * 2.2) * baseRadius * 0.24;
-      const stretchX = 1.48 + Math.sin(phase * 0.22 + layerIndex * 1.3) * 0.38;
-      const stretchY = 0.62 + Math.cos(phase * 0.18 + layerIndex * 0.9) * 0.24;
-      const rotationAngle = phase * 0.28 * (layerIndex % 2 === 0 ? 1 : -1) + phaseOffset;
-
-      ctx.translate(cx + driftX, cy + driftY);
-      ctx.rotate(rotationAngle);
-      ctx.scale(stretchX, stretchY);
-
-      const grad = ctx.createRadialGradient(0, 0, baseRadius * 0.02, 0, 0, baseRadius * 1.35);
-      grad.addColorStop(0, color1);
-      grad.addColorStop(0.36, color2);
-      grad.addColorStop(0.72, color3);
-      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = grad;
-
-      const points: Array<{ x: number; y: number }> = [];
-      for (let i = 0; i < numPoints; i++) {
-        const angle = (i / numPoints) * Math.PI * 2;
-        let rFactor = 0.82;
-        rFactor += 0.48 * Math.sin(angle - phase * 0.12 + phaseOffset);
-        rFactor += 0.4 * Math.cos(angle * 2 + phase * 0.08 - phaseOffset * 1.2);
-        rFactor += 0.28 * Math.sin(angle * 3 - phase * 0.11 + phaseOffset * 0.7);
-        rFactor += 0.18 * Math.cos(angle * 5 + phase * 0.14 + phaseOffset * 1.5);
-
-        const interference =
-          Math.sin(angle * 2.5 + phase * 0.08) * Math.cos(angle - phase * 0.06) * 0.2;
-        const spike1 = Math.abs(Math.sin(angle * 1.5 + phase * 0.09 + phaseOffset)) ** 1.8 * 0.55;
-        const spike2 =
-          Math.abs(Math.cos(angle * 3.5 - phase * 0.07 + phaseOffset * 1.4)) ** 1.8 * 0.45;
-        const turbulence = Math.sin(angle * 6 + phase * 0.15) * 0.04 * (isPlaying ? 0.8 : 0.25);
-        const totalR = baseRadius * (rFactor + (interference + spike1 + spike2 + turbulence) * amp);
-
-        points.push({
-          x: Math.cos(angle) * totalR,
-          y: Math.sin(angle) * totalR,
-        });
-      }
-
-      const lastPoint = points[points.length - 1];
-      ctx.beginPath();
-      ctx.moveTo((lastPoint.x + points[0].x) / 2, (lastPoint.y + points[0].y) / 2);
-
-      for (let i = 0; i < numPoints; i++) {
-        const next = (i + 1) % numPoints;
-        ctx.quadraticCurveTo(
-          points[i].x,
-          points[i].y,
-          (points[i].x + points[next].x) / 2,
-          (points[i].y + points[next].y) / 2,
-        );
-      }
-
-      ctx.closePath();
-      ctx.fill();
+      ctx.globalCompositeOperation = composite;
+      ctx.globalAlpha = alpha;
+      ctx.filter = blurPx > 0 ? `blur(${blurPx}px)` : 'none';
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = strokeStyle;
+      ctx.lineWidth = lineWidth;
+      ctx.stroke(path);
       ctx.restore();
     };
 
+    const hsla = (hue: number, saturation: number, lightness: number, alpha: number) =>
+      `hsla(${((hue % 360) + 360) % 360}, ${saturation}%, ${lightness}%, ${alpha})`;
+
+    const softHue = (baseHue: number, range: number, offset: number) =>
+      baseHue +
+      Math.sin(colorPhase + offset) * range +
+      Math.sin(colorPhase * 0.37 + offset * 1.7) * range * 0.38;
+
     const render = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      const width = canvas.width / dpr;
-      const height = canvas.height / dpr;
-      const cx = width / 2;
-      const cy = height / 2;
+      const rect = canvas.getBoundingClientRect();
+      const width = rect.width;
+      const height = rect.height;
 
-      while (particles.length < 34) {
-        particles.push(spawnParticle(width, height, false));
+      const now = performance.now();
+      const volumeRatio = Math.max(0, Math.min(1, volumeRef.current / 100));
+      const audiblePlayback = playingRef.current && volumeRatio > 0;
+
+      if (!audiblePlayback || (lastAudioAt > 0 && now - lastAudioAt > 700)) {
+        target.bass = 0;
+        target.mid = 0;
+        target.high = 0;
+        target.overall = 0;
       }
 
-      if (!isPlaying) {
-        targetEnergy.bass = 0;
-        targetEnergy.mid = 0;
-        targetEnergy.high = 0;
-        targetEnergy.overall = 0;
-      }
+      const volumeMotion = audiblePlayback ? volumeRatio ** 1.65 : 0;
+      const volumeResponse = audiblePlayback ? 0.08 + volumeMotion * 0.92 : 0;
+      const bassEase = audiblePlayback ? 0.018 + volumeMotion * 0.01 : 0.05;
+      const midEase = audiblePlayback ? 0.035 + volumeMotion * 0.035 : 0.055;
+      const highEase = audiblePlayback ? 0.04 + volumeMotion * 0.05 : 0.06;
+      const overallEase = audiblePlayback ? 0.032 + volumeMotion * 0.023 : 0.05;
+      energy.bass += (target.bass * volumeResponse - energy.bass) * bassEase;
+      energy.mid += (target.mid * volumeResponse - energy.mid) * midEase;
+      energy.high += (target.high * volumeResponse - energy.high) * highEase;
+      energy.overall += (target.overall * volumeResponse - energy.overall) * overallEase;
 
-      const colorEase = isPlaying ? 0.0045 : 0.012;
-      energy.bass += (targetEnergy.bass - energy.bass) * colorEase;
-      energy.mid += (targetEnergy.mid - energy.mid) * colorEase;
-      energy.high += (targetEnergy.high - energy.high) * colorEase;
-      energy.overall += (targetEnergy.overall - energy.overall) * colorEase;
+      const bass = Math.min(1, energy.bass * 1.16);
+      const mid = Math.min(1, energy.mid * 1.28);
+      const high = Math.min(1, energy.high * 1.2);
+      const overall = Math.min(1, energy.overall * 1.45);
+      const motion = playingRef.current ? 0.36 + volumeMotion * 0.64 : 0.36;
+      const colorMotion = playingRef.current ? 0.42 + volumeMotion * 0.58 : 0.42;
 
-      const targetSpeed = isPlaying ? 0.22 : 0.08;
-      const targetAmp = isPlaying ? 1.28 : 0.68;
-      const targetPlayWeight = isPlaying ? 1 : 0;
-
-      speedRef.current += (targetSpeed - speedRef.current) * 0.035;
-      ampRef.current += (targetAmp - ampRef.current) * 0.035;
-      playWeightRef.current += (targetPlayWeight - playWeightRef.current) * 0.035;
-      phase += 0.0035 * speedRef.current;
-
+      phase += 0.0032 * motion + overall * 0.012 + mid * 0.004;
+      colorPhase = (colorPhase + 0.00011 * colorMotion) % (Math.PI * 2);
       ctx.clearRect(0, 0, width, height);
-      const baseRadius = Math.min(width, height) * 0.44;
 
-      drawOrganicBlob(
-        cx,
-        cy,
-        baseRadius * 1.38,
-        0,
-        1.22 * ampRef.current,
-        getDynamicColor(240, 80, 42, 0.85),
-        getDynamicColor(310, 75, 48, 0.3),
-        'rgba(0, 0, 0, 0)',
-        72,
-        65,
-        0.5,
-        1,
+      const baseWidth = Math.min(width, height) * 0.06;
+      const ribbonWidth = baseWidth * (1 + bass * 0.24 + overall * 0.22);
+      const amplitude = height * (0.14 + mid * 0.058 + overall * 0.045);
+      const centerPath = createRibbonPath(width, height, 0, 0, amplitude, high);
+      const upperPath = createRibbonPath(
+        width,
+        height,
+        -ribbonWidth * 0.62,
+        1.35,
+        amplitude * 0.74,
+        high,
       );
-
-      const flowOffset2X = Math.sin(phase * 0.48) * baseRadius * 0.18;
-      const flowOffset2Y = Math.cos(phase * 0.38) * baseRadius * 0.15;
-
-      drawOrganicBlob(
-        cx + flowOffset2X,
-        cy + flowOffset2Y,
-        baseRadius * 1.05,
-        Math.PI * 0.38,
-        1.15 * ampRef.current,
-        getDynamicColor(340, 85, 45, 0.6),
-        getDynamicColor(15, 85, 48, 0.55),
-        'rgba(0, 0, 0, 0)',
-        72,
-        48,
-        0.6,
-        2,
+      const lowerPath = createRibbonPath(
+        width,
+        height,
+        ribbonWidth * 0.52,
+        -1.15,
+        amplitude * 0.7,
+        high,
       );
-
-      drawOrganicBlob(
-        cx - flowOffset2X,
-        cy - flowOffset2Y,
-        baseRadius * 0.96,
-        Math.PI * 1.38,
-        1.1 * ampRef.current,
-        getDynamicColor(315, 85, 42, 0.55),
-        getDynamicColor(350, 80, 48, 0.5),
-        'rgba(0, 0, 0, 0)',
-        72,
-        42,
-        0.55,
-        3,
+      const highlightPath = createRibbonPath(
+        width,
+        height,
+        -ribbonWidth * 0.24,
+        0.62,
+        amplitude * 0.83,
+        high,
       );
-
-      const flowOffset3X = Math.cos(phase * 0.58) * baseRadius * 0.22;
-      const flowOffset3Y = Math.sin(phase * 0.44) * baseRadius * 0.18;
-
-      drawOrganicBlob(
-        cx + flowOffset3X,
-        cy - flowOffset3Y,
-        baseRadius * 0.84,
-        Math.PI * 0.78,
-        1.1 * ampRef.current,
-        getDynamicColor(18, 90, 50, 0.75),
-        getDynamicColor(50, 90, 48, 0.45),
-        'rgba(0, 0, 0, 0)',
-        72,
-        32,
-        0.65,
-        4,
+      const lowerHighlightPath = createRibbonPath(
+        width,
+        height,
+        ribbonWidth * 0.24,
+        -0.78,
+        amplitude * 0.7,
+        high,
       );
+      const hazePath = createRibbonPath(width, height, -height * 0.13, 2.1, amplitude * 0.48, high);
+      const roseHue = softHue(334, 8, 0.2);
+      const blushHue = softHue(350, 7, 1.5);
+      const peachHue = softHue(18, 7, 2.8);
+      const goldHue = softHue(44, 6, 4.1);
+      const lavenderHue = softHue(292, 6, 5.2);
 
-      drawOrganicBlob(
-        cx - flowOffset3X,
-        cy + flowOffset3Y,
-        baseRadius * 0.76,
-        Math.PI * 1.88,
-        1.05 * ampRef.current,
-        getDynamicColor(355, 90, 48, 0.7),
-        getDynamicColor(30, 90, 52, 0.45),
-        'rgba(0, 0, 0, 0)',
-        72,
-        28,
-        0.6,
+      const mainGradient = ctx.createLinearGradient(-width * 0.16, 0, width * 1.16, 0);
+      mainGradient.addColorStop(0, hsla(peachHue, 86, 60, 0.86));
+      mainGradient.addColorStop(0.17, hsla(lavenderHue, 72, 68, 0.62));
+      mainGradient.addColorStop(0.35, hsla(roseHue, 82, 64, 0.78));
+      mainGradient.addColorStop(0.53, hsla(peachHue + 8, 84, 63, 0.72));
+      mainGradient.addColorStop(0.71, hsla(goldHue, 82, 68, 0.8));
+      mainGradient.addColorStop(0.86, hsla(blushHue, 76, 67, 0.66));
+      mainGradient.addColorStop(1, hsla(goldHue + 6, 76, 70, 0.64));
+
+      const coreGradient = ctx.createLinearGradient(-width * 0.1, 0, width * 1.1, 0);
+      coreGradient.addColorStop(0, hsla(peachHue + 6, 68, 66, 0.3));
+      coreGradient.addColorStop(0.28, hsla(blushHue, 62, 70, 0.32));
+      coreGradient.addColorStop(0.54, hsla(peachHue, 66, 66, 0.34));
+      coreGradient.addColorStop(0.72, hsla(goldHue + 4, 64, 76, 0.46));
+      coreGradient.addColorStop(1, hsla(lavenderHue + 16, 54, 72, 0.26));
+
+      const edgeGradient = ctx.createLinearGradient(-width * 0.12, 0, width * 1.12, 0);
+      edgeGradient.addColorStop(0, hsla(goldHue + 4, 58, 80, 0.36));
+      edgeGradient.addColorStop(0.34, hsla(blushHue, 58, 74, 0.36));
+      edgeGradient.addColorStop(0.66, hsla(goldHue + 10, 56, 82, 0.42));
+      edgeGradient.addColorStop(1, hsla(lavenderHue + 12, 48, 76, 0.28));
+
+      drawStroke(centerPath, hsla(roseHue, 78, 58, 0.14), ribbonWidth * 3.15, 56, 0.7);
+      drawStroke(centerPath, hsla(peachHue, 78, 58, 0.16), ribbonWidth * 2.45, 42, 0.66);
+      drawStroke(upperPath, hsla(blushHue, 70, 66, 0.16), ribbonWidth * 1.05, 36, 0.52);
+      drawStroke(lowerPath, hsla(peachHue + 4, 76, 58, 0.16), ribbonWidth * 0.95, 34, 0.54);
+      drawStroke(hazePath, hsla(lavenderHue, 58, 68, 0.09), ribbonWidth * 0.72, 38, 0.48);
+      drawStroke(centerPath, mainGradient, ribbonWidth * 1.55, 15, 0.72, 'source-over');
+      drawStroke(centerPath, mainGradient, ribbonWidth * 0.95, 8, 0.52, 'source-over');
+      drawStroke(upperPath, hsla(blushHue, 62, 72, 0.28), ribbonWidth * 0.3, 12, 0.52);
+      drawStroke(lowerPath, hsla(peachHue + 2, 72, 62, 0.26), ribbonWidth * 0.34, 12, 0.56);
+      drawStroke(
+        centerPath,
+        coreGradient,
+        ribbonWidth * 0.4,
         5,
+        0.52 + overall * 0.07,
+        'source-over',
+      );
+      drawStroke(highlightPath, edgeGradient, ribbonWidth * 0.105, 3, 0.5 + high * 0.14);
+      drawStroke(
+        lowerHighlightPath,
+        hsla(peachHue, 78, 62, 0.38),
+        ribbonWidth * 0.095,
+        4,
+        0.44 + bass * 0.08,
       );
 
-      const coreOffsetAX = Math.sin(phase * 0.75) * baseRadius * 0.16;
-      const coreOffsetAY = Math.cos(phase * 0.64) * baseRadius * 0.14;
-
-      drawOrganicBlob(
-        cx + coreOffsetAX,
-        cy + coreOffsetAY,
-        baseRadius * 0.44,
-        Math.PI * 1.28,
-        0.9 * ampRef.current,
-        getDynamicColor(45, 85, 70, 0.8),
-        getDynamicColor(65, 80, 80, 0.75),
-        'rgba(0, 0, 0, 0)',
-        64,
-        22,
-        0.75,
-        6,
-      );
-
-      drawOrganicBlob(
-        cx,
-        cy,
-        baseRadius * 0.3,
-        Math.PI * 2.15,
-        0.8 * ampRef.current,
-        getDynamicColor(340, 80, 75, 0.85),
-        getDynamicColor(50, 85, 85, 0.75),
-        'rgba(0, 0, 0, 0)',
-        64,
-        15,
-        0.8,
-        7,
-      );
-
-      particles.forEach((particle, index) => {
-        particle.life += isPlaying ? 1.2 : 0.35;
-        particle.y += particle.speedY * (isPlaying ? 2.6 : 0.85);
-        particle.x += particle.speedX * (isPlaying ? 1.5 : 0.5);
-        particle.x += Math.sin(particle.y * 0.02 + phase) * 0.45;
-
-        const ageRatio = particle.life / particle.maxLife;
-        const opacityRatio = Math.max(0, 1 - ageRatio);
-
-        if (ageRatio >= 1 || particle.y < -20 || particle.x < -20 || particle.x > width + 20) {
-          particles[index] = spawnParticle(width, height, index % 3 === 0);
-          return;
-        }
-
-        ctx.save();
-        ctx.globalAlpha = particle.alpha * opacityRatio * (isPlaying ? 1 : 0.35);
-        ctx.beginPath();
-        ctx.arc(particle.x, particle.y, particle.size * (1 - ageRatio * 0.4), 0, Math.PI * 2);
-        ctx.fillStyle = getDynamicColor(
-          particle.hueOffset,
-          100,
-          particle.lightness,
-          opacityRatio * particle.alpha,
-        );
-        ctx.shadowBlur = isPlaying ? 12 : 4;
-        ctx.shadowColor = getDynamicColor(particle.hueOffset, 100, particle.lightness, 0.7);
-        ctx.fill();
-        ctx.restore();
-      });
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.09 + overall * 0.08;
+      ctx.filter = `blur(${42 + high * 10}px)`;
+      ctx.fillStyle = hsla(peachHue + 4, 74, 62, 0.24);
+      ctx.beginPath();
+      ctx.ellipse(width * 0.2, height * 0.6, width * 0.13, height * 0.15, -0.6, 0, Math.PI * 2);
+      ctx.ellipse(width * 0.67, height * 0.54, width * 0.18, height * 0.1, -0.18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
 
       animationFrameId = window.requestAnimationFrame(render);
     };
@@ -740,18 +671,19 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
     render();
 
     return () => {
+      disposed = true;
       window.cancelAnimationFrame(animationFrameId);
       unlistenAudio?.();
       resizeObserver.disconnect();
     };
-  }, [isPlaying]);
+  }, []);
 
   return (
     <div className="absolute inset-0 w-full h-full pointer-events-none select-none overflow-hidden">
       <canvas
         ref={canvasRef}
-        className="w-full h-full opacity-[0.58] mix-blend-screen"
-        style={{ filter: 'blur(4px) contrast(1.06)' }}
+        className="absolute inset-0 h-full w-full opacity-[0.9] mix-blend-screen"
+        style={{ filter: 'blur(5px) saturate(1.18) contrast(1.03)' }}
       />
     </div>
   );
