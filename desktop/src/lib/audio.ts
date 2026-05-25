@@ -21,6 +21,7 @@ import {
 } from './cache';
 import { art } from './formatters';
 import { isTauriRuntime } from './runtime';
+import { filterSoundWaveTracks } from './soundwave-freshness';
 import { buildWaveQueueFromPlayerContext, dedupeTracksByUrn } from './soundwave-queue';
 import { getTrackWaveform } from './waveform';
 
@@ -3028,12 +3029,17 @@ async function autoplayRelated(lastTrack: Track) {
   autoplayLoading = true;
 
   try {
-    const { queue } = usePlayerStore.getState();
+    const { queue, queueSource } = usePlayerStore.getState();
     const existingUrns = new Set(queue.map((t) => t.urn));
     const res = await api<{ collection: Track[] }>(
       `/tracks/${encodeURIComponent(lastTrack.urn)}/related?limit=20`,
     );
-    const fresh = res.collection.filter((t) => !existingUrns.has(t.urn));
+    const fresh = filterSoundWaveTracks(res.collection, {
+      excludeUrns: existingUrns,
+      hideLiked: queueSource === 'soundwave' && useSettingsStore.getState().soundwaveHideLiked,
+      minTracks: 1,
+      includeRecentIfNeeded: true,
+    });
     if (fresh.length === 0) {
       usePlayerStore.getState().pause();
       return;

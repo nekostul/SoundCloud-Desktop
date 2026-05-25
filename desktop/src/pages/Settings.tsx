@@ -6,6 +6,7 @@ import { LANGUAGE_OPTIONS, normalizeLanguage } from '../i18n/language';
 import { useSubscription } from '../lib/subscription';
 import { Skeleton } from '../components/ui/Skeleton.tsx';
 import { useArtworkGradientPalette } from '../lib/artwork-palette';
+import { buildArtworkSurfaceVisual } from '../lib/artwork-surface';
 import { reloadCurrentTrack } from '../lib/audio';
 import { getApiBase } from '../lib/constants';
 import { FPS_PRESETS } from '../lib/framerate';
@@ -852,6 +853,16 @@ const ThemeSection = React.memo(function ThemeSection() {
   const themeGlowEnabled = useSettingsStore((s) => s.themeGlowEnabled);
   const themeGlowIntensity = useSettingsStore((s) => s.themeGlowIntensity);
   const themeGlowOpacity = useSettingsStore((s) => s.themeGlowOpacity);
+  const themeDockFollowArtwork = useSettingsStore((s) => s.themeDockFollowArtwork);
+  const themeDockGradientEnabled = useSettingsStore((s) => s.themeDockGradientEnabled);
+  const themeDockGradientType = useSettingsStore((s) => s.themeDockGradientType);
+  const themeDockColorA = useSettingsStore((s) => s.themeDockColorA);
+  const themeDockColorB = useSettingsStore((s) => s.themeDockColorB);
+  const themeDockColorC = useSettingsStore((s) => s.themeDockColorC);
+  const themeDockGradientAngle = useSettingsStore((s) => s.themeDockGradientAngle);
+  const themeDockOpacity = useSettingsStore((s) => s.themeDockOpacity);
+  const themeDockBlur = useSettingsStore((s) => s.themeDockBlur);
+  const themeDockBorderOpacity = useSettingsStore((s) => s.themeDockBorderOpacity);
   const backgroundImage = useSettingsStore((s) => s.backgroundImage);
   const backgroundOpacity = useSettingsStore((s) => s.backgroundOpacity);
   const setAccentColor = useSettingsStore((s) => s.setAccentColor);
@@ -870,11 +881,23 @@ const ThemeSection = React.memo(function ThemeSection() {
   const setThemeGlowEnabled = useSettingsStore((s) => s.setThemeGlowEnabled);
   const setThemeGlowIntensity = useSettingsStore((s) => s.setThemeGlowIntensity);
   const setThemeGlowOpacity = useSettingsStore((s) => s.setThemeGlowOpacity);
+  const setThemeDockFollowArtwork = useSettingsStore((s) => s.setThemeDockFollowArtwork);
+  const setThemeDockGradientEnabled = useSettingsStore((s) => s.setThemeDockGradientEnabled);
+  const setThemeDockGradientType = useSettingsStore((s) => s.setThemeDockGradientType);
+  const setThemeDockColorA = useSettingsStore((s) => s.setThemeDockColorA);
+  const setThemeDockColorB = useSettingsStore((s) => s.setThemeDockColorB);
+  const setThemeDockColorC = useSettingsStore((s) => s.setThemeDockColorC);
+  const setThemeDockGradientAngle = useSettingsStore((s) => s.setThemeDockGradientAngle);
+  const setThemeDockOpacity = useSettingsStore((s) => s.setThemeDockOpacity);
+  const setThemeDockBlur = useSettingsStore((s) => s.setThemeDockBlur);
+  const setThemeDockBorderOpacity = useSettingsStore((s) => s.setThemeDockBorderOpacity);
   const setBackgroundOpacity = useSettingsStore((s) => s.setBackgroundOpacity);
   const resetTheme = useSettingsStore((s) => s.resetTheme);
   const currentArtworkUrl = usePlayerStore((s) => s.currentTrack?.artwork_url ?? null);
   const artworkGradientPalette = useArtworkGradientPalette(
-    themeGradientFollowArtwork ? currentArtworkUrl : null,
+    themeGradientFollowArtwork || (themePreset === 'custom' && themeDockFollowArtwork)
+      ? currentArtworkUrl
+      : null,
   );
   const gradientFromArtworkActive =
     themeGradientEnabled && themeGradientFollowArtwork && Boolean(artworkGradientPalette);
@@ -904,6 +927,39 @@ const ThemeSection = React.memo(function ThemeSection() {
       ? `radial-gradient(circle at 24% 18%, ${hexToRgba(effectiveThemeGradientColorA, 0.34)} 0%, ${hexToRgba(effectiveThemeGradientColorB, 0.2)} 46%, ${hexToRgba(effectiveThemeGradientColorC, 0.12)} 100%)`
       : `linear-gradient(${themeGradientAngle}deg, ${hexToRgba(effectiveThemeGradientColorA, 0.32)} 0%, ${hexToRgba(effectiveThemeGradientColorB, 0.2)} 46%, ${hexToRgba(effectiveThemeGradientColorC, 0.12)} 100%)`
     : `linear-gradient(135deg, ${hexToRgba(effectiveAccentColor, 0.3)}, ${hexToRgba(effectiveAccentColor, 0.08)})`;
+  const dockFromArtworkActive = themeDockFollowArtwork && Boolean(artworkGradientPalette);
+  const artworkDockPreview = dockFromArtworkActive
+    ? buildArtworkSurfaceVisual(artworkGradientPalette!)
+    : null;
+  const effectiveDockColorA = dockFromArtworkActive
+    ? artworkGradientPalette!.gradientA
+    : themeDockColorA;
+  const effectiveDockColorB = dockFromArtworkActive
+    ? artworkGradientPalette!.gradientB
+    : themeDockColorB;
+  const effectiveDockColorC = dockFromArtworkActive
+    ? artworkGradientPalette!.gradientC
+    : themeDockColorC;
+  const dockPreviewOpacity = Math.max(0, Math.min(1, themeDockOpacity / 100)) * 0.46;
+  const previewDockBackground =
+    artworkDockPreview?.background ??
+    (themeDockGradientEnabled
+      ? themeDockGradientType === 'radial'
+        ? [
+            `linear-gradient(180deg, rgba(255,255,255,${0.026 + dockPreviewOpacity * 0.04}), rgba(255,255,255,0.012))`,
+            `radial-gradient(circle at 18% 16%, ${hexToRgba(effectiveDockColorA, dockPreviewOpacity * 0.38)} 0%, ${hexToRgba(effectiveDockColorB, dockPreviewOpacity)} 48%, ${hexToRgba(effectiveDockColorC, dockPreviewOpacity * 0.34)} 100%)`,
+          ].join(', ')
+        : [
+            `linear-gradient(180deg, rgba(255,255,255,${0.026 + dockPreviewOpacity * 0.04}), rgba(255,255,255,0.012))`,
+            `linear-gradient(${themeDockGradientAngle}deg, ${hexToRgba(effectiveDockColorA, dockPreviewOpacity * 0.42)} 0%, ${hexToRgba(effectiveDockColorB, dockPreviewOpacity)} 52%, ${hexToRgba(effectiveDockColorC, dockPreviewOpacity * 0.34)} 100%)`,
+          ].join(', ')
+      : `linear-gradient(180deg, rgba(255,255,255,${0.026 + dockPreviewOpacity * 0.04}), ${hexToRgba(effectiveDockColorB, dockPreviewOpacity)})`);
+  const previewDockBorder =
+    artworkDockPreview?.borderColor ??
+    hexToRgba(
+      effectiveDockColorC,
+      0.025 + Math.max(0, Math.min(1, themeDockBorderOpacity / 100)) * 0.26,
+    );
 
   return (
     <section className="bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl space-y-6">
@@ -1287,6 +1343,201 @@ const ThemeSection = React.memo(function ThemeSection() {
                 onChange={(e) => setThemeGlowOpacity(Number(e.target.value))}
                 className={THEME_SLIDER_CLASSNAME}
               />
+            </div>
+          </div>
+
+          <div className="space-y-4 rounded-3xl border border-white/[0.06] bg-white/[0.03] p-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="text-[14px] font-semibold text-white/85">
+                  {t('settings.themeDock')}
+                </div>
+                <div className="text-[12px] text-white/45 mt-1">{t('settings.themeDockDesc')}</div>
+              </div>
+              <ThemeOptionChip
+                active={themeDockGradientEnabled}
+                onClick={() => setThemeDockGradientEnabled(!themeDockGradientEnabled)}
+              >
+                {themeDockGradientEnabled ? t('eq.on') : t('eq.off')}
+              </ThemeOptionChip>
+            </div>
+
+            <div className="rounded-2xl border border-white/[0.08] bg-black/18 p-4">
+              <div
+                className="mx-auto grid min-h-[74px] max-w-[560px] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 rounded-[18px] px-4 py-3"
+                style={{
+                  background: previewDockBackground,
+                  backgroundSize: artworkDockPreview
+                    ? '100% 100%, 100% 100%, 100% 100%'
+                    : themeGradientAnimated
+                      ? '100% 100%, 180% 180%'
+                      : undefined,
+                  border: `1px solid ${previewDockBorder}`,
+                  boxShadow:
+                    artworkDockPreview?.boxShadow ??
+                    `0 16px 44px rgba(0,0,0,0.32), 0 0 18px ${hexToRgba(effectiveDockColorB, 0.04)}`,
+                  backdropFilter: `blur(${themeDockBlur}px) saturate(${1 + dockPreviewOpacity * 0.55})`,
+                }}
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <div
+                    className="h-11 w-11 shrink-0 rounded-xl border border-white/12"
+                    style={{ background: previewAccentGradient }}
+                  />
+                  <div className="min-w-0 space-y-1">
+                    <div className="h-2.5 w-28 rounded-full bg-white/70" />
+                    <div className="h-2 w-20 rounded-full bg-white/22" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="h-8 w-8 rounded-full bg-white/10" />
+                  <div className="h-9 w-9 rounded-full bg-white/88" />
+                  <div className="h-8 w-8 rounded-full bg-white/10" />
+                </div>
+                <div className="flex justify-end">
+                  <div className="h-2.5 w-28 rounded-full bg-white/20" />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-start justify-between gap-4 rounded-2xl border border-white/[0.05] bg-black/10 px-4 py-3">
+              <div>
+                <div className="text-[13px] font-semibold text-white/80">
+                  {t('settings.themeDockFollowArtwork')}
+                </div>
+                <div className="mt-1 text-[11px] text-white/40">
+                  {t('settings.themeDockFollowArtworkDesc')}
+                </div>
+              </div>
+              <ThemeOptionChip
+                active={themeDockFollowArtwork}
+                onClick={() => setThemeDockFollowArtwork(!themeDockFollowArtwork)}
+              >
+                {themeDockFollowArtwork ? t('eq.on') : t('eq.off')}
+              </ThemeOptionChip>
+            </div>
+
+            <div className="space-y-3">
+              <label className="text-[13px] text-white/50 font-medium">
+                {t('settings.themeGradientType')}
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {THEME_GRADIENT_TYPES.map((option) => (
+                  <ThemeOptionChip
+                    key={`dock-${option.id}`}
+                    active={themeDockGradientType === option.id}
+                    onClick={() => setThemeDockGradientType(option.id)}
+                  >
+                    {t(option.labelKey)}
+                  </ThemeOptionChip>
+                ))}
+              </div>
+            </div>
+
+            <div
+              className={`grid gap-5 xl:grid-cols-3 transition-opacity ${
+                themeDockFollowArtwork ? 'opacity-55' : ''
+              }`}
+            >
+              <ThemeColorField
+                label={t('settings.themeDockColorA')}
+                value={themeDockColorA}
+                onChange={setThemeDockColorA}
+              />
+              <ThemeColorField
+                label={t('settings.themeDockColorB')}
+                value={themeDockColorB}
+                onChange={setThemeDockColorB}
+              />
+              <ThemeColorField
+                label={t('settings.themeDockColorC')}
+                value={themeDockColorC}
+                onChange={setThemeDockColorC}
+              />
+            </div>
+
+            {themeDockGradientType === 'linear' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-[13px] text-white/50 font-medium">
+                    {t('settings.themeGradientAngle')}
+                  </label>
+                  <span className="text-[12px] text-white/30 tabular-nums">
+                    {themeDockGradientAngle}deg
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={360}
+                  step={1}
+                  value={themeDockGradientAngle}
+                  onChange={(e) => setThemeDockGradientAngle(Number(e.target.value))}
+                  className={THEME_SLIDER_CLASSNAME}
+                />
+              </div>
+            )}
+
+            <div className="grid gap-5 xl:grid-cols-3">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-[13px] text-white/50 font-medium">
+                    {t('settings.themeDockOpacity')}
+                  </label>
+                  <span className="text-[12px] text-white/30 tabular-nums">
+                    {themeDockOpacity}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={themeDockOpacity}
+                  onChange={(e) => setThemeDockOpacity(Number(e.target.value))}
+                  className={THEME_SLIDER_CLASSNAME}
+                />
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-[13px] text-white/50 font-medium">
+                    {t('settings.themeDockBlur')}
+                  </label>
+                  <span className="text-[12px] text-white/30 tabular-nums">
+                    {themeDockBlur}px
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={80}
+                  step={1}
+                  value={themeDockBlur}
+                  onChange={(e) => setThemeDockBlur(Number(e.target.value))}
+                  className={THEME_SLIDER_CLASSNAME}
+                />
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-[13px] text-white/50 font-medium">
+                    {t('settings.themeDockBorderOpacity')}
+                  </label>
+                  <span className="text-[12px] text-white/30 tabular-nums">
+                    {themeDockBorderOpacity}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={themeDockBorderOpacity}
+                  onChange={(e) => setThemeDockBorderOpacity(Number(e.target.value))}
+                  className={THEME_SLIDER_CLASSNAME}
+                />
+              </div>
             </div>
           </div>
         </div>

@@ -179,6 +179,16 @@ export interface SettingsState {
   themeGlowEnabled: boolean;
   themeGlowIntensity: number;
   themeGlowOpacity: number;
+  themeDockFollowArtwork: boolean;
+  themeDockGradientEnabled: boolean;
+  themeDockGradientType: ThemeGradientType;
+  themeDockColorA: string;
+  themeDockColorB: string;
+  themeDockColorC: string;
+  themeDockGradientAngle: number;
+  themeDockOpacity: number;
+  themeDockBlur: number;
+  themeDockBorderOpacity: number;
   backgroundImage: string;
   backgroundOpacity: number;
   glassBlur: number;
@@ -266,6 +276,16 @@ export interface SettingsState {
   setThemeGlowEnabled: (enabled: boolean) => void;
   setThemeGlowIntensity: (intensity: number) => void;
   setThemeGlowOpacity: (opacity: number) => void;
+  setThemeDockFollowArtwork: (enabled: boolean) => void;
+  setThemeDockGradientEnabled: (enabled: boolean) => void;
+  setThemeDockGradientType: (type: ThemeGradientType) => void;
+  setThemeDockColorA: (color: string) => void;
+  setThemeDockColorB: (color: string) => void;
+  setThemeDockColorC: (color: string) => void;
+  setThemeDockGradientAngle: (angle: number) => void;
+  setThemeDockOpacity: (opacity: number) => void;
+  setThemeDockBlur: (blur: number) => void;
+  setThemeDockBorderOpacity: (opacity: number) => void;
   setBackgroundImage: (url: string) => void;
   setBackgroundOpacity: (opacity: number) => void;
   setGlassBlur: (blur: number) => void;
@@ -359,6 +379,16 @@ const DEFAULTS = {
   themeGlowEnabled: true,
   themeGlowIntensity: 72,
   themeGlowOpacity: 58,
+  themeDockFollowArtwork: false,
+  themeDockGradientEnabled: true,
+  themeDockGradientType: 'linear' as ThemeGradientType,
+  themeDockColorA: '#111827',
+  themeDockColorB: '#1f2937',
+  themeDockColorC: '#ff5500',
+  themeDockGradientAngle: 135,
+  themeDockOpacity: 48,
+  themeDockBlur: 18,
+  themeDockBorderOpacity: 18,
   backgroundImage: '',
   backgroundOpacity: 0.15,
   glassBlur: 40,
@@ -471,6 +501,35 @@ export const useSettingsStore = create<SettingsState>()(
       setThemeGlowIntensity: (themeGlowIntensity) =>
         set({ themeGlowIntensity, themePreset: 'custom' }),
       setThemeGlowOpacity: (themeGlowOpacity) => set({ themeGlowOpacity, themePreset: 'custom' }),
+      setThemeDockFollowArtwork: (themeDockFollowArtwork) =>
+        set({ themeDockFollowArtwork, themePreset: 'custom' }),
+      setThemeDockGradientEnabled: (themeDockGradientEnabled) =>
+        set({ themeDockGradientEnabled, themePreset: 'custom' }),
+      setThemeDockGradientType: (themeDockGradientType) =>
+        set({ themeDockGradientType, themePreset: 'custom' }),
+      setThemeDockColorA: (themeDockColorA) => set({ themeDockColorA, themePreset: 'custom' }),
+      setThemeDockColorB: (themeDockColorB) => set({ themeDockColorB, themePreset: 'custom' }),
+      setThemeDockColorC: (themeDockColorC) => set({ themeDockColorC, themePreset: 'custom' }),
+      setThemeDockGradientAngle: (themeDockGradientAngle) =>
+        set({
+          themeDockGradientAngle: Math.min(360, Math.max(0, Math.round(themeDockGradientAngle))),
+          themePreset: 'custom',
+        }),
+      setThemeDockOpacity: (themeDockOpacity) =>
+        set({
+          themeDockOpacity: Math.min(100, Math.max(0, Math.round(themeDockOpacity))),
+          themePreset: 'custom',
+        }),
+      setThemeDockBlur: (themeDockBlur) =>
+        set({
+          themeDockBlur: Math.min(80, Math.max(0, Math.round(themeDockBlur))),
+          themePreset: 'custom',
+        }),
+      setThemeDockBorderOpacity: (themeDockBorderOpacity) =>
+        set({
+          themeDockBorderOpacity: Math.min(100, Math.max(0, Math.round(themeDockBorderOpacity))),
+          themePreset: 'custom',
+        }),
       setBackgroundImage: (backgroundImage) => set({ backgroundImage }),
       setBackgroundOpacity: (backgroundOpacity) => set({ backgroundOpacity }),
       setGlassBlur: (glassBlur) => set({ glassBlur }),
@@ -658,6 +717,16 @@ export const useSettingsStore = create<SettingsState>()(
           themeGlowEnabled: DEFAULTS.themeGlowEnabled,
           themeGlowIntensity: DEFAULTS.themeGlowIntensity,
           themeGlowOpacity: DEFAULTS.themeGlowOpacity,
+          themeDockFollowArtwork: DEFAULTS.themeDockFollowArtwork,
+          themeDockGradientEnabled: DEFAULTS.themeDockGradientEnabled,
+          themeDockGradientType: DEFAULTS.themeDockGradientType,
+          themeDockColorA: DEFAULTS.themeDockColorA,
+          themeDockColorB: DEFAULTS.themeDockColorB,
+          themeDockColorC: DEFAULTS.themeDockColorC,
+          themeDockGradientAngle: DEFAULTS.themeDockGradientAngle,
+          themeDockOpacity: DEFAULTS.themeDockOpacity,
+          themeDockBlur: DEFAULTS.themeDockBlur,
+          themeDockBorderOpacity: DEFAULTS.themeDockBorderOpacity,
           backgroundImage: DEFAULTS.backgroundImage,
           backgroundOpacity: DEFAULTS.backgroundOpacity,
           glassBlur: DEFAULTS.glassBlur,
@@ -788,6 +857,16 @@ export const useSettingsStore = create<SettingsState>()(
         themeGlowEnabled: s.themeGlowEnabled,
         themeGlowIntensity: s.themeGlowIntensity,
         themeGlowOpacity: s.themeGlowOpacity,
+        themeDockFollowArtwork: s.themeDockFollowArtwork,
+        themeDockGradientEnabled: s.themeDockGradientEnabled,
+        themeDockGradientType: s.themeDockGradientType,
+        themeDockColorA: s.themeDockColorA,
+        themeDockColorB: s.themeDockColorB,
+        themeDockColorC: s.themeDockColorC,
+        themeDockGradientAngle: s.themeDockGradientAngle,
+        themeDockOpacity: s.themeDockOpacity,
+        themeDockBlur: s.themeDockBlur,
+        themeDockBorderOpacity: s.themeDockBorderOpacity,
         backgroundImage: s.backgroundImage,
         backgroundOpacity: s.backgroundOpacity,
         glassBlur: s.glassBlur,

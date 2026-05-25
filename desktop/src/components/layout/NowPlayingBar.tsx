@@ -1,40 +1,18 @@
 import * as Slider from '@radix-ui/react-slider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Sparkles, Volume, Volume2, VolumeX } from 'lucide-react';
-import React, {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { artworkPanelApi, lyricsPanelApi } from '../../components/music/LyricsPanel';
 import { api } from '../../lib/api';
-import { useArtworkGradientPalette } from '../../lib/artwork-palette';
-import {
-  ARTWORK_SURFACE_BACKGROUND_POSITION,
-  ARTWORK_SURFACE_BACKGROUND_REPEAT,
-  ARTWORK_SURFACE_BACKGROUND_SIZE,
-  buildArtworkSurfaceVisual,
-} from '../../lib/artwork-surface';
-import {
-  getCurrentTime,
-  handlePrev,
-  subscribe,
-} from '../../lib/audio';
+import { getCurrentTime, handlePrev, subscribe } from '../../lib/audio';
 import { updateDiscordLyric } from '../../lib/discord';
 import { art } from '../../lib/formatters';
 // Use regular requestAnimationFrame instead of Immediate to avoid competing with scroll handler
 import { invalidateAllLikesCache } from '../../lib/hooks';
 import { useIsMobile } from '../../lib/hooks/useIsMobile';
-import { ARTWORK_CROSSFADE_MS, useCrossfadeBackground } from '../../lib/useCrossfadeBackground';
-import {
-  TRACK_SWITCH_NEXT_SCOPE,
-  TRACK_SWITCH_PREV_SCOPE,
-  useTrackSwitchCooldown,
-} from '../../lib/useTrackSwitchCooldown';
 import {
   audioLines16,
   Ban,
@@ -50,8 +28,13 @@ import {
   skipBack20,
   skipForward20,
 } from '../../lib/icons';
-import { optimisticToggleLike } from '../../lib/likes';
+import { optimisticToggleLike, setLikedUrn, useLiked } from '../../lib/likes';
 import { LYRICS_SEARCH_QUERY_VERSION, searchLyrics } from '../../lib/lyrics';
+import {
+  TRACK_SWITCH_NEXT_SCOPE,
+  TRACK_SWITCH_PREV_SCOPE,
+  useTrackSwitchCooldown,
+} from '../../lib/useTrackSwitchCooldown';
 import { useDislikesStore } from '../../stores/dislikes';
 import { useArtworkStore, useFullscreenPanelStore, useLyricsStore } from '../../stores/lyrics';
 import { type Track, usePlayerStore } from '../../stores/player';
@@ -61,10 +44,10 @@ import {
   toContextMenuUserEntity,
   useContextMenuTarget,
 } from '../context-menu/context-menu-registry';
-import { AdaptiveTrackTitle } from '../ui/AdaptiveTrackTitle';
 import { EqualizerPanel } from '../music/EqualizerPanel';
 import { PlaybackSpeedPresets } from '../music/PlaybackSpeedPresets';
 import { StreamQualityBadge } from '../music/StreamQualityBadge';
+import { AdaptiveTrackTitle } from '../ui/AdaptiveTrackTitle';
 import { ProgressSlider } from './now-playing/progress';
 
 export { ProgressSlider, ProgressTime } from './now-playing/progress';
@@ -141,8 +124,10 @@ const ControlVolumeBtn = React.memo(({ size = 'default' }: { size?: 'default' | 
 
 /* ── Like button ─────────────────────────────────────────────── */
 
-function LikeButton({ trackUrn }: { trackUrn: string }) {
+function LikeButton({ track }: { track: Track }) {
   const qc = useQueryClient();
+  const trackUrn = track.urn;
+  const likedFromStore = useLiked(trackUrn);
 
   const { data: trackData } = useQuery({
     queryKey: ['track', trackUrn],
@@ -159,12 +144,19 @@ function LikeButton({ trackUrn }: { trackUrn: string }) {
     setLiked(null);
   }
 
-  const isLiked = liked ?? trackData?.user_favorite ?? false;
+  useEffect(() => {
+    if (track.user_favorite || trackData?.user_favorite) {
+      setLikedUrn(trackUrn, true);
+    }
+  }, [track.user_favorite, trackData?.user_favorite, trackUrn]);
+
+  const isLiked =
+    liked ?? (likedFromStore || Boolean(trackData?.user_favorite) || Boolean(track.user_favorite));
 
   const toggle = async () => {
     const next = !isLiked;
     setLiked(next);
-    if (trackData) optimisticToggleLike(qc, trackData, next);
+    optimisticToggleLike(qc, trackData ?? track, next);
     invalidateAllLikesCache();
     try {
       await api(`/likes/tracks/${encodeURIComponent(trackUrn)}`, {
@@ -173,7 +165,7 @@ function LikeButton({ trackUrn }: { trackUrn: string }) {
       qc.invalidateQueries({ queryKey: ['track', trackUrn, 'favoriters'] });
     } catch {
       setLiked(!next);
-      if (trackData) optimisticToggleLike(qc, trackData, !next);
+      optimisticToggleLike(qc, trackData ?? track, !next);
     }
   };
 
@@ -823,7 +815,7 @@ const TrackInfo = React.memo(() => {
         </p>
       </div>
       <div className="ml-2 flex shrink-0 items-center">
-        <LikeButton trackUrn={currentTrack.urn} />
+        <LikeButton track={currentTrack} />
         <DislikeButton trackUrn={currentTrack.urn} />
         <MoodCorrectionButton track={currentTrack} />
       </div>
@@ -931,23 +923,12 @@ export const NowPlayingBar = React.memo(
     const isPlaying = usePlayerStore((s) => s.isPlaying);
     const togglePlay = usePlayerStore((s) => s.togglePlay);
     const currentTrack = usePlayerStore((s) => s.currentTrack);
-    const currentArtworkUrl = usePlayerStore((s) => s.currentTrack?.artwork_url ?? null);
     const lyricsOpen = useLyricsStore((s) => s.open);
     const artworkOpen = useArtworkStore((s) => s.open);
     const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
     const visualizerPlaybar = useSettingsStore((s) => s.visualizerPlaybar);
-    const artworkGradientPalette = useArtworkGradientPalette(currentArtworkUrl);
     const isFullscreenOverlayOpen = lyricsOpen || artworkOpen;
     const desktopBarOffset = sidebarCollapsed ? 66 : 210;
-    const dockVisual = useMemo(
-      () => (artworkGradientPalette ? buildArtworkSurfaceVisual(artworkGradientPalette) : null),
-      [artworkGradientPalette],
-    );
-    const {
-      baseValue: dockBaseBackground,
-      overlayValue: dockOverlayBackground,
-      overlayVisible: dockOverlayVisible,
-    } = useCrossfadeBackground(dockVisual?.background ?? '', ARTWORK_CROSSFADE_MS);
 
     const desktopDockStyle = useMemo(() => {
       if (isMobile) return undefined;
@@ -983,35 +964,10 @@ export const NowPlayingBar = React.memo(
             className={
               isMobile
                 ? 'h-[72px] flex items-center px-5 gap-3 relative'
-                : 'pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] bg-black/40 backdrop-blur-lg border border-white/[0.04] transition-[margin] duration-200 ease-[var(--ease-apple)]'
+                : 'pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] theme-dock border transition-[margin] duration-200 ease-[var(--ease-apple)]'
             }
             style={desktopDockStyle}
           >
-            {!isMobile && dockVisual ? (
-              <div
-                className="pointer-events-none absolute inset-0 z-0"
-                style={{
-                  background: dockBaseBackground || dockVisual.background,
-                  backgroundSize: ARTWORK_SURFACE_BACKGROUND_SIZE,
-                  backgroundPosition: ARTWORK_SURFACE_BACKGROUND_POSITION,
-                  backgroundRepeat: ARTWORK_SURFACE_BACKGROUND_REPEAT,
-                }}
-              />
-            ) : null}
-            {!isMobile && dockOverlayBackground ? (
-              <div
-                className="pointer-events-none absolute inset-0 z-0 transition-opacity ease-[var(--ease-apple)]"
-                style={{
-                  background: dockOverlayBackground,
-                  backgroundSize: ARTWORK_SURFACE_BACKGROUND_SIZE,
-                  backgroundPosition: ARTWORK_SURFACE_BACKGROUND_POSITION,
-                  backgroundRepeat: ARTWORK_SURFACE_BACKGROUND_REPEAT,
-                  opacity: dockOverlayVisible ? 1 : 0,
-                  transitionDuration: `${ARTWORK_CROSSFADE_MS}ms`,
-                  willChange: 'opacity',
-                }}
-              />
-            ) : null}
             <div className="absolute top-[-1px] left-0 right-0 z-20">
               {!isMobile && <ProgressSlider />}
             </div>

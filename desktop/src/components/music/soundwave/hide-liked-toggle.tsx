@@ -5,9 +5,14 @@ import { Heart } from '../../../lib/icons';
 interface Props {
   value: boolean;
   onChange: (v: boolean) => void;
+  showLabel?: boolean;
 }
 
-export const HideLikedToggle = React.memo(function HideLikedToggle({ value, onChange }: Props) {
+export const HideLikedToggle = React.memo(function HideLikedToggle({
+  value,
+  onChange,
+  showLabel = true,
+}: Props) {
   const { t } = useTranslation();
 
   return (
@@ -23,9 +28,9 @@ export const HideLikedToggle = React.memo(function HideLikedToggle({ value, onCh
       }}
     >
       <Heart size={12} fill={value ? 'currentColor' : 'none'} />
-      <span>{t('soundwave.hideLikedLabel')}</span>
+      {showLabel ? <span>{t('soundwave.hideLikedLabel')}</span> : null}
       <span
-        className="ml-1 w-[22px] h-[12px] rounded-full relative transition-colors"
+        className={`${showLabel ? 'ml-1' : ''} w-[22px] h-[12px] rounded-full relative transition-colors`}
         style={{
           background: value ? 'var(--color-accent)' : 'rgba(255,255,255,0.18)',
         }}

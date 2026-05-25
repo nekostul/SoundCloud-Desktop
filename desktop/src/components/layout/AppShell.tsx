@@ -1,7 +1,8 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Outlet, useNavigate } from 'react-router-dom';
+import { isAppBackgrounded } from '../../lib/app-visibility';
 import { useArtworkGradientPalette } from '../../lib/artwork-palette';
 import {
   ARTWORK_SURFACE_BACKGROUND_POSITION,
@@ -16,7 +17,6 @@ import {
   handlePrev,
   seek,
 } from '../../lib/audio';
-import { isAppBackgrounded } from '../../lib/app-visibility';
 import { getWallpaperUrl } from '../../lib/cache';
 import { useIsMobile } from '../../lib/hooks/useIsMobile';
 import { ARTWORK_CROSSFADE_MS, useCrossfadeBackground } from '../../lib/useCrossfadeBackground';
@@ -235,6 +235,9 @@ const HardwareAccelSync = React.memo(() => {
 export const AppShell = React.memo(() => {
   const [queueOpen, setQueueOpen] = useState(false);
   const [kbOpen, setKbOpen] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const customScrollbarThumbRef = useRef<HTMLDivElement | null>(null);
+  const scrollHideTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const onQueueToggle = useCallback(() => setQueueOpen((v) => !v), []);
   const onQueueClose = useCallback(() => setQueueOpen(false), []);
   const navigate = useNavigate();
@@ -243,6 +246,76 @@ export const AppShell = React.memo(() => {
   const fullscreenCloseAnimation = useFullscreenPanelStore((s) => s.closeAnimation);
   const isFullscreen = fullscreenMode !== 'none';
   const shellSuppressed = isFullscreen && fullscreenCloseAnimation !== 'toMiniPlayer';
+
+  const updateCustomScrollbar = useCallback(() => {
+    const element = scrollContainerRef.current;
+    const thumb = customScrollbarThumbRef.current;
+    if (!element || !thumb) return;
+
+    const { clientHeight, scrollHeight, scrollTop } = element;
+    const scrollable = scrollHeight > clientHeight + 1;
+    if (!scrollable) {
+      thumb.style.height = '0px';
+      thumb.style.transform = 'translate3d(0, 0, 0)';
+      thumb.classList.remove('is-visible');
+      return;
+    }
+
+    const trackPadding = 10;
+    const trackHeight = Math.max(1, clientHeight - trackPadding * 2);
+    const thumbHeight = Math.max(34, Math.round((clientHeight / scrollHeight) * trackHeight));
+    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
+    const scrollProgress = scrollTop / Math.max(1, scrollHeight - clientHeight);
+    const thumbTop = trackPadding + scrollProgress * maxThumbTop;
+
+    thumb.style.height = `${thumbHeight}px`;
+    thumb.style.transform = `translate3d(0, ${thumbTop}px, 0)`;
+  }, []);
+
+  const handleContentScroll = useCallback(() => {
+    const element = scrollContainerRef.current;
+    const thumb = customScrollbarThumbRef.current;
+    if (!element) return;
+
+    updateCustomScrollbar();
+    element.classList.add('is-scrolling');
+    thumb?.classList.add('is-visible');
+    if (scrollHideTimerRef.current) {
+      window.clearTimeout(scrollHideTimerRef.current);
+    }
+    scrollHideTimerRef.current = window.setTimeout(() => {
+      element.classList.remove('is-scrolling');
+      thumb?.classList.remove('is-visible');
+      scrollHideTimerRef.current = null;
+    }, 2000);
+  }, [updateCustomScrollbar]);
+
+  useEffect(() => {
+    const element = scrollContainerRef.current;
+    if (!element) return;
+
+    updateCustomScrollbar();
+    const resizeObserver = new ResizeObserver(updateCustomScrollbar);
+    resizeObserver.observe(element);
+    if (element.firstElementChild instanceof HTMLElement) {
+      resizeObserver.observe(element.firstElementChild);
+    }
+    window.addEventListener('resize', updateCustomScrollbar);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateCustomScrollbar);
+    };
+  }, [updateCustomScrollbar]);
+
+  useEffect(
+    () => () => {
+      if (scrollHideTimerRef.current) {
+        window.clearTimeout(scrollHideTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -390,7 +463,7 @@ export const AppShell = React.memo(() => {
       <Titlebar />
 
       <div
-        className={`flex flex-1 min-h-0 relative z-0 ${isMobile ? 'mb-[136px]' : 'mb-[103px]'}`}
+        className={`flex flex-1 min-h-0 relative z-0 ${isMobile ? 'mb-[136px]' : 'mb-[0px]'}`}
         style={{
           isolation: 'isolate',
           opacity: shellSuppressed ? 0 : 1,
@@ -442,9 +515,14 @@ export const AppShell = React.memo(() => {
             <CustomBackground />
           </div>
 
-          <div className="h-full overflow-y-auto overflow-x-hidden relative z-10">
+          <div
+            ref={scrollContainerRef}
+            onScroll={handleContentScroll}
+            className="app-shell-scroll h-full overflow-y-auto overflow-x-hidden relative z-10"
+          >
             <StableOutlet />
           </div>
+          <div ref={customScrollbarThumbRef} className="app-shell-scrollbar-thumb" aria-hidden />
         </main>
       </div>
 

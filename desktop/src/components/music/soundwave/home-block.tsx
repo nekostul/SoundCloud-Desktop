@@ -1,5 +1,6 @@
 import { listen } from '@tauri-apps/api/event';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../../../lib/api';
 import { art } from '../../../lib/formatters';
 import type { FeedItem, Playlist } from '../../../lib/hooks';
@@ -12,6 +13,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
 } from '../../../lib/icons';
+import { getLikedUrnsSnapshot, initLikedUrns } from '../../../lib/likes';
 import { useAuthStore } from '../../../stores/auth';
 import type { Track } from '../../../stores/player';
 import { usePlayerStore } from '../../../stores/player';
@@ -19,7 +21,6 @@ import { useSettingsStore } from '../../../stores/settings';
 import { CHARACTER_PRESETS, useSoundWaveStore } from '../../../stores/soundwave';
 import { HideLikedToggle } from './hide-liked-toggle';
 import { LanguageFilter } from './language-filter';
-import { ModeToggle } from './mode-toggle';
 
 const FLOW_QUEUE_TARGET = 56;
 const FLOW_STATION_SEED_LIMIT = 7;
@@ -32,14 +33,79 @@ function resolveTrackCover(track: Track | null): string | null {
   return art(track.artwork_url, 't500x500') ?? art(track.user.avatar_url, 't300x300');
 }
 
-function formatSession(totalSeconds: number) {
+function formatSession(totalSeconds: number, hourLabel: string, minuteLabel: string) {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
 
   return {
-    compact: `${hours}ч ${minutes}м`,
+    compact: `${hours}${hourLabel} ${minutes}${minuteLabel}`,
     full: `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`,
+  };
+}
+
+let flowSessionClockStarted = false;
+let flowSessionSeconds = 0;
+let flowSessionLastSyncAt = 0;
+let flowSessionPlaying = false;
+const flowSessionListeners = new Set<() => void>();
+
+function notifyFlowSessionListeners() {
+  for (const listener of flowSessionListeners) {
+    listener();
+  }
+}
+
+function syncFlowSession(now = Date.now()) {
+  if (!flowSessionLastSyncAt) {
+    flowSessionLastSyncAt = now;
+    return;
+  }
+
+  if (!flowSessionPlaying) {
+    flowSessionLastSyncAt = now;
+    return;
+  }
+
+  const elapsedSeconds = Math.floor((now - flowSessionLastSyncAt) / 1000);
+  if (elapsedSeconds <= 0) return;
+
+  flowSessionSeconds += elapsedSeconds;
+  flowSessionLastSyncAt += elapsedSeconds * 1000;
+  notifyFlowSessionListeners();
+}
+
+function ensureFlowSessionClock() {
+  if (flowSessionClockStarted || typeof window === 'undefined') return;
+
+  flowSessionClockStarted = true;
+  flowSessionPlaying = usePlayerStore.getState().isPlaying;
+  flowSessionLastSyncAt = Date.now();
+
+  usePlayerStore.subscribe((state) => {
+    if (state.isPlaying === flowSessionPlaying) return;
+
+    const now = Date.now();
+    syncFlowSession(now);
+    flowSessionPlaying = state.isPlaying;
+    flowSessionLastSyncAt = now;
+    notifyFlowSessionListeners();
+  });
+
+  window.setInterval(() => syncFlowSession(), 1000);
+}
+
+function getFlowSessionSeconds() {
+  ensureFlowSessionClock();
+  syncFlowSession();
+  return flowSessionSeconds;
+}
+
+function subscribeFlowSession(listener: () => void) {
+  ensureFlowSessionClock();
+  flowSessionListeners.add(listener);
+  return () => {
+    flowSessionListeners.delete(listener);
   };
 }
 
@@ -150,11 +216,11 @@ function extractFlowCursor(nextHref: string | null | undefined): string | undefi
   }
 }
 
-async function fetchLikedFlowTracks(pageSize = 200): Promise<Track[]> {
+async function fetchLikedFlowTracks(pageSize = 200, maxPages = 3): Promise<Track[]> {
   const tracks: Track[] = [];
   let cursor: string | undefined;
 
-  for (let page = 0; page < 3; page++) {
+  for (let page = 0; page < maxPages; page++) {
     const params = new URLSearchParams({ limit: String(pageSize) });
     if (cursor) params.set('cursor', cursor);
 
@@ -170,7 +236,13 @@ async function fetchLikedFlowTracks(pageSize = 200): Promise<Track[]> {
     }
   }
 
-  return dedupeFlowTracks(tracks);
+  const result = dedupeFlowTracks(tracks).map((track) => ({ ...track, user_favorite: true }));
+  if (result.length > 0) initLikedUrns(result);
+  return result;
+}
+
+function filterLikedFlowTracks(tracks: Track[], likedUrns: Set<string>): Track[] {
+  return tracks.filter((track) => !track.user_favorite && !likedUrns.has(track.urn));
 }
 
 async function fetchPlaylistFlowTracks(playlists: Playlist[], salt: number): Promise<Track[]> {
@@ -259,8 +331,12 @@ async function fetchStationTracksForSeeds(seeds: Track[], salt: number): Promise
 async function buildSoundCloudFlowQueue(options: {
   anchorTrack?: Track | null;
   refreshSalt: number;
+  hideLiked: boolean;
 }): Promise<Track[]> {
-  const likedTracks = await fetchLikedFlowTracks();
+  const likedTracks = await fetchLikedFlowTracks(200, options.hideLiked ? 20 : 3);
+  const likedUrns = options.hideLiked
+    ? new Set([...getLikedUrnsSnapshot(), ...likedTracks.map((track) => track.urn)])
+    : new Set<string>();
   const seedTracks = dedupeFlowTracks(
     [options.anchorTrack, ...likedTracks].filter(isPlayableFlowTrack),
   );
@@ -286,7 +362,14 @@ async function buildSoundCloudFlowQueue(options: {
     options.refreshSalt,
   );
 
-  return dedupeFlowTracks([...stationTracks, ...playlistTracks, ...feedTracks, ...seedSlice]).slice(
+  const queue = dedupeFlowTracks([
+    ...stationTracks,
+    ...playlistTracks,
+    ...feedTracks,
+    ...(options.hideLiked ? [] : seedSlice),
+  ]);
+
+  return (options.hideLiked ? filterLikedFlowTracks(queue, likedUrns) : queue).slice(
     0,
     FLOW_QUEUE_TARGET,
   );
@@ -675,31 +758,22 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
 }
 
 const FlowSessionTime = React.memo(function FlowSessionTime({ isPlaying }: { isPlaying: boolean }) {
+  const { t } = useTranslation();
   const fullRef = useRef<HTMLSpanElement | null>(null);
   const compactRef = useRef<HTMLElement | null>(null);
-  const playingRef = useRef(isPlaying);
-  const sessionSecondsRef = useRef(0);
-
-  useEffect(() => {
-    playingRef.current = isPlaying;
-  }, [isPlaying]);
+  const hourShort = t('soundwave.flow.hourShort');
+  const minuteShort = t('soundwave.flow.minuteShort');
 
   useEffect(() => {
     const paint = () => {
-      const formatted = formatSession(sessionSecondsRef.current);
+      const formatted = formatSession(getFlowSessionSeconds(), hourShort, minuteShort);
       if (fullRef.current) fullRef.current.textContent = formatted.full;
       if (compactRef.current) compactRef.current.textContent = formatted.compact;
     };
 
     paint();
-    const interval = window.setInterval(() => {
-      if (playingRef.current) {
-        sessionSecondsRef.current += 1;
-      }
-      paint();
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, []);
+    return subscribeFlowSession(paint);
+  }, [hourShort, minuteShort]);
 
   return (
     <div className="space-y-1">
@@ -708,16 +782,16 @@ const FlowSessionTime = React.memo(function FlowSessionTime({ isPlaying }: { isP
           ref={fullRef}
           className="text-2xl font-mono font-light text-white tracking-tight leading-none"
         >
-          {formatSession(0).full}
+          {formatSession(flowSessionSeconds, hourShort, minuteShort).full}
         </span>
         <span className="text-[9px] text-white/25 font-bold uppercase tracking-wider">
-          {isPlaying ? 'активна' : 'пауза'}
+          {isPlaying ? t('soundwave.flow.active') : t('soundwave.flow.paused')}
         </span>
       </div>
       <div className="text-[10px] text-[#a1a1aa] font-medium leading-none pt-1">
-        Ты в музыке уже{' '}
+        {t('soundwave.flow.listeningFor')}{' '}
         <strong ref={compactRef} className="text-white/60 font-mono text-[10px]">
-          {formatSession(0).compact}
+          {formatSession(flowSessionSeconds, hourShort, minuteShort).compact}
         </strong>
       </div>
     </div>
@@ -827,6 +901,7 @@ const FlowBars = React.memo(function FlowBars({ isPlaying }: { isPlaying: boolea
 });
 
 export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
+  const { t } = useTranslation();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const selectedLanguages = useSettingsStore((s) => s.soundwaveLanguages);
   const setSelectedLanguages = useSettingsStore((s) => s.setSoundwaveLanguages);
@@ -840,7 +915,6 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
   const isWaveActive = useSoundWaveStore((s) => s.isActive);
   const startFromQueue = useSoundWaveStore((s) => s.startFromQueue);
 
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isStartingWave, setIsStartingWave] = useState(false);
   const [showFlowTuner, setShowFlowTuner] = useState(false);
 
@@ -855,6 +929,7 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
       const queue = await buildSoundCloudFlowQueue({
         anchorTrack,
         refreshSalt: Date.now(),
+        hideLiked,
       });
       if (queue.length === 0) return;
 
@@ -870,19 +945,23 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
         continuationStrategy: null,
       });
     },
-    [currentTrack, isPlaying, startFromQueue, waveSessionPreset],
+    [currentTrack, hideLiked, isPlaying, startFromQueue, waveSessionPreset],
   );
 
-  const handleRefresh = async () => {
-    if (isRefreshing || isStartingWave) return;
+  useEffect(() => {
+    if (!hideLiked || !isWaveQueue) return;
 
-    setIsRefreshing(true);
-    try {
-      await playSoundCloudFlow({ preserveCurrentTrack: false });
-    } finally {
-      window.setTimeout(() => setIsRefreshing(false), 650);
+    const player = usePlayerStore.getState();
+    const likedUrns = getLikedUrnsSnapshot();
+    const currentUrn = player.currentTrack?.urn;
+    const queue = player.queue.filter(
+      (track) => track.urn === currentUrn || (!track.user_favorite && !likedUrns.has(track.urn)),
+    );
+
+    if (queue.length !== player.queue.length) {
+      player.setQueue(queue);
     }
-  };
+  }, [hideLiked, isWaveQueue]);
 
   const handlePlayAll = async () => {
     if (isStartingWave) return;
@@ -904,12 +983,14 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
     }
   };
 
-  const canStartWave = !isRefreshing || isWaveQueue;
-  const spinning = isRefreshing;
   const trackCover = resolveTrackCover(waveTrack);
-  const flowTitle = waveTrack?.title ?? 'Flow готов к запуску';
-  const flowArtist = waveTrack?.user.username ?? 'Персональный эфир';
-  const playLabel = isStartingWave ? 'Запускаем' : isWaveQueue && isPlaying ? 'Пауза' : 'Слушать';
+  const flowTitle = waveTrack?.title ?? t('soundwave.flow.readyTitle');
+  const flowArtist = waveTrack?.user.username ?? t('soundwave.flow.defaultArtist');
+  const playLabel = isStartingWave
+    ? t('soundwave.flow.starting')
+    : isWaveQueue && isPlaying
+      ? t('soundwave.flow.pause')
+      : t('soundwave.flow.listen');
   const playIcon = isStartingWave ? (
     <RefreshCw size={14} className="animate-spin" />
   ) : isWaveQueue && isPlaying ? (
@@ -922,7 +1003,7 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
 
   return (
     <section
-      className="relative flex min-h-[calc(100dvh-198px)] lg:min-h-[calc(100dvh-165px)] overflow-hidden border-b border-white/[0.06] bg-gradient-to-b from-[#090b11] via-[#050609] to-[#020204] p-8 lg:p-10 select-none group/flow"
+      className="relative flex min-h-[calc(100dvh-198px)] lg:min-h-[calc(100dvh-165px)] overflow-hidden bg-gradient-to-b from-[#090b11] via-[#050609] to-[#020204] p-8 pb-24 lg:p-10 lg:pb-28 select-none group/flow"
       style={{
         contain: 'layout style paint',
         transform: 'translateZ(0)',
@@ -935,46 +1016,50 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.02)_0%,rgba(255,255,255,0)_44%,rgba(0,0,0,0.42)_100%)]" />
       </div>
       <div
-        className="absolute inset-x-0 bottom-0 z-[1] h-44 pointer-events-none bg-gradient-to-b from-transparent via-[#020204]/75 to-[var(--bg-primary)]"
+        className="absolute inset-x-0 bottom-0 z-[1] h-64 pointer-events-none bg-[linear-gradient(180deg,rgba(2,2,4,0)_0%,rgba(2,2,4,0.46)_35%,rgba(2,2,4,0.92)_72%,#020204_100%)]"
+        aria-hidden
+      />
+      <div
+        className="absolute inset-x-0 bottom-0 z-[1] h-px pointer-events-none bg-[#020204]"
         aria-hidden
       />
 
       <div className="relative z-10 grid min-h-[500px] w-full flex-1 grid-cols-1 lg:grid-cols-12 gap-8 items-center">
-        <div className="lg:col-span-4 flex flex-col justify-start h-full space-y-6 py-3 text-left">
-          <div className="space-y-4">
+        <div className="lg:col-span-4 flex flex-col justify-center h-full space-y-7 pt-14 pb-8 lg:pt-24 lg:pb-12 text-left">
+          <div className="space-y-6">
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-mono tracking-[0.25em] text-[#a1a1aa] uppercase font-bold">
-                Персональный эфир
+              <span className="text-[11px] md:text-xs font-mono tracking-[0.25em] text-[#a1a1aa] uppercase font-bold">
+                {t('soundwave.flow.personalAir')}
               </span>
               <span className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse shadow-[0_0_8px_rgba(255,85,0,0.8)]" />
             </div>
 
             <div className="flex items-center gap-4">
-              <h1 className="text-4xl md:text-5xl font-black tracking-tight text-white select-none">
-                Мой Flow
+              <h1 className="whitespace-nowrap text-[44px] min-[420px]:text-5xl md:text-6xl font-black tracking-tight text-white select-none leading-none">
+                {t('soundwave.flow.title')}
               </h1>
-              <div className="flex items-center justify-center w-9 h-9 rounded-full bg-gradient-to-r from-orange-500 to-pink-500 shadow-[0_4px_15px_rgba(255,85,0,0.35)]">
-                <AudioLines className="w-4.5 h-4.5 text-white animate-spin [animation-duration:8s]" />
+              <div className="flex h-11 min-h-11 w-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-orange-500 to-pink-500 shadow-[0_4px_15px_rgba(255,85,0,0.35)]">
+                <AudioLines className="w-5 h-5 text-white animate-spin [animation-duration:8s]" />
               </div>
             </div>
 
-            <div className="space-y-1.5 pt-2">
-              <p className="text-[11px] font-mono text-white/40 uppercase tracking-widest font-semibold">
-                Продолжай слушать
+            <div className="space-y-2 pt-2">
+              <p className="text-xs font-mono text-white/40 uppercase tracking-widest font-semibold">
+                {t('soundwave.flow.continueListening')}
               </p>
               <div className="min-w-0">
-                <h2 className="text-lg font-bold text-white leading-tight truncate group-hover/flow:text-orange-400 transition-colors">
+                <h2 className="text-xl md:text-2xl font-bold text-white leading-tight truncate group-hover/flow:text-orange-400 transition-colors">
                   {flowTitle}
                 </h2>
-                <p className="text-xs text-[#a1a1aa] mt-0.5 font-medium truncate">{flowArtist}</p>
+                <p className="text-sm text-[#a1a1aa] mt-1 font-medium truncate">{flowArtist}</p>
               </div>
             </div>
 
-            <div className="flex flex-nowrap items-center gap-3 pt-5">
+            <div className="flex flex-nowrap items-center gap-3 pt-6">
               <button
                 type="button"
                 onClick={() => void handlePlayAll()}
-                disabled={!canStartWave || isStartingWave}
+                disabled={isStartingWave}
                 className="h-12 min-w-[154px] rounded-full bg-white text-slate-950 hover:bg-orange-500 hover:text-white disabled:opacity-45 disabled:hover:bg-white disabled:hover:text-slate-950 transition-all duration-300 transform hover:scale-[1.05] active:scale-[0.95] flex items-center justify-center gap-2.5 px-6 shadow-lg hover:shadow-orange-500/25 cursor-pointer disabled:cursor-not-allowed shrink-0 font-bold text-[13px]"
                 title={playLabel}
               >
@@ -982,25 +1067,58 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
                 <span>{playLabel}</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setShowFlowTuner((value) => !value)}
-                className={`group/tune flex h-12 w-[136px] items-center justify-center gap-2.5 rounded-full border border-white/10 backdrop-blur-md text-white/90 hover:text-white select-none active:scale-[0.95] shrink-0 cursor-pointer transition-colors duration-200 ${
-                  showFlowTuner
-                    ? 'bg-orange-500/10 border-orange-500/25 text-orange-400'
-                    : 'bg-white/[0.04] hover:bg-white/[0.08]'
-                }`}
-                title="Настроить Flow"
-              >
-                <SlidersHorizontal
-                  className={`w-4 h-4 transition-transform duration-200 group-hover/tune:rotate-12 ${
-                    showFlowTuner ? 'text-orange-400' : 'text-white/85 group-hover/tune:text-white'
+              <div className="relative shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowFlowTuner((value) => !value)}
+                  aria-expanded={showFlowTuner}
+                  aria-controls="flow-settings-popover"
+                  className={`group/tune flex h-12 w-[136px] items-center justify-center gap-2.5 rounded-full border border-white/10 backdrop-blur-md text-white/90 hover:text-white select-none active:scale-[0.95] cursor-pointer transition-colors duration-200 ${
+                    showFlowTuner
+                      ? 'bg-orange-500/10 border-orange-500/25 text-orange-400'
+                      : 'bg-white/[0.04] hover:bg-white/[0.08]'
                   }`}
-                />
-                <span className="text-xs font-bold tracking-wider whitespace-nowrap leading-none">
-                  Настроить
-                </span>
-              </button>
+                  title={t('soundwave.flow.configureTitle')}
+                >
+                  <SlidersHorizontal
+                    className={`w-4 h-4 transition-transform duration-200 group-hover/tune:rotate-12 ${
+                      showFlowTuner
+                        ? 'text-orange-400'
+                        : 'text-white/85 group-hover/tune:text-white'
+                    }`}
+                  />
+                  <span className="text-xs font-bold tracking-wider whitespace-nowrap leading-none">
+                    {t('soundwave.configure')}
+                  </span>
+                </button>
+
+                {showFlowTuner ? (
+                  <div
+                    id="flow-settings-popover"
+                    className="absolute right-0 top-[calc(100%+10px)] z-40 w-[278px] rounded-2xl border border-white/[0.08] bg-[rgba(12,12,16,0.82)] p-3 shadow-[0_24px_80px_rgba(0,0,0,0.5)] backdrop-blur-[30px] animate-fade-in-up"
+                  >
+                    <div className="flex items-center justify-between gap-3 rounded-xl px-2 py-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-white/55">
+                        {t('soundwave.flow.hideLiked')}
+                      </span>
+                      <HideLikedToggle
+                        value={hideLiked}
+                        onChange={setHideLiked}
+                        showLabel={false}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-3 rounded-xl px-2 py-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-white/55">
+                        {t('soundwave.flow.languages')}
+                      </span>
+                      <LanguageFilter
+                        selected={selectedLanguages}
+                        onChange={setSelectedLanguages}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
         </div>
@@ -1044,7 +1162,7 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
             <button
               type="button"
               onClick={() => void handlePlayAll()}
-              disabled={!canStartWave || isStartingWave}
+              disabled={isStartingWave}
               className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 hover:scale-105 active:scale-90 flex items-center justify-center text-white transition-all cursor-pointer select-none shrink-0 disabled:opacity-45 disabled:cursor-not-allowed"
               title={playLabel}
             >
@@ -1061,7 +1179,7 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
 
             <div className="space-y-1">
               <span className="text-[9px] font-mono tracking-widest text-[#ff5500]/80 uppercase block font-bold leading-none">
-                Сессия длится
+                {t('soundwave.flow.sessionRunning')}
               </span>
               <FlowSessionTime isPlaying={isPlaying} />
             </div>
@@ -1070,97 +1188,6 @@ export const SoundWaveBlock = React.memo(function SoundWaveBlock() {
           </div>
         </div>
       </div>
-
-      {showFlowTuner ? (
-        <div className="absolute inset-0 z-20 flex flex-col justify-between gap-6 overflow-y-auto bg-slate-950/95 backdrop-blur-2xl border border-white/10 p-6 md:p-8 animate-fade-in-up">
-          <div className="space-y-6">
-            <div className="flex items-center justify-between border-b border-white/5 pb-4 gap-4">
-              <div className="flex items-center gap-2 min-w-0">
-                <SlidersHorizontal className="w-5 h-5 text-orange-400 shrink-0" />
-                <div className="min-w-0">
-                  <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono truncate">
-                    Настройка твоего Flow
-                  </h3>
-                  <p className="text-[11px] text-[#a1a1aa] truncate">
-                    Подстрой эфир под язык, подбор и свежесть рекомендаций
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowFlowTuner(false)}
-                className="text-[10px] font-mono uppercase tracking-widest text-white/40 hover:text-white border border-white/10 hover:bg-white/5 px-3 py-1.5 rounded-full transition-all cursor-pointer shrink-0"
-              >
-                Закрыть
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-white/[0.015] p-4 rounded-2xl border border-white/[0.03] space-y-3">
-                <div>
-                  <h4 className="text-xs font-bold text-white">Алгоритм подбора</h4>
-                  <p className="text-[10px] text-white/40 mt-0.5">
-                    Ближе к текущему вкусу или шире по настроению
-                  </p>
-                </div>
-                <ModeToggle />
-              </div>
-
-              <div className="bg-white/[0.015] p-4 rounded-2xl border border-white/[0.03] space-y-3">
-                <div>
-                  <h4 className="text-xs font-bold text-white">Языки эфира</h4>
-                  <p className="text-[10px] text-white/40 mt-0.5">
-                    Ограничь Flow выбранными языками
-                  </p>
-                </div>
-                <LanguageFilter selected={selectedLanguages} onChange={setSelectedLanguages} />
-              </div>
-
-              <div className="bg-white/[0.015] p-4 rounded-2xl border border-white/[0.03] space-y-3">
-                <div>
-                  <h4 className="text-xs font-bold text-white">Свежесть подборки</h4>
-                  <p className="text-[10px] text-white/40 mt-0.5">
-                    Можно убрать уже лайкнутые треки
-                  </p>
-                </div>
-                <HideLikedToggle value={hideLiked} onChange={setHideLiked} />
-              </div>
-
-              <div className="bg-white/[0.015] p-4 rounded-2xl border border-white/[0.03] flex flex-col justify-between gap-4">
-                <div>
-                  <h4 className="text-xs font-bold text-white">Обновление эфира</h4>
-                  <p className="text-[10px] text-white/40 mt-0.5">
-                    Запросить свежую пачку треков для Flow
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void handleRefresh()}
-                  disabled={spinning}
-                  className="h-10 px-4 rounded-full bg-white/[0.06] border border-white/[0.08] hover:bg-white/[0.1] hover:border-white/[0.14] transition-colors duration-200 text-white/80 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 text-xs font-bold"
-                  title="Обновить Flow"
-                >
-                  <RefreshCw size={13} className={spinning ? 'animate-spin' : ''} />
-                  Обновить Flow
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="border-t border-white/5 pt-4 flex items-center justify-between gap-4">
-            <p className="text-[10px] font-mono text-white/30 uppercase tracking-widest">
-              Neural Flow System
-            </p>
-            <button
-              type="button"
-              onClick={() => setShowFlowTuner(false)}
-              className="h-10 px-6 rounded-full bg-[#ff5500] hover:bg-orange-600 font-extrabold text-xs text-white shadow-lg transition-all active:scale-95 cursor-pointer"
-            >
-              Применить параметры
-            </button>
-          </div>
-        </div>
-      ) : null}
     </section>
   );
 });

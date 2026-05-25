@@ -1,7 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { useSyncExternalStore } from 'react';
 import { useAuthStore } from '../stores/auth';
-import type { Track } from '../stores/player';
+import { type Track, usePlayerStore } from '../stores/player';
 
 interface TrackListResponse {
   collection: Track[];
@@ -62,15 +62,59 @@ export function useLiked(urn: string): boolean {
 /* ── Optimistic toggle (TanStack Query cache) ───────────── */
 
 export function optimisticToggleLike(qc: QueryClient, track: Track, nowLiked: boolean) {
+  const wasLiked = isUrnLiked(track.urn) || Boolean(track.user_favorite);
+  const authDelta = wasLiked === nowLiked ? 0 : nowLiked ? 1 : -1;
   // Update global liked URNs
   setLikedUrn(track.urn, nowLiked);
 
+  const updateTrackLike = (item: Track): Track => {
+    if (item.urn !== track.urn) return item;
+
+    const itemWasLiked = Boolean(item.user_favorite) || wasLiked;
+    const delta = itemWasLiked === nowLiked ? 0 : nowLiked ? 1 : -1;
+
+    return {
+      ...item,
+      user_favorite: nowLiked,
+      likes_count:
+        typeof item.likes_count === 'number'
+          ? Math.max(0, item.likes_count + delta)
+          : item.likes_count,
+      favoritings_count:
+        typeof item.favoritings_count === 'number'
+          ? Math.max(0, item.favoritings_count + delta)
+          : item.favoritings_count,
+    };
+  };
+
+  usePlayerStore.setState((state) => ({
+    currentTrack: state.currentTrack ? updateTrackLike(state.currentTrack) : state.currentTrack,
+    queue: state.queue.map(updateTrackLike),
+    originalQueue: state.originalQueue ? state.originalQueue.map(updateTrackLike) : null,
+  }));
+
   // Update favorites count in auth store
   const { user } = useAuthStore.getState();
-  if (user) {
+  if (user && authDelta !== 0) {
     useAuthStore.setState({
-      user: { ...user, public_favorites_count: user.public_favorites_count + (nowLiked ? 1 : -1) },
+      user: {
+        ...user,
+        public_favorites_count: Math.max(0, user.public_favorites_count + authDelta),
+      },
     });
+  }
+
+  if (nowLiked) {
+    for (const limit of [30, 100, 200]) {
+      qc.setQueryData<{ pages: TrackListResponse[]; pageParams: unknown[] }>(
+        ['me', 'likes', 'tracks', limit],
+        (old) =>
+          old ?? {
+            pages: [{ collection: [], next_href: null }],
+            pageParams: [undefined],
+          },
+      );
+    }
   }
 
   // Update all liked tracks infinite queries
@@ -82,7 +126,10 @@ export function optimisticToggleLike(qc: QueryClient, track: Track, nowLiked: bo
         const pages = [...old.pages];
         pages[0] = {
           ...pages[0],
-          collection: [track, ...pages[0].collection.filter((t) => t.urn !== track.urn)],
+          collection: [
+            updateTrackLike(track),
+            ...pages[0].collection.filter((t) => t.urn !== track.urn),
+          ],
         };
         return { ...old, pages };
       }
@@ -99,7 +146,7 @@ export function optimisticToggleLike(qc: QueryClient, track: Track, nowLiked: bo
   // Update single track query
   qc.setQueryData<Track>(['track', track.urn], (old) => {
     if (!old) return old;
-    return { ...old, user_favorite: nowLiked };
+    return updateTrackLike(old);
   });
 
   // Delayed refetch for single track (eventual consistency).

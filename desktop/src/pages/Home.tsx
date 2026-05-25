@@ -737,7 +737,7 @@ export function Home() {
       {heavyContentReady ? (
         <>
           <SoundWaveBlock />
-          <div className="space-y-12 px-6 pt-10 pb-6">
+          <div className="space-y-12 bg-[linear-gradient(180deg,#020204_0%,rgba(5,6,9,0.94)_92px,rgba(8,8,10,0.58)_190px,transparent_340px)] px-6 pt-16 pb-6">
             <MixShelf pool={pool} isLoading={isPoolLoading} />
             <FallbackShelf />
             <LikedShelf likedTracks={likedTracks} isLoading={isLikesLoading} />
@@ -749,7 +749,7 @@ export function Home() {
       ) : (
         <>
           <div className="min-h-[calc(100dvh-198px)] lg:min-h-[calc(100dvh-165px)] bg-white/[0.02]" />
-          <div className="space-y-12 px-6 pt-10 pb-6">
+          <div className="space-y-12 bg-[linear-gradient(180deg,#020204_0%,rgba(5,6,9,0.94)_92px,rgba(8,8,10,0.58)_190px,transparent_340px)] px-6 pt-16 pb-6">
             <section>
               <HorizontalScroll>
                 <ShelfSkeleton count={6} />

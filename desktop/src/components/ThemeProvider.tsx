@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useArtworkGradientPalette } from '../lib/artwork-palette';
+import { buildArtworkSurfaceVisual } from '../lib/artwork-surface';
 import { usePlayerStore } from '../stores/player';
 import { useSettingsStore } from '../stores/settings';
 
@@ -68,10 +69,23 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const themeGlowEnabled = useSettingsStore((s) => s.themeGlowEnabled);
   const themeGlowIntensity = useSettingsStore((s) => s.themeGlowIntensity);
   const themeGlowOpacity = useSettingsStore((s) => s.themeGlowOpacity);
+  const themeDockFollowArtwork = useSettingsStore((s) => s.themeDockFollowArtwork);
+  const themeDockGradientEnabled = useSettingsStore((s) => s.themeDockGradientEnabled);
+  const themeDockGradientType = useSettingsStore((s) => s.themeDockGradientType);
+  const themeDockColorA = useSettingsStore((s) => s.themeDockColorA);
+  const themeDockColorB = useSettingsStore((s) => s.themeDockColorB);
+  const themeDockColorC = useSettingsStore((s) => s.themeDockColorC);
+  const themeDockGradientAngle = useSettingsStore((s) => s.themeDockGradientAngle);
+  const themeDockOpacity = useSettingsStore((s) => s.themeDockOpacity);
+  const themeDockBlur = useSettingsStore((s) => s.themeDockBlur);
+  const themeDockBorderOpacity = useSettingsStore((s) => s.themeDockBorderOpacity);
   const lowPerformanceMode = useSettingsStore((s) => s.lowPerformanceMode);
   const currentArtworkUrl = usePlayerStore((s) => s.currentTrack?.artwork_url ?? null);
   const artworkThemeSelected = themePreset === 'artwork';
-  const shouldUseArtworkPalette = artworkThemeSelected || themeGradientFollowArtwork;
+  const shouldUseArtworkPalette =
+    artworkThemeSelected ||
+    themeGradientFollowArtwork ||
+    (themePreset === 'custom' && themeDockFollowArtwork);
   const artworkGradientPalette = useArtworkGradientPalette(
     shouldUseArtworkPalette ? currentArtworkUrl : null,
   );
@@ -202,6 +216,73 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const glassBorderHi = themeUsesAccentSurfaces
       ? hexToRgba(surfaceAccentColor, 0.1 + glowAlpha * 0.12)
       : 'rgba(255, 255, 255, 0.1)';
+    const customDockUsesArtwork =
+      isCustomTheme && themeDockFollowArtwork && Boolean(artworkGradientPalette);
+    const dockUsesArtwork = artworkThemeActive || customDockUsesArtwork;
+    const artworkDockVisual = dockUsesArtwork
+      ? buildArtworkSurfaceVisual(artworkGradientPalette!)
+      : null;
+    const dockGradientActive = dockUsesArtwork || (isCustomTheme && themeDockGradientEnabled);
+    const dockColorA = dockUsesArtwork
+      ? artworkGradientPalette!.gradientA
+      : isCustomTheme
+        ? themeDockColorA
+        : surfaceGradientA;
+    const dockColorB = dockUsesArtwork
+      ? artworkGradientPalette!.gradientB
+      : isCustomTheme
+        ? themeDockColorB
+        : surfaceGradientB;
+    const dockColorC = dockUsesArtwork
+      ? artworkGradientPalette!.gradientC
+      : isCustomTheme
+        ? themeDockColorC
+        : surfaceGradientC;
+    const customDockOpacity = clamp(themeDockOpacity / 100, 0, 1) * 0.46;
+    const presetDockOpacity = 0.08;
+    const dockGradientType = isCustomTheme ? themeDockGradientType : themeGradientType;
+    const dockGradientAngle = isCustomTheme ? themeDockGradientAngle : themeGradientAngle;
+    const dockOpacity = isCustomTheme
+      ? customDockOpacity
+      : artworkThemeActive
+        ? 0
+        : presetDockOpacity;
+    const dockHighlightOpacity = isCustomTheme ? 0.026 + dockOpacity * 0.04 : 0.026;
+    const dockBackground =
+      artworkDockVisual?.background ??
+      (dockGradientActive
+        ? dockGradientType === 'radial'
+          ? [
+              `linear-gradient(180deg, rgba(255, 255, 255, ${dockHighlightOpacity}), rgba(255, 255, 255, 0.012))`,
+              `radial-gradient(circle at 18% 16%, ${hexToRgba(dockColorA, dockOpacity * 0.38)} 0%, ${hexToRgba(dockColorB, dockOpacity)} 48%, ${hexToRgba(dockColorC, dockOpacity * 0.34)} 100%)`,
+            ].join(', ')
+          : [
+              `linear-gradient(180deg, rgba(255, 255, 255, ${dockHighlightOpacity}), rgba(255, 255, 255, 0.012))`,
+              `linear-gradient(${dockGradientAngle}deg, ${hexToRgba(dockColorA, dockOpacity * 0.42)} 0%, ${hexToRgba(dockColorB, dockOpacity)} 52%, ${hexToRgba(dockColorC, dockOpacity * 0.34)} 100%)`,
+            ].join(', ')
+        : `linear-gradient(180deg, rgba(255, 255, 255, ${dockHighlightOpacity}), ${hexToRgba(dockColorB, dockOpacity)})`);
+    const dockBorder = artworkDockVisual
+      ? artworkDockVisual.borderColor
+      : isCustomTheme
+        ? hexToRgba(dockColorC, 0.025 + clamp(themeDockBorderOpacity / 100, 0, 1) * 0.26)
+        : artworkThemeActive
+          ? hexToRgba(dockColorA, 0.12)
+          : hexToRgba(surfaceAccentColor, 0.075);
+    const dockShadowColor = dockUsesArtwork ? dockColorB : effectiveAccentColor;
+    const dockGlowAlpha = dockUsesArtwork
+      ? 0.08
+      : glowActive
+        ? 0.08 + glowAlpha * 0.12
+        : isCustomTheme
+          ? 0.04
+          : 0.025;
+    const dockShadow =
+      artworkDockVisual?.boxShadow ??
+      [
+        `0 16px 44px rgba(0, 0, 0, ${isCustomTheme ? 0.28 + dockOpacity * 0.12 : 0.34})`,
+        'inset 0 1px 0 rgba(255, 255, 255, 0.035)',
+        `0 0 ${Math.round(14 + (glowActive ? glowStrength * 20 : 0))}px ${hexToRgba(dockShadowColor, dockGlowAlpha)}`,
+      ].join(', ');
     const featureShadow = glowActive
       ? `0 0 0 1px rgba(255, 255, 255, 0.03) inset, 0 12px 48px rgba(0, 0, 0, 0.34), 0 0 ${Math.round(26 + glowStrength * 44)}px ${hexToRgba(effectiveAccentColor, 0.12 + glowAlpha * 0.18)}`
       : '0 0 0 1px rgba(255, 255, 255, 0.03) inset, 0 8px 40px rgba(0, 0, 0, 0.3)';
@@ -253,6 +334,25 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     root.style.setProperty('--theme-glass-border', glassBorder);
     root.style.setProperty('--theme-glass-border-hi', glassBorderHi);
     root.style.setProperty('--theme-glass-shadow', featureShadow);
+    root.style.setProperty('--theme-dock-bg', dockBackground);
+    root.style.setProperty(
+      '--theme-dock-bg-size',
+      artworkDockVisual
+        ? '100% 100%, 100% 100%, 100% 100%'
+        : animateGradient && dockGradientActive
+          ? '100% 100%, 180% 180%'
+          : '100% 100%, 100% 100%',
+    );
+    root.style.setProperty('--theme-dock-border', dockBorder);
+    root.style.setProperty('--theme-dock-shadow', dockShadow);
+    root.style.setProperty(
+      '--theme-dock-blur',
+      `${isCustomTheme ? Math.max(0, themeDockBlur) : artworkThemeActive ? 22 : 18}px`,
+    );
+    root.style.setProperty(
+      '--theme-dock-saturate',
+      `${isCustomTheme ? 1 + dockOpacity * 0.55 : artworkThemeActive ? 1.18 : 1.08}`,
+    );
     root.style.setProperty(
       '--theme-greeting-gradient',
       gradientActive
@@ -274,6 +374,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     bgPrimary,
     effectiveAccentColor,
     artworkThemeActive,
+    artworkGradientPalette,
     effectiveThemeGradientColorA,
     effectiveThemeGradientColorB,
     effectiveThemeGradientColorC,
@@ -282,6 +383,16 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     themeGlowEnabled,
     themeGlowIntensity,
     themeGlowOpacity,
+    themeDockBlur,
+    themeDockBorderOpacity,
+    themeDockColorA,
+    themeDockColorB,
+    themeDockColorC,
+    themeDockFollowArtwork,
+    themeDockGradientAngle,
+    themeDockGradientEnabled,
+    themeDockGradientType,
+    themeDockOpacity,
     themeGradientAngle,
     themeGradientAnimated,
     themeGradientAnimation,

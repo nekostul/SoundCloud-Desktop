@@ -4,6 +4,7 @@ import { Volume, Volume2, VolumeX } from 'lucide-react';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../../../lib/api';
 import {
   getFallbackArtworkGradientPalette,
@@ -11,11 +12,6 @@ import {
 } from '../../../lib/artwork-palette';
 import { art } from '../../../lib/formatters';
 import { invalidateAllLikesCache } from '../../../lib/hooks';
-import {
-  TRACK_SWITCH_NEXT_SCOPE,
-  TRACK_SWITCH_PREV_SCOPE,
-  useTrackSwitchCooldown,
-} from '../../../lib/useTrackSwitchCooldown';
 import {
   Ban,
   ExternalLink,
@@ -33,9 +29,15 @@ import {
   shuffleIcon16,
   X,
 } from '../../../lib/icons';
-import { optimisticToggleLike, useLiked } from '../../../lib/likes';
+import { optimisticToggleLike, setLikedUrn, useLiked } from '../../../lib/likes';
 import type { LyricsSource } from '../../../lib/lyrics';
+import {
+  TRACK_SWITCH_NEXT_SCOPE,
+  TRACK_SWITCH_PREV_SCOPE,
+  useTrackSwitchCooldown,
+} from '../../../lib/useTrackSwitchCooldown';
 import { useDislikesStore } from '../../../stores/dislikes';
+import { useFullscreenPanelStore } from '../../../stores/lyrics';
 import type { Track } from '../../../stores/player';
 import { usePlayerStore } from '../../../stores/player';
 import { useSettingsStore } from '../../../stores/settings';
@@ -174,8 +176,8 @@ export function getTrackArtworkSources(track: Track | null | undefined, size: st
 
 export function getTrackBackgroundArtworkSources(track: Track | null | undefined): string[] {
   return uniqueArtworkSources([
-      ...getTrackArtworkSources(track, 't200x200'),
-      ...getTrackArtworkSources(track, 't500x500'),
+    ...getTrackArtworkSources(track, 't200x200'),
+    ...getTrackArtworkSources(track, 't500x500'),
   ]);
 }
 
@@ -198,7 +200,7 @@ export function useFallbackImageSource(sources: string[], resetKey: string) {
   }, [resetKey, sourcesKey]);
 
   const hasNextSource = index + 1 < sources.length;
-  const currentSrc = failed ? null : sources[index] ?? null;
+  const currentSrc = failed ? null : (sources[index] ?? null);
 
   const handleError = useCallback(() => {
     if (hasNextSource) {
@@ -346,103 +348,114 @@ export const FullscreenVisualizer = React.memo(() => {
           filter:
             'drop-shadow(0 0 18px var(--color-accent-glow)) drop-shadow(0 0 44px rgba(255,255,255,0.1))',
         }}
-      >
-      </div>
+      ></div>
     </div>
   );
 });
 
 /* ── Shared: like button (for fullscreen panels) ──────────── */
 
-export const FullscreenLikeButton = React.memo(({ track, compact }: { track: Track; compact?: boolean }) => {
-  const likedFromStore = useLiked(track.urn);
-  const qc = useQueryClient();
-  const { data: trackData } = useQuery({
-    queryKey: ['track', track.urn],
-    queryFn: () => api<Track>(`/tracks/${encodeURIComponent(track.urn)}`),
-    enabled: !!track.urn,
-    staleTime: 30_000,
-  });
-  const [likedOverride, setLikedOverride] = useState<boolean | null>(null);
-  const prevUrnRef = useRef(track.urn);
+export const FullscreenLikeButton = React.memo(
+  ({ track, compact }: { track: Track; compact?: boolean }) => {
+    const likedFromStore = useLiked(track.urn);
+    const qc = useQueryClient();
+    const { data: trackData } = useQuery({
+      queryKey: ['track', track.urn],
+      queryFn: () => api<Track>(`/tracks/${encodeURIComponent(track.urn)}`),
+      enabled: !!track.urn,
+      staleTime: 30_000,
+    });
+    const [likedOverride, setLikedOverride] = useState<boolean | null>(null);
+    const prevUrnRef = useRef(track.urn);
 
-  if (prevUrnRef.current !== track.urn) {
-    prevUrnRef.current = track.urn;
-    setLikedOverride(null);
-  }
-
-  const isLiked =
-    likedOverride ??
-    (trackData ? Boolean(trackData.user_favorite) : likedFromStore || Boolean(track.user_favorite));
-
-  const toggle = async () => {
-    const next = !isLiked;
-    setLikedOverride(next);
-    optimisticToggleLike(qc, trackData ?? track, next);
-    invalidateAllLikesCache();
-    try {
-      await api(`/likes/tracks/${encodeURIComponent(track.urn)}`, {
-        method: next ? 'POST' : 'DELETE',
-      });
-      qc.invalidateQueries({ queryKey: ['track', track.urn, 'favoriters'] });
-    } catch {
-      setLikedOverride(!next);
-      optimisticToggleLike(qc, trackData ?? track, !next);
+    if (prevUrnRef.current !== track.urn) {
+      prevUrnRef.current = track.urn;
+      setLikedOverride(null);
     }
-  };
 
-  const buttonClass = compact
-    ? 'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
-    : 'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none';
+    useEffect(() => {
+      if (track.user_favorite || trackData?.user_favorite) {
+        setLikedUrn(track.urn, true);
+      }
+    }, [track.urn, track.user_favorite, trackData?.user_favorite]);
 
-  return (
-    <button
-      type="button"
-      onClick={toggle}
-      className={`${buttonClass} ${
-        isLiked ? 'text-accent' : 'text-white/30 hover:text-white/60'
-      }`}
-    >
-      <Heart size={compact ? 16 : 20} fill={isLiked ? 'currentColor' : 'none'} />
-    </button>
-  );
-});
+    const isLiked =
+      likedOverride ??
+      (trackData
+        ? Boolean(trackData.user_favorite)
+        : likedFromStore || Boolean(track.user_favorite));
+
+    const toggle = async () => {
+      const next = !isLiked;
+      setLikedOverride(next);
+      optimisticToggleLike(qc, trackData ?? track, next);
+      invalidateAllLikesCache();
+      try {
+        await api(`/likes/tracks/${encodeURIComponent(track.urn)}`, {
+          method: next ? 'POST' : 'DELETE',
+        });
+        qc.invalidateQueries({ queryKey: ['track', track.urn, 'favoriters'] });
+      } catch {
+        setLikedOverride(!next);
+        optimisticToggleLike(qc, trackData ?? track, !next);
+      }
+    };
+
+    const buttonClass = compact
+      ? 'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
+      : 'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none';
+
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        className={`${buttonClass} ${
+          isLiked ? 'text-accent' : 'text-white/30 hover:text-white/60'
+        }`}
+      >
+        <Heart size={compact ? 16 : 20} fill={isLiked ? 'currentColor' : 'none'} />
+      </button>
+    );
+  },
+);
 
 /* ── Shared: dislike button (for fullscreen panels) ────────── */
 
-export const FullscreenDislikeButton = React.memo(({ track, compact }: { track: Track; compact?: boolean }) => {
-  const trackUrn = track.urn;
-  const isDisliked = useDislikesStore((s) => s.dislikedTrackUrns.includes(trackUrn));
-  const toggle = useDislikesStore((s) => s.toggleDislike);
-  const next = usePlayerStore((s) => s.next);
+export const FullscreenDislikeButton = React.memo(
+  ({ track, compact }: { track: Track; compact?: boolean }) => {
+    const trackUrn = track.urn;
+    const isDisliked = useDislikesStore((s) => s.dislikedTrackUrns.includes(trackUrn));
+    const toggle = useDislikesStore((s) => s.toggleDislike);
+    const next = usePlayerStore((s) => s.next);
 
-  const handleToggle = () => {
-    toggle(trackUrn);
-    if (!isDisliked) {
-      const sw = useSoundWaveStore.getState();
-      if (sw.isActive) {
-        sw.recordFeedback(track, 'negative');
+    const handleToggle = () => {
+      toggle(trackUrn);
+      if (!isDisliked) {
+        const sw = useSoundWaveStore.getState();
+        if (sw.isActive) {
+          sw.recordFeedback(track, 'negative');
+        }
+        next();
       }
-      next();
-    }
-  };
+    };
 
-  const buttonClass = compact
-    ? 'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
-    : 'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none';
+    const buttonClass = compact
+      ? 'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
+      : 'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none';
 
-  return (
-    <button
-      type="button"
-      onClick={handleToggle}
-      className={`${buttonClass} ${
-        isDisliked ? 'text-red-500' : 'text-white/30 hover:text-white/60'
-      }`}
-    >
-      <Ban size={compact ? 16 : 18} />
-    </button>
-  );
-});
+    return (
+      <button
+        type="button"
+        onClick={handleToggle}
+        className={`${buttonClass} ${
+          isDisliked ? 'text-red-500' : 'text-white/30 hover:text-white/60'
+        }`}
+      >
+        <Ban size={compact ? 16 : 18} />
+      </button>
+    );
+  },
+);
 
 /* ── Shared: volume slider (for fullscreen panels) ─────────── */
 
@@ -450,64 +463,58 @@ export const FullscreenVolumeSlider = React.memo(() => {
   const volume = usePlayerStore((s) => s.volume);
   const setVolume = usePlayerStore((s) => s.setVolume);
 
-return (
-  <div
-    className="flex w-full max-w-[320px] items-center gap-2 group/vol"
-    onWheel={(event) => {
-      if (event.cancelable) {
-        event.preventDefault();
-      }
+  return (
+    <div
+      className="flex w-full max-w-[320px] items-center gap-2 group/vol"
+      onWheel={(event) => {
+        if (event.cancelable) {
+          event.preventDefault();
+        }
 
-      setVolume(
-        Math.max(0, Math.min(100, volume + (event.deltaY < 0 ? 1 : -1))),
-      );
-    }}
-  >
-    <button
-      type="button"
-      onClick={() => setVolume(volume > 0 ? 0 : 100)}
-      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
-        volume === 0
-          ? 'text-accent'
-          : 'text-white/40 hover:text-white/70'
-      }`}
+        setVolume(Math.max(0, Math.min(100, volume + (event.deltaY < 0 ? 1 : -1))));
+      }}
     >
-      {volume === 0 ? (
-        <VolumeX className="h-4 w-4" />
-      ) : volume < 50 ? (
-        <Volume className="h-4 w-4" />
-      ) : (
-        <Volume2 className="h-4 w-4" />
-      )}
-    </button>
-
-    <div className="flex-1 relative flex items-center h-5">
-      <Slider.Root
-        className="relative flex items-center h-full w-full cursor-pointer select-none touch-none"
-        value={[volume]}
-        max={100}
-        step={1}
-        onValueChange={([v]) => setVolume(v)}
+      <button
+        type="button"
+        onClick={() => setVolume(volume > 0 ? 0 : 100)}
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-150 ${
+          volume === 0 ? 'text-accent' : 'text-white/40 hover:text-white/70'
+        }`}
       >
-        <Slider.Track className="relative h-[3px] grow rounded-full bg-white/[0.08] group-hover/vol:h-[4px] transition-all duration-150">
-          <Slider.Range className="absolute h-full rounded-full bg-white/40" />
-        </Slider.Track>
+        {volume === 0 ? (
+          <VolumeX className="h-4 w-4" />
+        ) : volume < 50 ? (
+          <Volume className="h-4 w-4" />
+        ) : (
+          <Volume2 className="h-4 w-4" />
+        )}
+      </button>
 
-        <Slider.Thumb className="block w-2.5 h-2.5 rounded-full bg-white transition-all duration-150 outline-none scale-0 opacity-0 group-hover/vol:scale-100 group-hover/vol:opacity-100" />
-      </Slider.Root>
+      <div className="flex-1 relative flex items-center h-5">
+        <Slider.Root
+          className="relative flex items-center h-full w-full cursor-pointer select-none touch-none"
+          value={[volume]}
+          max={100}
+          step={1}
+          onValueChange={([v]) => setVolume(v)}
+        >
+          <Slider.Track className="relative h-[3px] grow rounded-full bg-white/[0.08] group-hover/vol:h-[4px] transition-all duration-150">
+            <Slider.Range className="absolute h-full rounded-full bg-white/40" />
+          </Slider.Track>
+
+          <Slider.Thumb className="block w-2.5 h-2.5 rounded-full bg-white transition-all duration-150 outline-none scale-0 opacity-0 group-hover/vol:scale-100 group-hover/vol:opacity-100" />
+        </Slider.Root>
+      </div>
+      <span
+        className={`w-[36px] text-right text-[11px] tabular-nums translate-x-0.1 ${
+          volume > 100 ? 'text-amber-400/70' : 'text-white/35'
+        }`}
+      >
+        {volume}%
+      </span>
     </div>
-<span
-  className={`w-[36px] text-right text-[11px] tabular-nums translate-x-0.1 ${
-    volume > 100 ? 'text-amber-400/70' : 'text-white/35'
-  }`}
->
-  {volume}%
-</span>
-  </div>
-);
+  );
 });
-
-
 
 /* ── Shared: transport controls + like ────────────────────── */
 
@@ -546,10 +553,7 @@ export const Controls = React.memo(({ track }: { track: Track }) => {
     <div className="flex items-center justify-center gap-2">
       <AddToPlaylistDialog trackUrn={track.urn}>
         <button type="button" className={ctrl}>
-          <ListPlus
-            size={20}
-            className="text-white/30 hover:text-white/60"
-          />
+          <ListPlus size={20} className="text-white/30 hover:text-white/60" />
         </button>
       </AddToPlaylistDialog>
 
@@ -558,11 +562,7 @@ export const Controls = React.memo(({ track }: { track: Track }) => {
       <button
         type="button"
         onClick={toggleShuffle}
-        className={`${ctrl} ${
-          shuffle
-            ? 'text-accent'
-            : 'text-white/35 hover:text-white/60'
-        }`}
+        className={`${ctrl} ${shuffle ? 'text-accent' : 'text-white/35 hover:text-white/60'}`}
       >
         {shuffleIcon16}
       </button>
@@ -572,15 +572,10 @@ export const Controls = React.memo(({ track }: { track: Track }) => {
         onClick={handlePrev}
         disabled={prevLocked}
         className={`${ctrl} ${
-          prevLocked
-            ? 'text-white/30 cursor-default'
-            : 'text-white/60 hover:text-white'
+          prevLocked ? 'text-white/30 cursor-default' : 'text-white/60 hover:text-white'
         }`}
       >
-        <SkipBack
-          size={20}
-          fill="currentColor"
-        />
+        <SkipBack size={20} fill="currentColor" />
       </button>
 
       <button
@@ -588,9 +583,7 @@ export const Controls = React.memo(({ track }: { track: Track }) => {
         onClick={togglePlay}
         className="w-14 h-14 rounded-full bg-white flex items-center justify-center hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer shadow-lg outline-none mx-2"
       >
-        {isPlaying
-          ? pauseBlack18
-          : playBlack18}
+        {isPlaying ? pauseBlack18 : playBlack18}
       </button>
 
       <button
@@ -598,29 +591,20 @@ export const Controls = React.memo(({ track }: { track: Track }) => {
         onClick={next}
         disabled={nextLocked}
         className={`${ctrl} ${
-          nextLocked
-            ? 'text-white/30 cursor-default'
-            : 'text-white/60 hover:text-white'
+          nextLocked ? 'text-white/30 cursor-default' : 'text-white/60 hover:text-white'
         }`}
       >
-        <SkipForward
-          size={20}
-          fill="currentColor"
-        />
+        <SkipForward size={20} fill="currentColor" />
       </button>
 
       <button
         type="button"
         onClick={toggleRepeat}
         className={`${ctrl} ${
-          repeat !== 'off'
-            ? 'text-accent'
-            : 'text-white/35 hover:text-white/60'
+          repeat !== 'off' ? 'text-accent' : 'text-white/35 hover:text-white/60'
         }`}
       >
-        {repeat === 'one'
-          ? repeat1Icon16
-          : repeatIcon16}
+        {repeat === 'one' ? repeat1Icon16 : repeatIcon16}
       </button>
 
       <FullscreenDislikeButton track={track} />
@@ -629,15 +613,9 @@ export const Controls = React.memo(({ track }: { track: Track }) => {
         type="button"
         className={ctrl}
         onClick={handleOpenInSoundCloud}
-        title={t(
-          'player.openInSoundCloud',
-          'Open in SoundCloud',
-        )}
+        title={t('player.openInSoundCloud', 'Open in SoundCloud')}
       >
-        <ExternalLink
-          size={18}
-          className="text-white/30 hover:text-white/60"
-        />
+        <ExternalLink size={18} className="text-white/30 hover:text-white/60" />
       </button>
     </div>
   );
@@ -933,215 +911,237 @@ export const ArtworkLightbox = React.memo(
   },
 );
 
-export const TrackColumn = React.memo(({
-  track,
-  maxArt,
-  onOpenArtworkLightbox,
-}: {
-  track: Track;
-  maxArt?: string;
-  onOpenArtworkLightbox?: (sourceElement: HTMLElement | null) => void;
-}) => {
-  const { t } = useTranslation();
-  const previewArtSources = uniqueArtworkSources([
-    ...getTrackArtworkSources(track, 't200x200'),
-    ...getTrackArtworkSources(track, 't500x500'),
-  ]);
-  const displayArtSources = uniqueArtworkSources([
-    ...getTrackArtworkSources(track, 't500x500'),
-    ...getTrackArtworkSources(track, 't200x200'),
-  ]);
-  const previewArtBase = previewArtSources[0] ?? null;
-  const displayArtBase = displayArtSources[0] ?? null;
-  const displayArtSourcesKey = displayArtSources.join('|');
-  const { currentSrc: previewArtSrc, handleError: handlePreviewArtError } = useFallbackImageSource(
-    previewArtSources,
-    `${track.urn}:preview`,
-  );
-  const { currentSrc: displayArtSrc, handleError: handleDisplayArtError } = useFallbackImageSource(
-    displayArtSources,
-    `${track.urn}:display`,
-  );
-  const [loaded, setLoaded] = useState(false);
-  const [isSwitching, setIsSwitching] = useState(false);
-  const prevUrnRef = useRef<string | null>(track.urn);
-  const mountedRef = useRef(false);
-  const switchTimerRef = useRef<number | null>(null);
-  const artworkFrameRef = useRef<HTMLDivElement | null>(null);
+export const TrackColumn = React.memo(
+  ({
+    track,
+    maxArt,
+    onOpenArtworkLightbox,
+  }: {
+    track: Track;
+    maxArt?: string;
+    onOpenArtworkLightbox?: (sourceElement: HTMLElement | null) => void;
+  }) => {
+    const { t } = useTranslation();
+    const navigate = useNavigate();
+    const previewArtSources = uniqueArtworkSources([
+      ...getTrackArtworkSources(track, 't200x200'),
+      ...getTrackArtworkSources(track, 't500x500'),
+    ]);
+    const displayArtSources = uniqueArtworkSources([
+      ...getTrackArtworkSources(track, 't500x500'),
+      ...getTrackArtworkSources(track, 't200x200'),
+    ]);
+    const previewArtBase = previewArtSources[0] ?? null;
+    const displayArtBase = displayArtSources[0] ?? null;
+    const displayArtSourcesKey = displayArtSources.join('|');
+    const { currentSrc: previewArtSrc, handleError: handlePreviewArtError } =
+      useFallbackImageSource(previewArtSources, `${track.urn}:preview`);
+    const { currentSrc: displayArtSrc, handleError: handleDisplayArtError } =
+      useFallbackImageSource(displayArtSources, `${track.urn}:display`);
+    const [loaded, setLoaded] = useState(false);
+    const [isSwitching, setIsSwitching] = useState(false);
+    const prevUrnRef = useRef<string | null>(track.urn);
+    const mountedRef = useRef(false);
+    const switchTimerRef = useRef<number | null>(null);
+    const artworkFrameRef = useRef<HTMLDivElement | null>(null);
 
-  const clearSwitching = () => {
-    if (switchTimerRef.current !== null) {
-      window.clearTimeout(switchTimerRef.current);
-      switchTimerRef.current = null;
-    }
-    setIsSwitching(false);
-  };
+    const clearSwitching = () => {
+      if (switchTimerRef.current !== null) {
+        window.clearTimeout(switchTimerRef.current);
+        switchTimerRef.current = null;
+      }
+      setIsSwitching(false);
+    };
 
-  useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      return;
-    }
+    useEffect(() => {
+      if (!mountedRef.current) {
+        mountedRef.current = true;
+        return;
+      }
 
-    if (prevUrnRef.current !== track.urn) {
-      prevUrnRef.current = track.urn;
-      setLoaded(false);
+      if (prevUrnRef.current !== track.urn) {
+        prevUrnRef.current = track.urn;
+        setLoaded(false);
 
-      const shouldBlurTransition = Boolean(
-        previewArtBase && displayArtBase && previewArtBase !== displayArtBase,
-      );
-      setIsSwitching(shouldBlurTransition);
+        const shouldBlurTransition = Boolean(
+          previewArtBase && displayArtBase && previewArtBase !== displayArtBase,
+        );
+        setIsSwitching(shouldBlurTransition);
 
-      if (shouldBlurTransition) {
+        if (shouldBlurTransition) {
+          if (switchTimerRef.current !== null) {
+            window.clearTimeout(switchTimerRef.current);
+          }
+          switchTimerRef.current = window.setTimeout(() => {
+            setIsSwitching(false);
+            switchTimerRef.current = null;
+          }, 2200);
+        }
+      }
+    }, [track.urn, displayArtBase, previewArtBase]);
+
+    useEffect(() => {
+      return () => {
         if (switchTimerRef.current !== null) {
           window.clearTimeout(switchTimerRef.current);
         }
-        switchTimerRef.current = window.setTimeout(() => {
-          setIsSwitching(false);
-          switchTimerRef.current = null;
-        }, 2200);
-      }
-    }
-  }, [track.urn, displayArtBase, previewArtBase]);
+      };
+    }, []);
 
-  useEffect(() => {
-    return () => {
-      if (switchTimerRef.current !== null) {
-        window.clearTimeout(switchTimerRef.current);
+    useEffect(() => {
+      const urls = displayArtSources.slice(0, 2);
+      const preloadedImages: HTMLImageElement[] = [];
+
+      for (const [index, url] of urls.entries()) {
+        const img = new window.Image();
+        img.decoding = 'async';
+        img.loading = 'eager';
+        img.fetchPriority = index === 0 ? 'high' : 'auto';
+        img.src = url;
+        preloadedImages.push(img);
       }
+
+      return () => {
+        for (const img of preloadedImages) {
+          img.src = '';
+        }
+      };
+    }, [displayArtSourcesKey, track.urn]);
+
+    const hasArtwork = Boolean(previewArtSrc || displayArtSrc);
+    // Artwork can grow large with viewport height (driven by maxArt prop).
+    // Title/slider/controls/volume-panel keep a tighter readable width — wide
+    // sliders and centered text on a 640px column look unbalanced.
+    const artMaxWidthClass = `w-full ${maxArt ?? 'max-w-[280px]'}`;
+    const columnMaxWidthClass = `w-full max-w-[320px]`;
+    const columnWidthTransitionStyle = {
+      transition: 'max-width 500ms cubic-bezier(0.22, 1, 0.36, 1)',
+    } satisfies React.CSSProperties;
+    const openTrackPage = () => {
+      useFullscreenPanelStore.getState().beginClose();
+      navigate(`/track/${encodeURIComponent(track.urn)}`);
     };
-  }, []);
-
-  useEffect(() => {
-    const urls = displayArtSources.slice(0, 2);
-    const preloadedImages: HTMLImageElement[] = [];
-
-    for (const [index, url] of urls.entries()) {
-      const img = new window.Image();
-      img.decoding = 'async';
-      img.loading = 'eager';
-      img.fetchPriority = index === 0 ? 'high' : 'auto';
-      img.src = url;
-      preloadedImages.push(img);
-    }
-
-    return () => {
-      for (const img of preloadedImages) {
-        img.src = '';
-      }
+    const openArtistPage = () => {
+      useFullscreenPanelStore.getState().beginClose();
+      navigate(`/user/${encodeURIComponent(track.user.urn)}`);
     };
-  }, [displayArtSourcesKey, track.urn]);
 
-  const hasArtwork = Boolean(previewArtSrc || displayArtSrc);
-  // Artwork can grow large with viewport height (driven by maxArt prop).
-  // Title/slider/controls/volume-panel keep a tighter readable width — wide
-  // sliders and centered text on a 640px column look unbalanced.
-const artMaxWidthClass = `w-full ${maxArt ?? 'max-w-[280px]'}`;
-const columnMaxWidthClass = `w-full max-w-[320px]`;
-const columnWidthTransitionStyle = {
-    transition: 'max-width 500ms cubic-bezier(0.22, 1, 0.36, 1)',
-  } satisfies React.CSSProperties;
-  return (
-    <div className="relative z-10 flex h-full min-h-0 w-full flex-col items-center justify-center gap-[clamp(10px,1.6vh,28px)] overflow-y-auto px-12 py-6">
-      <div
-        className={`${artMaxWidthClass} aspect-square rounded-[24px] overflow-hidden shadow-2xl shadow-black/60 ring-1 ring-white/[0.08] relative group/art`}
-        data-sc-disable-context-image="true"
-        style={columnWidthTransitionStyle}
-      >
-        {hasArtwork ? (
-          <>
-            <div
-              ref={artworkFrameRef}
-              className="absolute inset-0 overflow-hidden rounded-[24px]"
-              style={columnWidthTransitionStyle}
-            >
-              {/* Low-res placeholder (Blur applied only during track switch) */}
-              <img
-                src={previewArtSrc || displayArtSrc || ''}
-                alt=""
-                loading="eager"
-                decoding="async"
-                fetchPriority="high"
-                onError={handlePreviewArtError}
-                className={`absolute inset-0 w-full h-full object-cover scale-110 transition-[transform,opacity,filter] duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ease-[var(--ease-apple)] ${
-                  isSwitching ? 'blur-2xl scale-125' : ''
-                } ${loaded ? 'opacity-0' : 'opacity-100'}`}
-              />
-              {/* High-res image */}
-              <img
-                src={displayArtSrc || previewArtSrc || ''}
-                alt=""
-                loading="eager"
-                decoding="async"
-                fetchPriority="high"
-                onLoad={() => {
-                  setLoaded(true);
-                  clearSwitching();
-                }}
-                onError={() => {
-                  setLoaded(false);
-                  handleDisplayArtError();
-                  clearSwitching();
-                }}
-                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ease-[var(--ease-apple)] ${loaded ? 'opacity-100' : 'opacity-0'}`}
-              />
-            </div>
-
-            {/* Hover Overlay with View Icon */}
-            {onOpenArtworkLightbox ? (
-              <button
-                type="button"
-                onClick={() => onOpenArtworkLightbox(artworkFrameRef.current)}
-                data-sc-disable-context-image="true"
-                className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.06)_0%,rgba(255,255,255,0)_34%),linear-gradient(180deg,rgba(0,0,0,0.12)_0%,rgba(0,0,0,0.4)_100%)] opacity-0 group-hover/art:opacity-100 transition-opacity duration-300 flex items-center justify-center text-white/90 backdrop-blur-sm cursor-pointer outline-none"
+    return (
+      <div className="relative z-10 flex h-full min-h-0 w-full flex-col items-center justify-center gap-[clamp(10px,1.6vh,28px)] overflow-y-auto px-12 py-6">
+        <div
+          className={`${artMaxWidthClass} aspect-square rounded-[24px] overflow-hidden shadow-2xl shadow-black/60 ring-1 ring-white/[0.08] relative group/art`}
+          data-sc-disable-context-image="true"
+          style={columnWidthTransitionStyle}
+        >
+          {hasArtwork ? (
+            <>
+              <div
+                ref={artworkFrameRef}
+                className="absolute inset-0 overflow-hidden rounded-[24px]"
+                style={columnWidthTransitionStyle}
               >
-                <div className="flex flex-col items-center gap-2 scale-90 group-hover/art:scale-100 transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full border border-white/18 bg-white/[0.16] shadow-[0_10px_32px_rgba(0,0,0,0.24)]">
-                    <Eye size={24} />
+                {/* Low-res placeholder (Blur applied only during track switch) */}
+                <img
+                  src={previewArtSrc || displayArtSrc || ''}
+                  alt=""
+                  loading="eager"
+                  decoding="async"
+                  fetchPriority="high"
+                  onError={handlePreviewArtError}
+                  className={`absolute inset-0 w-full h-full object-cover scale-110 transition-[transform,opacity,filter] duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] ease-[var(--ease-apple)] ${
+                    isSwitching ? 'blur-2xl scale-125' : ''
+                  } ${loaded ? 'opacity-0' : 'opacity-100'}`}
+                />
+                {/* High-res image */}
+                <img
+                  src={displayArtSrc || previewArtSrc || ''}
+                  alt=""
+                  loading="eager"
+                  decoding="async"
+                  fetchPriority="high"
+                  onLoad={() => {
+                    setLoaded(true);
+                    clearSwitching();
+                  }}
+                  onError={() => {
+                    setLoaded(false);
+                    handleDisplayArtError();
+                    clearSwitching();
+                  }}
+                  className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ease-[var(--ease-apple)] ${loaded ? 'opacity-100' : 'opacity-0'}`}
+                />
+              </div>
+
+              {/* Hover Overlay with View Icon */}
+              {onOpenArtworkLightbox ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenArtworkLightbox(artworkFrameRef.current)}
+                  data-sc-disable-context-image="true"
+                  className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.06)_0%,rgba(255,255,255,0)_34%),linear-gradient(180deg,rgba(0,0,0,0.12)_0%,rgba(0,0,0,0.4)_100%)] opacity-0 group-hover/art:opacity-100 transition-opacity duration-300 flex items-center justify-center text-white/90 backdrop-blur-sm cursor-pointer outline-none"
+                >
+                  <div className="flex flex-col items-center gap-2 scale-90 group-hover/art:scale-100 transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full border border-white/18 bg-white/[0.16] shadow-[0_10px_32px_rgba(0,0,0,0.24)]">
+                      <Eye size={24} />
+                    </div>
+                    <span className="text-[11px] font-bold tracking-[0.2em] uppercase opacity-72">
+                      {t('track.viewArtwork', 'View')}
+                    </span>
                   </div>
-                  <span className="text-[11px] font-bold tracking-[0.2em] uppercase opacity-72">
-                    {t('track.viewArtwork', 'View')}
-                  </span>
-                </div>
-              </button>
-            ) : null}
-          </>
-        ) : (
-          <div className="w-full h-full bg-gradient-to-br from-white/[0.06] to-white/[0.02] flex items-center justify-center">
-            <MicVocal size={48} className="text-white/10" />
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <div className="w-full h-full bg-gradient-to-br from-white/[0.06] to-white/[0.02] flex items-center justify-center">
+              <MicVocal size={48} className="text-white/10" />
+            </div>
+          )}
+        </div>
+
+        <div
+          className={`${columnMaxWidthClass} text-center space-y-1`}
+          style={columnWidthTransitionStyle}
+        >
+          <button
+            type="button"
+            onClick={openTrackPage}
+            className="block w-full truncate text-[18px] font-bold text-white/95 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white cursor-pointer"
+            title={track.title}
+          >
+            {track.title}
+          </button>
+          <button
+            type="button"
+            onClick={openArtistPage}
+            className="block w-full truncate text-[14px] text-white/40 transition-colors hover:text-white/70 focus-visible:outline-none focus-visible:text-white/70 cursor-pointer"
+            title={track.user.username}
+          >
+            {track.user.username}
+          </button>
+        </div>
+
+        <div className={columnMaxWidthClass} style={columnWidthTransitionStyle}>
+          <ProgressSlider />
+          <div className="flex justify-center mt-1">
+            <ProgressTime />
           </div>
-        )}
-      </div>
+        </div>
 
-      <div
-        className={`${columnMaxWidthClass} text-center space-y-1`}
-        style={columnWidthTransitionStyle}
-      >
-        <p className="text-[18px] font-bold text-white/95 truncate">{track.title}</p>
-        <p className="text-[14px] text-white/40 truncate">{track.user.username}</p>
-      </div>
+        <div className="relative z-20">
+          <Controls track={track} />
+        </div>
 
-      <div className={columnMaxWidthClass} style={columnWidthTransitionStyle}>
-        <ProgressSlider />
-        <div className="flex justify-center mt-1">
-          <ProgressTime />
+        <div
+          className={`relative z-20 flex ${columnMaxWidthClass} flex-col items-center gap-3 rounded-[22px] border border-white/[0.08] bg-black/28 px-4 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.25)] backdrop-blur-lg`}
+          style={columnWidthTransitionStyle}
+        >
+          <FullscreenVolumeSlider />
+          <PlaybackSpeedPresets variant="compact" />
         </div>
       </div>
-
-      <div className="relative z-20">
-        <Controls track={track} />
-      </div>
-
-      <div
-        className={`relative z-20 flex ${columnMaxWidthClass} flex-col items-center gap-3 rounded-[22px] border border-white/[0.08] bg-black/28 px-4 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.25)] backdrop-blur-lg`}
-        style={columnWidthTransitionStyle}
-      >
-        <FullscreenVolumeSlider />
-        <PlaybackSpeedPresets variant="compact" />
-      </div>
-    </div>
-  );
-});
+    );
+  },
+);
 
 /* ── Shared: color hook ───────────────────────────────────── */
 
@@ -1150,4 +1150,3 @@ export function useArtworkColor(artworkUrl: string | null) {
     useArtworkGradientPalette(artworkUrl)?.accent ?? getFallbackArtworkGradientPalette().accent
   );
 }
-

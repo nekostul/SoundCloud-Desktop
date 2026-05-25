@@ -54,6 +54,12 @@
   --theme-glass-border: rgba(255, 255, 255, 0.05);
   --theme-glass-border-hi: rgba(255, 255, 255, 0.1);
   --theme-glass-shadow: 0 0 0 1px rgba(255, 255, 255, 0.03) inset, 0 8px 40px rgba(0, 0, 0, 0.3);
+  --theme-dock-bg: rgba(0, 0, 0, 0.4);
+  --theme-dock-bg-size: 100% 100%, 100% 100%;
+  --theme-dock-border: rgba(255, 255, 255, 0.04);
+  --theme-dock-shadow: 0 16px 44px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  --theme-dock-blur: 18px;
+  --theme-dock-saturate: 1.08;
   --theme-greeting-gradient: linear-gradient(
     to right,
     white,
@@ -172,8 +178,7 @@ body,
   width: 100%;
   height: auto;
   overflow: visible;
-  filter:
-    drop-shadow(0 0 18px rgba(255, 118, 31, 0.16))
+  filter: drop-shadow(0 0 18px rgba(255, 118, 31, 0.16))
     drop-shadow(0 18px 34px rgba(0, 0, 0, 0.42));
 }
 
@@ -380,8 +385,18 @@ body,
   will-change: background-position;
 }
 
+:root[data-theme-gradient-animated="true"][data-theme-gradient-animation="flow"] .theme-dock {
+  animation: themeGradientFlow var(--theme-gradient-speed) ease-in-out infinite;
+  will-change: background-position;
+}
+
 :root[data-theme-gradient-animated="true"][data-theme-gradient-animation="pulse"]
   .theme-accent-animated {
+  animation: themeGradientPulse var(--theme-gradient-speed) ease-in-out infinite;
+  will-change: background-position, background-size;
+}
+
+:root[data-theme-gradient-animated="true"][data-theme-gradient-animation="pulse"] .theme-dock {
   animation: themeGradientPulse var(--theme-gradient-speed) ease-in-out infinite;
   will-change: background-position, background-size;
 }
@@ -392,12 +407,21 @@ body,
   will-change: background-position;
 }
 
+:root[data-theme-gradient-animated="true"][data-theme-gradient-animation="breathe"] .theme-dock {
+  animation: themeGradientBreathe var(--theme-gradient-speed) ease-in-out infinite;
+  will-change: background-position;
+}
+
 @media (prefers-reduced-motion: reduce) {
   #root {
     animation: none !important;
   }
 
   .theme-accent-animated {
+    animation: none !important;
+  }
+
+  .theme-dock {
     animation: none !important;
   }
 
@@ -429,6 +453,51 @@ body,
   background: rgba(255, 255, 255, 0.15);
 }
 
+.app-shell-scroll {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.app-shell-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+
+.app-shell-scroll::-webkit-scrollbar-button,
+.app-shell-scroll::-webkit-scrollbar-corner,
+.app-shell-scroll::-webkit-scrollbar-track,
+.app-shell-scroll::-webkit-scrollbar-track-piece {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+
+.app-shell-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  right: 2px;
+  z-index: 30;
+  width: 5px;
+  min-height: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  will-change: transform, height, opacity;
+}
+
+.app-shell-scrollbar-thumb.is-visible {
+  opacity: 1;
+}
+
+.app-shell-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
 /* ── Glass ──────────────────────────────────────────────────── */
 .glass {
   background: var(--theme-glass-bg);
@@ -446,6 +515,16 @@ body,
   background: var(--theme-glass-flat-bg);
   border: 1px solid var(--theme-glass-border);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.theme-dock {
+  background: var(--theme-dock-bg);
+  background-color: rgba(0, 0, 0, 0.4);
+  background-size: var(--theme-dock-bg-size);
+  background-repeat: no-repeat;
+  border-color: var(--theme-dock-border);
+  box-shadow: var(--theme-dock-shadow);
+  backdrop-filter: blur(var(--theme-dock-blur)) saturate(var(--theme-dock-saturate));
 }
 
 .theme-accent-fill {
@@ -1090,6 +1169,7 @@ body,
 body.hw-accel .glass-featured,
 body.hw-accel .glass,
 body.hw-accel .glass-flat,
+body.hw-accel .theme-dock,
 body.hw-accel .dialog-content {
   transform: translateZ(0);
 }

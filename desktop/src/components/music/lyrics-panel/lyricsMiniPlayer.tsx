@@ -1,12 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import {
-  TRACK_SWITCH_NEXT_SCOPE,
-  TRACK_SWITCH_PREV_SCOPE,
-  useTrackSwitchCooldown,
-} from '../../../lib/useTrackSwitchCooldown';
+import { useNavigate } from 'react-router-dom';
 import {
   ExternalLink,
   Eye,
@@ -20,7 +16,13 @@ import {
   SkipForward,
   shuffleIcon16,
 } from '../../../lib/icons';
-import { getLyricMotionHintsForTrack } from '../../../lib/lyrics';
+import type { getLyricMotionHintsForTrack } from '../../../lib/lyrics';
+import {
+  TRACK_SWITCH_NEXT_SCOPE,
+  TRACK_SWITCH_PREV_SCOPE,
+  useTrackSwitchCooldown,
+} from '../../../lib/useTrackSwitchCooldown';
+import { useFullscreenPanelStore } from '../../../stores/lyrics';
 import type { Track } from '../../../stores/player';
 import { usePlayerStore } from '../../../stores/player';
 import { useSettingsStore } from '../../../stores/settings';
@@ -37,7 +39,11 @@ import {
   uniqueArtworkSources,
   useFallbackImageSource,
 } from './artwork';
-import { type ResolvedLyricsData, shouldRenderPlainLyrics, shouldRenderSyncedLyrics } from './lyricsData';
+import {
+  type ResolvedLyricsData,
+  shouldRenderPlainLyrics,
+  shouldRenderSyncedLyrics,
+} from './lyricsData';
 import { PlainLyrics, StaticSyncedLyrics, SyncedLyricsWithPlaceholders } from './syncedLyrics';
 
 const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
@@ -56,9 +62,7 @@ const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
   const compactCtrl =
     'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97] disabled:cursor-default disabled:text-white/28';
   const compactAccentCtrl = (active: boolean) =>
-    active
-      ? `${compactCtrl} theme-accent-soft text-white/96 hover:text-white/96`
-      : compactCtrl;
+    active ? `${compactCtrl} theme-accent-soft text-white/96 hover:text-white/96` : compactCtrl;
 
   const handleOpenInSoundCloud = useCallback(() => {
     void (async () => {
@@ -68,71 +72,47 @@ const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
     })();
   }, [track]);
 
-return (
-  <div className="flex items-center gap-2 pl-2.5">
-    <AddToPlaylistDialog trackUrn={track.urn}>
-      <button type="button" className={compactCtrl}>
-        <ListPlus size={16} />
+  return (
+    <div className="flex items-center gap-2 pl-2.5">
+      <AddToPlaylistDialog trackUrn={track.urn}>
+        <button type="button" className={compactCtrl}>
+          <ListPlus size={16} />
+        </button>
+      </AddToPlaylistDialog>
+
+      <FullscreenLikeButton track={track} compact />
+
+      <button type="button" onClick={toggleShuffle} className={compactAccentCtrl(shuffle)}>
+        {shuffleIcon16}
       </button>
-    </AddToPlaylistDialog>
 
-    <FullscreenLikeButton track={track} compact />
+      <button type="button" onClick={prevTrack} disabled={prevLocked} className={compactCtrl}>
+        <SkipBack size={18} fill="currentColor" />
+      </button>
 
-    <button
-      type="button"
-      onClick={toggleShuffle}
-      className={compactAccentCtrl(shuffle)}
-    >
-      {shuffleIcon16}
-    </button>
+      <button
+        type="button"
+        onClick={togglePlay}
+        className="flex h-12 w-12 items-center justify-center rounded-full bg-white text-black shadow-[0_14px_32px_rgba(255,255,255,0.16)] transition-all duration-200 hover:scale-[1.03] active:scale-[0.97] outline-none"
+      >
+        {isPlaying ? pauseBlack18 : playBlack18}
+      </button>
 
-    <button
-      type="button"
-      onClick={prevTrack}
-      disabled={prevLocked}
-      className={compactCtrl}
-    >
-      <SkipBack size={18} fill="currentColor" />
-    </button>
+      <button type="button" onClick={next} disabled={nextLocked} className={compactCtrl}>
+        <SkipForward size={18} fill="currentColor" />
+      </button>
 
-    <button
-      type="button"
-      onClick={togglePlay}
-      className="flex h-12 w-12 items-center justify-center rounded-full bg-white text-black shadow-[0_14px_32px_rgba(255,255,255,0.16)] transition-all duration-200 hover:scale-[1.03] active:scale-[0.97] outline-none"
-    >
-      {isPlaying ? pauseBlack18 : playBlack18}
-    </button>
+      <button type="button" onClick={toggleRepeat} className={compactAccentCtrl(repeat !== 'off')}>
+        {repeat === 'one' ? repeat1Icon16 : repeatIcon16}
+      </button>
 
-    <button
-      type="button"
-      onClick={next}
-      disabled={nextLocked}
-      className={compactCtrl}
-    >
-      <SkipForward size={18} fill="currentColor" />
-    </button>
+      <FullscreenDislikeButton track={track} compact />
 
-    <button
-      type="button"
-      onClick={toggleRepeat}
-      className={compactAccentCtrl(repeat !== 'off')}
-    >
-      {repeat === 'one'
-        ? repeat1Icon16
-        : repeatIcon16}
-    </button>
-
-    <FullscreenDislikeButton track={track} compact />
-
-    <button
-      type="button"
-      onClick={handleOpenInSoundCloud}
-      className={compactCtrl}
-    >
-      <ExternalLink size={16} />
-    </button>
-  </div>
-);
+      <button type="button" onClick={handleOpenInSoundCloud} className={compactCtrl}>
+        <ExternalLink size={16} />
+      </button>
+    </div>
+  );
 });
 
 const LyricsMiniPlayerDock = ({
@@ -153,6 +133,7 @@ const LyricsMiniPlayerDock = ({
   onOpenArtworkLightbox: (sourceElement: HTMLElement | null) => void;
 }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const controlsCollapsed = useSettingsStore((s) => s.lyricsMiniPlayerControlsCollapsed);
   const setControlsCollapsed = useSettingsStore((s) => s.setLyricsMiniPlayerControlsCollapsed);
   const effectiveControlsCollapsed = forceCollapsed || controlsCollapsed;
@@ -163,6 +144,22 @@ const LyricsMiniPlayerDock = ({
       : openAnimation === 'fromMiniPlayer'
         ? 'animate-lyrics-mini-player-in'
         : 'animate-lyrics-mini-player-in';
+  const openTrackPage = useCallback(() => {
+    useFullscreenPanelStore.getState().beginClose();
+    navigate(`/track/${encodeURIComponent(track.urn)}`);
+  }, [navigate, track.urn]);
+  const openArtistPage = useCallback(() => {
+    useFullscreenPanelStore.getState().beginClose();
+    navigate(`/user/${encodeURIComponent(track.user.urn)}`);
+  }, [navigate, track.user.urn]);
+  const handleTrackTitleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLParagraphElement>) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      openTrackPage();
+    },
+    [openTrackPage],
+  );
 
   return (
     <div
@@ -219,11 +216,20 @@ const LyricsMiniPlayerDock = ({
                 baseSize={18}
                 minSize={14}
                 step={0.1}
-                className="truncate text-[18px] font-semibold leading-tight text-white/92"
+                role="link"
+                tabIndex={0}
+                onClick={openTrackPage}
+                onKeyDown={handleTrackTitleKeyDown}
+                className="truncate text-[18px] font-semibold leading-tight text-white/92 transition-colors hover:text-white focus-visible:text-white focus-visible:outline-none cursor-pointer"
               />
-              <p className="mt-1 truncate text-[13px] font-medium text-white/46">
+              <button
+                type="button"
+                onClick={openArtistPage}
+                className="mt-1 block max-w-full truncate text-[13px] font-medium text-white/46 transition-colors hover:text-white/72 focus-visible:text-white/72 focus-visible:outline-none cursor-pointer"
+                title={track.user.username}
+              >
                 {track.user.username}
-              </p>
+              </button>
 
               <div className="mb-1 flex justify-end">
                 <ProgressTime />
@@ -268,153 +274,147 @@ const LyricsMiniPlayerArtwork = React.memo(
     hideArtwork: boolean;
     onOpenArtworkLightbox: (sourceElement: HTMLElement | null) => void;
   }) => {
-  const { t } = useTranslation();
-  const isPlaying = usePlayerStore((s) => s.isPlaying);
-  const togglePlay = usePlayerStore((s) => s.togglePlay);
-  const previewArtSources = useMemo(
-    () =>
-      uniqueArtworkSources([
-        ...getTrackArtworkSources(track, 't200x200'),
-        ...getTrackArtworkSources(track, 't500x500'),
-      ]),
-    [track.artwork_url, track.user.avatar_url],
-  );
-  const displayArtSources = useMemo(
-    () =>
-      uniqueArtworkSources([
-        ...getTrackArtworkSources(track, 't500x500'),
-        ...getTrackArtworkSources(track, 't200x200'),
-      ]),
-    [track.artwork_url, track.user.avatar_url],
-  );
-  const previewArtSourcesKey = previewArtSources.join('|');
-  const displayArtSourcesKey = displayArtSources.join('|');
-  const { currentSrc: previewArtSrc, handleError: handlePreviewArtError } = useFallbackImageSource(
-    previewArtSources,
-    `${track.urn}:lyrics-mini-preview`,
-  );
-  const { currentSrc: displayArtSrc, handleError: handleDisplayArtError } = useFallbackImageSource(
-    displayArtSources,
-    `${track.urn}:lyrics-mini-display`,
-  );
-  const [loaded, setLoaded] = useState(false);
-  const artworkFrameRef = useRef<HTMLDivElement | null>(null);
+    const { t } = useTranslation();
+    const isPlaying = usePlayerStore((s) => s.isPlaying);
+    const togglePlay = usePlayerStore((s) => s.togglePlay);
+    const previewArtSources = useMemo(
+      () =>
+        uniqueArtworkSources([
+          ...getTrackArtworkSources(track, 't200x200'),
+          ...getTrackArtworkSources(track, 't500x500'),
+        ]),
+      [track.artwork_url, track.user.avatar_url],
+    );
+    const displayArtSources = useMemo(
+      () =>
+        uniqueArtworkSources([
+          ...getTrackArtworkSources(track, 't500x500'),
+          ...getTrackArtworkSources(track, 't200x200'),
+        ]),
+      [track.artwork_url, track.user.avatar_url],
+    );
+    const previewArtSourcesKey = previewArtSources.join('|');
+    const displayArtSourcesKey = displayArtSources.join('|');
+    const { currentSrc: previewArtSrc, handleError: handlePreviewArtError } =
+      useFallbackImageSource(previewArtSources, `${track.urn}:lyrics-mini-preview`);
+    const { currentSrc: displayArtSrc, handleError: handleDisplayArtError } =
+      useFallbackImageSource(displayArtSources, `${track.urn}:lyrics-mini-display`);
+    const [loaded, setLoaded] = useState(false);
+    const artworkFrameRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    setLoaded(false);
-  }, [track.urn, previewArtSourcesKey, displayArtSourcesKey]);
+    useEffect(() => {
+      setLoaded(false);
+    }, [track.urn, previewArtSourcesKey, displayArtSourcesKey]);
 
-  useEffect(() => {
-    const urls = displayArtSources.slice(0, 2);
-    const preloadedImages: HTMLImageElement[] = [];
+    useEffect(() => {
+      const urls = displayArtSources.slice(0, 2);
+      const preloadedImages: HTMLImageElement[] = [];
 
-    for (const [index, url] of urls.entries()) {
-      const img = new window.Image();
-      img.decoding = 'async';
-      img.loading = 'eager';
-      img.fetchPriority = index === 0 ? 'high' : 'auto';
-      img.src = url;
-      preloadedImages.push(img);
-    }
-
-    return () => {
-      for (const img of preloadedImages) {
-        img.src = '';
+      for (const [index, url] of urls.entries()) {
+        const img = new window.Image();
+        img.decoding = 'async';
+        img.loading = 'eager';
+        img.fetchPriority = index === 0 ? 'high' : 'auto';
+        img.src = url;
+        preloadedImages.push(img);
       }
-    };
-  }, [displayArtSourcesKey, track.urn]);
 
-  const hasArtwork = Boolean(previewArtSrc || displayArtSrc);
+      return () => {
+        for (const img of preloadedImages) {
+          img.src = '';
+        }
+      };
+    }, [displayArtSourcesKey, track.urn]);
 
-  return (
-    <div
-      className={`group/lyrics-mini-art relative h-[88px] w-[88px] shrink-0 overflow-hidden rounded-[24px] ring-1 ring-white/[0.1] shadow-[0_16px_36px_rgba(0,0,0,0.35)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-        controlsCollapsed ? '' : 'cursor-zoom-in hover:scale-[1.025]'
-      }`}
-    >
-      {hasArtwork ? (
-        <>
-          <div
-            ref={artworkFrameRef}
-            className="absolute inset-0 overflow-hidden rounded-[24px]"
-          >
-            {hideArtwork ? (
-              <div className="absolute inset-0 rounded-[24px] bg-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]" />
-            ) : (
-              <>
-                <img
-                  key={`${track.urn}-lyrics-mini-preview-${previewArtSrc ?? displayArtSrc ?? 'fallback'}`}
-                  src={previewArtSrc || displayArtSrc || ''}
-                  alt=""
-                  className={`absolute inset-0 h-full w-full object-cover scale-105 transition-[opacity,transform,filter] duration-500 ease-[var(--ease-apple)] ${
-                    loaded ? 'opacity-0' : 'opacity-100'
-                  } ${
-                    controlsCollapsed
-                      ? ''
-                      : 'group-hover/lyrics-mini-art:scale-[1.08] group-hover/lyrics-mini-art:blur-[6px] group-hover/lyrics-mini-art:brightness-[0.72]'
-                  }`}
-                  loading="eager"
-                  decoding="async"
-                  fetchPriority="high"
-                  onError={handlePreviewArtError}
-                />
-                <img
-                  key={`${track.urn}-lyrics-mini-display-${displayArtSrc ?? previewArtSrc ?? 'fallback'}`}
-                  src={displayArtSrc || previewArtSrc || ''}
-                  alt={track.title}
-                  className={`absolute inset-0 h-full w-full object-cover transition-[opacity,transform,filter] duration-500 ease-[var(--ease-apple)] ${
-                    loaded ? 'opacity-100' : 'opacity-0'
-                  } ${
-                    controlsCollapsed
-                      ? ''
-                      : 'group-hover/lyrics-mini-art:scale-[1.03] group-hover/lyrics-mini-art:blur-[6px] group-hover/lyrics-mini-art:brightness-[0.72]'
-                  }`}
-                  loading="eager"
-                  decoding="async"
-                  fetchPriority="high"
-                  onLoad={() => setLoaded(true)}
-                  onError={() => {
-                    setLoaded(false);
-                    handleDisplayArtError();
-                  }}
-                />
-              </>
-            )}
+    const hasArtwork = Boolean(previewArtSrc || displayArtSrc);
+
+    return (
+      <div
+        className={`group/lyrics-mini-art relative h-[88px] w-[88px] shrink-0 overflow-hidden rounded-[24px] ring-1 ring-white/[0.1] shadow-[0_16px_36px_rgba(0,0,0,0.35)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+          controlsCollapsed ? '' : 'cursor-zoom-in hover:scale-[1.025]'
+        }`}
+      >
+        {hasArtwork ? (
+          <>
+            <div ref={artworkFrameRef} className="absolute inset-0 overflow-hidden rounded-[24px]">
+              {hideArtwork ? (
+                <div className="absolute inset-0 rounded-[24px] bg-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]" />
+              ) : (
+                <>
+                  <img
+                    key={`${track.urn}-lyrics-mini-preview-${previewArtSrc ?? displayArtSrc ?? 'fallback'}`}
+                    src={previewArtSrc || displayArtSrc || ''}
+                    alt=""
+                    className={`absolute inset-0 h-full w-full object-cover scale-105 transition-[opacity,transform,filter] duration-500 ease-[var(--ease-apple)] ${
+                      loaded ? 'opacity-0' : 'opacity-100'
+                    } ${
+                      controlsCollapsed
+                        ? ''
+                        : 'group-hover/lyrics-mini-art:scale-[1.08] group-hover/lyrics-mini-art:blur-[6px] group-hover/lyrics-mini-art:brightness-[0.72]'
+                    }`}
+                    loading="eager"
+                    decoding="async"
+                    fetchPriority="high"
+                    onError={handlePreviewArtError}
+                  />
+                  <img
+                    key={`${track.urn}-lyrics-mini-display-${displayArtSrc ?? previewArtSrc ?? 'fallback'}`}
+                    src={displayArtSrc || previewArtSrc || ''}
+                    alt={track.title}
+                    className={`absolute inset-0 h-full w-full object-cover transition-[opacity,transform,filter] duration-500 ease-[var(--ease-apple)] ${
+                      loaded ? 'opacity-100' : 'opacity-0'
+                    } ${
+                      controlsCollapsed
+                        ? ''
+                        : 'group-hover/lyrics-mini-art:scale-[1.03] group-hover/lyrics-mini-art:blur-[6px] group-hover/lyrics-mini-art:brightness-[0.72]'
+                    }`}
+                    loading="eager"
+                    decoding="async"
+                    fetchPriority="high"
+                    onLoad={() => setLoaded(true)}
+                    onError={() => {
+                      setLoaded(false);
+                      handleDisplayArtError();
+                    }}
+                  />
+                </>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex h-full w-full items-center justify-center bg-white/[0.06]">
+            <MicVocal size={28} className="text-white/18" />
           </div>
-        </>
-      ) : (
-        <div className="flex h-full w-full items-center justify-center bg-white/[0.06]">
-          <MicVocal size={28} className="text-white/18" />
-        </div>
-      )}
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0)_45%,rgba(0,0,0,0.14)_100%)]" />
-      {controlsCollapsed && (
-        <button
-          type="button"
-          onClick={togglePlay}
-          aria-label={isPlaying ? 'Pause' : 'Play'}
-          className="absolute inset-0 z-10 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-player:bg-black/[0.18] group-hover/lyrics-mini-player:opacity-100 focus-visible:bg-black/[0.18] focus-visible:opacity-100 focus-visible:outline-none"
-        >
-          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/92 text-black shadow-[0_12px_28px_rgba(0,0,0,0.24)] transition-transform duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-player:scale-100 scale-[0.92]">
-            {isPlaying ? pauseBlack18 : playBlack18}
-          </span>
-        </button>
-      )}
-      {!controlsCollapsed && !hideArtwork && (
-        <button
-          type="button"
-          onClick={() => onOpenArtworkLightbox(artworkFrameRef.current)}
-          aria-label={t('track.viewArtwork', 'View')}
-          className="absolute inset-0 z-10 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/lyrics-mini-art:bg-black/[0.18] group-hover/lyrics-mini-art:opacity-100 focus-visible:bg-black/[0.18] focus-visible:opacity-100 focus-visible:outline-none"
-        >
-          <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/18 bg-white/[0.16] text-white/92 shadow-[0_14px_36px_rgba(0,0,0,0.26)] backdrop-blur-md transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] scale-[0.9] group-hover/lyrics-mini-art:scale-100">
-            <Eye size={16} />
-          </span>
-        </button>
-      )}
-    </div>
-  );
-});
+        )}
+        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0)_45%,rgba(0,0,0,0.14)_100%)]" />
+        {controlsCollapsed && (
+          <button
+            type="button"
+            onClick={togglePlay}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+            className="absolute inset-0 z-10 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-player:bg-black/[0.18] group-hover/lyrics-mini-player:opacity-100 focus-visible:bg-black/[0.18] focus-visible:opacity-100 focus-visible:outline-none"
+          >
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/92 text-black shadow-[0_12px_28px_rgba(0,0,0,0.24)] transition-transform duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-player:scale-100 scale-[0.92]">
+              {isPlaying ? pauseBlack18 : playBlack18}
+            </span>
+          </button>
+        )}
+        {!controlsCollapsed && !hideArtwork && (
+          <button
+            type="button"
+            onClick={() => onOpenArtworkLightbox(artworkFrameRef.current)}
+            aria-label={t('track.viewArtwork', 'View')}
+            className="absolute inset-0 z-10 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/lyrics-mini-art:bg-black/[0.18] group-hover/lyrics-mini-art:opacity-100 focus-visible:bg-black/[0.18] focus-visible:opacity-100 focus-visible:outline-none"
+          >
+            <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/18 bg-white/[0.16] text-white/92 shadow-[0_14px_36px_rgba(0,0,0,0.26)] backdrop-blur-md transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] scale-[0.9] group-hover/lyrics-mini-art:scale-100">
+              <Eye size={16} />
+            </span>
+          </button>
+        )}
+      </div>
+    );
+  },
+);
 
 export const FullscreenLyricsMiniPlayerOverlay = React.memo(
   ({
@@ -508,4 +508,3 @@ export const FullscreenLyricsColumn = React.memo(
     );
   },
 );
-

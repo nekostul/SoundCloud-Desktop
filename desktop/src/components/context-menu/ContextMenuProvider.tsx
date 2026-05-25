@@ -38,7 +38,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api } from '../../lib/api';
 import { invalidateAllLikesCache } from '../../lib/hooks';
-import { isUrnLiked, optimisticToggleLike, setLikedUrn } from '../../lib/likes';
+import { isUrnLiked, optimisticToggleLike } from '../../lib/likes';
 import { isTauriRuntime } from '../../lib/runtime';
 import { useAuthStore } from '../../stores/auth';
 import { type Track, usePlayerStore } from '../../stores/player';
@@ -508,11 +508,7 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
       const nextLiked = !(isUrnLiked(track.urn) || Boolean(track.user_favorite));
       const cachedTrack = queryClient.getQueryData<Track>(['track', track.urn]);
 
-      if (cachedTrack) {
-        optimisticToggleLike(queryClient, cachedTrack, nextLiked);
-      } else {
-        setLikedUrn(track.urn, nextLiked);
-      }
+      optimisticToggleLike(queryClient, cachedTrack ?? track, nextLiked);
 
       invalidateAllLikesCache();
 
@@ -522,11 +518,7 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
         });
         queryClient.invalidateQueries({ queryKey: ['track', track.urn, 'favoriters'] });
       } catch {
-        if (cachedTrack) {
-          optimisticToggleLike(queryClient, cachedTrack, !nextLiked);
-        } else {
-          setLikedUrn(track.urn, !nextLiked);
-        }
+        optimisticToggleLike(queryClient, cachedTrack ?? track, !nextLiked);
         throw new Error('toggle-track-like-failed');
       }
     },
