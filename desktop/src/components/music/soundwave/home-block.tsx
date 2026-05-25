@@ -400,6 +400,16 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
     let unlistenAudio: (() => void) | null = null;
     let disposed = false;
     let lastAudioAt = 0;
+    let lastPaintAt = 0;
+    let cssWidth = 0;
+    let cssHeight = 0;
+    let pathPointCount = 128;
+    let renderBlurScale = 1;
+    let isVisible = true;
+    let isScrolling = false;
+    let renderTimerId: ReturnType<typeof window.setTimeout> | null = null;
+    let scrollIdleTimerId: ReturnType<typeof window.setTimeout> | null = null;
+    let intersectionObserver: IntersectionObserver | null = null;
     let phase = 0;
     let colorPhase = Math.random() * Math.PI * 2;
     const energy = { bass: 0, mid: 0, high: 0, overall: 0 };
@@ -407,7 +417,9 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
 
     const resizeCanvas = () => {
       const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      cssWidth = rect.width;
+      cssHeight = rect.height;
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
       canvas.width = Math.max(1, Math.floor(rect.width * dpr));
       canvas.height = Math.max(1, Math.floor(rect.height * dpr));
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -418,6 +430,43 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
     if (canvas.parentElement) {
       resizeObserver.observe(canvas.parentElement);
     }
+
+    const scrollContainer = canvas.closest('.app-shell-scroll');
+    const markScrolling = () => {
+      isScrolling = true;
+      if (scrollIdleTimerId) {
+        window.clearTimeout(scrollIdleTimerId);
+      }
+      scrollIdleTimerId = window.setTimeout(() => {
+        isScrolling = false;
+        scrollIdleTimerId = null;
+      }, 180);
+    };
+
+    scrollContainer?.addEventListener('scroll', markScrolling, { passive: true });
+
+    if ('IntersectionObserver' in window) {
+      intersectionObserver = new IntersectionObserver(
+        ([entry]) => {
+          isVisible = entry ? entry.isIntersecting && entry.intersectionRatio > 0.02 : true;
+        },
+        { root: scrollContainer, threshold: [0, 0.02] },
+      );
+      intersectionObserver.observe(canvas);
+    }
+
+    let render: FrameRequestCallback = () => {};
+    const scheduleRender = (delay = 0) => {
+      if (delay > 0) {
+        renderTimerId = window.setTimeout(() => {
+          renderTimerId = null;
+          animationFrameId = window.requestAnimationFrame(render);
+        }, delay);
+        return;
+      }
+
+      animationFrameId = window.requestAnimationFrame(render);
+    };
 
     const setupAudio = async () => {
       try {
@@ -455,7 +504,7 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
       high: number,
     ) => {
       const path = new Path2D();
-      const count = 128;
+      const count = pathPointCount;
       const startX = -width * 0.24;
       const span = width * 1.5;
       const baseY =
@@ -508,7 +557,8 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
       ctx.save();
       ctx.globalCompositeOperation = composite;
       ctx.globalAlpha = alpha;
-      ctx.filter = blurPx > 0 ? `blur(${blurPx}px)` : 'none';
+      const scaledBlur = blurPx * renderBlurScale;
+      ctx.filter = scaledBlur > 0 ? `blur(${scaledBlur}px)` : 'none';
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = strokeStyle;
@@ -525,10 +575,31 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
       Math.sin(colorPhase + offset) * range +
       Math.sin(colorPhase * 0.37 + offset * 1.7) * range * 0.38;
 
-    const render = () => {
-      const rect = canvas.getBoundingClientRect();
-      const width = rect.width;
-      const height = rect.height;
+    render = (timestamp = performance.now()) => {
+      if (cssWidth <= 0 || cssHeight <= 0) {
+        scheduleRender(120);
+        return;
+      }
+
+      if (!isVisible) {
+        lastPaintAt = timestamp;
+        phase += 0.0009 * (playingRef.current ? 1 : 0.42);
+        colorPhase = (colorPhase + 0.00004) % (Math.PI * 2);
+        scheduleRender(220);
+        return;
+      }
+
+      const minFrameDelay = isScrolling ? 1000 / 24 : 0;
+      if (minFrameDelay > 0 && lastPaintAt > 0 && timestamp - lastPaintAt < minFrameDelay) {
+        scheduleRender(Math.max(12, minFrameDelay - (timestamp - lastPaintAt)));
+        return;
+      }
+
+      lastPaintAt = timestamp;
+      const width = cssWidth;
+      const height = cssHeight;
+      pathPointCount = isScrolling ? 76 : 128;
+      renderBlurScale = isScrolling ? 0.72 : 1;
 
       const now = performance.now();
       const volumeRatio = Math.max(0, Math.min(1, volumeRef.current / 100));
@@ -657,7 +728,7 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       ctx.globalAlpha = 0.09 + overall * 0.08;
-      ctx.filter = `blur(${42 + high * 10}px)`;
+      ctx.filter = `blur(${(42 + high * 10) * renderBlurScale}px)`;
       ctx.fillStyle = hsla(peachHue + 4, 74, 62, 0.24);
       ctx.beginPath();
       ctx.ellipse(width * 0.2, height * 0.6, width * 0.13, height * 0.15, -0.6, 0, Math.PI * 2);
@@ -665,14 +736,18 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
       ctx.fill();
       ctx.restore();
 
-      animationFrameId = window.requestAnimationFrame(render);
+      scheduleRender();
     };
 
-    render();
+    render(performance.now());
 
     return () => {
       disposed = true;
       window.cancelAnimationFrame(animationFrameId);
+      if (renderTimerId) window.clearTimeout(renderTimerId);
+      if (scrollIdleTimerId) window.clearTimeout(scrollIdleTimerId);
+      scrollContainer?.removeEventListener('scroll', markScrolling);
+      intersectionObserver?.disconnect();
       unlistenAudio?.();
       resizeObserver.disconnect();
     };

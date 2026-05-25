@@ -237,6 +237,7 @@ export const AppShell = React.memo(() => {
   const [kbOpen, setKbOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const customScrollbarThumbRef = useRef<HTMLDivElement | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
   const scrollHideTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const onQueueToggle = useCallback(() => setQueueOpen((v) => !v), []);
   const onQueueClose = useCallback(() => setQueueOpen(false), []);
@@ -272,12 +273,21 @@ export const AppShell = React.memo(() => {
     thumb.style.transform = `translate3d(0, ${thumbTop}px, 0)`;
   }, []);
 
+  const scheduleCustomScrollbarUpdate = useCallback(() => {
+    if (scrollRafRef.current !== null) return;
+
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      updateCustomScrollbar();
+    });
+  }, [updateCustomScrollbar]);
+
   const handleContentScroll = useCallback(() => {
     const element = scrollContainerRef.current;
     const thumb = customScrollbarThumbRef.current;
     if (!element) return;
 
-    updateCustomScrollbar();
+    scheduleCustomScrollbarUpdate();
     element.classList.add('is-scrolling');
     thumb?.classList.add('is-visible');
     if (scrollHideTimerRef.current) {
@@ -288,7 +298,7 @@ export const AppShell = React.memo(() => {
       thumb?.classList.remove('is-visible');
       scrollHideTimerRef.current = null;
     }, 2000);
-  }, [updateCustomScrollbar]);
+  }, [scheduleCustomScrollbarUpdate]);
 
   useEffect(() => {
     const element = scrollContainerRef.current;
@@ -310,6 +320,9 @@ export const AppShell = React.memo(() => {
 
   useEffect(
     () => () => {
+      if (scrollRafRef.current !== null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+      }
       if (scrollHideTimerRef.current) {
         window.clearTimeout(scrollHideTimerRef.current);
       }

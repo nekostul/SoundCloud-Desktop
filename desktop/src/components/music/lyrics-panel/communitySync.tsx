@@ -594,7 +594,7 @@ export const CommunitySyncEditor = React.memo(
     }, [session.activeIndex]);
 
     return (
-      <div className="relative mx-auto flex h-full w-full max-w-[960px] flex-col overflow-hidden animate-fade-in-up">
+      <div className="relative mx-auto flex h-full w-full max-w-[960px] select-none flex-col overflow-hidden animate-fade-in-up">
         <div className="flex items-start justify-between gap-4 px-[clamp(8px,1.4vw,18px)] pt-3 pb-2">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">

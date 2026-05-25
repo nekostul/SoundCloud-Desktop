@@ -48,6 +48,18 @@ import { useAuthStore } from '../stores/auth';
 import type { Track } from '../stores/player';
 import { usePlayerStore } from '../stores/player';
 
+const HOME_SHELF_SECTION_STYLE: React.CSSProperties = {
+  contentVisibility: 'auto',
+  contain: 'layout paint style',
+  containIntrinsicSize: '260px',
+};
+
+const HOME_FEED_SECTION_STYLE: React.CSSProperties = {
+  contentVisibility: 'auto',
+  contain: 'layout paint style',
+  containIntrinsicSize: '760px',
+};
+
 /* ── Helpers ──────────────────────────────────────────────── */
 
 /* ── Section Header ───────────────────────────────────────── */
@@ -417,7 +429,7 @@ const FallbackShelf = React.memo(function FallbackShelf() {
   if (hasActivity || (!fallbackLoading && fallbackTracks.length === 0)) return null;
 
   return (
-    <section>
+    <section style={HOME_SHELF_SECTION_STYLE}>
       <SectionHeader
         title={t('home.startListening', 'Start Listening')}
         icon={<Headphones size={15} className="text-accent" />}
@@ -457,7 +469,7 @@ const LikedShelf = React.memo(function LikedShelf({
   if (!isLoading && displayTracks.length === 0) return null;
 
   return (
-    <section>
+    <section style={HOME_SHELF_SECTION_STYLE}>
       <SectionHeader
         title={t('library.likedTracks')}
         icon={<Heart size={15} className="text-accent" />}
@@ -492,7 +504,7 @@ const FollowingShelf = React.memo(function FollowingShelf() {
   if (!isLoading && followingTracks.length === 0) return null;
 
   return (
-    <section>
+    <section style={HOME_SHELF_SECTION_STYLE}>
       <SectionHeader
         title={t('home.freshReleases')}
         icon={<Music size={15} className="text-white/50" />}
@@ -532,7 +544,7 @@ const MixShelf = React.memo(function MixShelf({
   if (!isLoading && recommendedTracks.length === 0) return null;
 
   return (
-    <section>
+    <section style={HOME_SHELF_SECTION_STYLE}>
       <SectionHeader
         title="Миксы для тебя"
         icon={<Headphones size={15} className="text-accent" />}
@@ -591,7 +603,7 @@ const DiscoverSection = React.memo(function DiscoverSection({
     <>
       {/* Recommended For You */}
       {(isLoading || recommendedTracks.length > 0) && (
-        <section>
+        <section style={HOME_SHELF_SECTION_STYLE}>
           <SectionHeader
             title={t('home.recommended', 'Recommended For You')}
             icon={<Sparkles size={15} className="text-amber-400/70" />}
@@ -618,7 +630,7 @@ const DiscoverSection = React.memo(function DiscoverSection({
 
       {/* Discover by genre */}
       {(isLoading || genres.length > 0) && (
-        <section>
+        <section style={HOME_SHELF_SECTION_STYLE}>
           <SectionHeader
             title={t('home.discover', 'Discover')}
             icon={<Compass size={15} className="text-cyan-400/70" />}
@@ -679,7 +691,7 @@ const FeedStream = React.memo(function FeedStream() {
   );
 
   return (
-    <section>
+    <section style={HOME_FEED_SECTION_STYLE}>
       <SectionHeader
         title={t('home.yourFeed')}
         icon={<Music size={15} className="text-white/50" />}
