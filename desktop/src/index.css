@@ -751,12 +751,49 @@ body,
   }
 }
 
+@keyframes lyricsMiniPlayerCoverOnlyIn {
+  from {
+    opacity: 0;
+    transform: translate3d(-10px, 8px, 0) scale(0.9);
+    filter: blur(10px) saturate(0.9);
+  }
+  62% {
+    opacity: 1;
+    transform: translate3d(0, -1px, 0) scale(1.025);
+    filter: blur(0) saturate(1.05);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0) saturate(1);
+  }
+}
+
+@keyframes lyricsMiniPlayerCoverArtIn {
+  from {
+    transform: translate3d(0, 3px, 0) scale(0.94);
+  }
+  62% {
+    transform: translate3d(0, -1px, 0) scale(1.018);
+  }
+  to {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
 .lyrics-mini-player-dock {
   transform-origin: left bottom;
+  transition: width 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .lyrics-mini-player-shell {
   will-change: transform, opacity;
+  transition:
+    border-radius 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    padding 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 320ms var(--ease-apple),
+    border-color 320ms var(--ease-apple),
+    box-shadow 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .animate-lyrics-mini-player-in .lyrics-mini-player-shell {
@@ -765,6 +802,14 @@ body,
 
 .animate-lyrics-mini-player-out .lyrics-mini-player-shell {
   animation: lyricsMiniPlayerOut 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-lyrics-mini-player-in .lyrics-mini-player-cover-shell {
+  animation: lyricsMiniPlayerCoverOnlyIn 0.46s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-lyrics-mini-player-in .lyrics-mini-player-cover-art {
+  animation: lyricsMiniPlayerCoverArtIn 0.46s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .animate-lyrics-mini-player-in .lyrics-mini-player-header,

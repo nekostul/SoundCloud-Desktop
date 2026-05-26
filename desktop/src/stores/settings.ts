@@ -246,6 +246,7 @@ export interface SettingsState {
   classicPlaybar: boolean;
   experimentalRuAudioTextWarmup: boolean;
   lyricsMiniPlayerControlsCollapsed: boolean;
+  lyricsMiniPlayerCoverOnlyCollapsed: boolean;
   soundwavePresetKey: string;
   languageFilterEnabled: boolean;
   preferredLanguages: string[];
@@ -343,6 +344,7 @@ export interface SettingsState {
   setClassicPlaybar: (v: boolean) => void;
   setExperimentalRuAudioTextWarmup: (v: boolean) => void;
   setLyricsMiniPlayerControlsCollapsed: (v: boolean) => void;
+  setLyricsMiniPlayerCoverOnlyCollapsed: (v: boolean) => void;
   setSoundwavePresetKey: (key: string) => void;
   setLanguageFilterEnabled: (v: boolean) => void;
   setPreferredLanguages: (langs: string[]) => void;
@@ -445,6 +447,7 @@ const DEFAULTS = {
   classicPlaybar: false,
   experimentalRuAudioTextWarmup: false,
   lyricsMiniPlayerControlsCollapsed: false,
+  lyricsMiniPlayerCoverOnlyCollapsed: false,
   soundwavePresetKey: 'work',
   languageFilterEnabled: false,
   preferredLanguages: [],
@@ -655,6 +658,8 @@ export const useSettingsStore = create<SettingsState>()(
         set({ experimentalRuAudioTextWarmup }),
       setLyricsMiniPlayerControlsCollapsed: (lyricsMiniPlayerControlsCollapsed) =>
         set({ lyricsMiniPlayerControlsCollapsed }),
+      setLyricsMiniPlayerCoverOnlyCollapsed: (lyricsMiniPlayerCoverOnlyCollapsed) =>
+        set({ lyricsMiniPlayerCoverOnlyCollapsed }),
       setSoundwavePresetKey: (soundwavePresetKey) => set({ soundwavePresetKey }),
       setLanguageFilterEnabled: (languageFilterEnabled) => set({ languageFilterEnabled }),
       setPreferredLanguages: (preferredLanguages) =>
@@ -905,6 +910,7 @@ export const useSettingsStore = create<SettingsState>()(
         classicPlaybar: s.classicPlaybar,
         experimentalRuAudioTextWarmup: s.experimentalRuAudioTextWarmup,
         lyricsMiniPlayerControlsCollapsed: s.lyricsMiniPlayerControlsCollapsed,
+        lyricsMiniPlayerCoverOnlyCollapsed: s.lyricsMiniPlayerCoverOnlyCollapsed,
         soundwavePresetKey: s.soundwavePresetKey,
         // Visualizer settings
         visualizerStyle: s.visualizerStyle,

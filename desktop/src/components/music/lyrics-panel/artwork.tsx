@@ -402,7 +402,7 @@ export const FullscreenLikeButton = React.memo(
     };
 
     const buttonClass = compact
-      ? 'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
+      ? 'flex h-[clamp(28px,1.9vw,32px)] w-[clamp(28px,1.9vw,32px)] items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
       : 'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none';
 
     return (
@@ -440,7 +440,7 @@ export const FullscreenDislikeButton = React.memo(
     };
 
     const buttonClass = compact
-      ? 'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
+      ? 'flex h-[clamp(28px,1.9vw,32px)] w-[clamp(28px,1.9vw,32px)] items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97]'
       : 'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:bg-white/[0.06] outline-none';
 
     return (

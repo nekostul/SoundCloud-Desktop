@@ -46,6 +46,17 @@ import {
 } from './lyricsData';
 import { PlainLyrics, StaticSyncedLyrics, SyncedLyricsWithPlaceholders } from './syncedLyrics';
 
+function getLyricsMiniPlayerTitleBaseSize() {
+  if (typeof window === 'undefined') return 18;
+
+  const width = window.visualViewport?.width ?? window.innerWidth;
+  const height = window.visualViewport?.height ?? window.innerHeight;
+  const viewportRatio = Math.min(width / 1720, height / 960);
+  const normalized = Math.max(0, Math.min(1, (viewportRatio - 0.76) / 0.24));
+
+  return Math.round((16 + normalized * 2) * 10) / 10;
+}
+
 const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const togglePlay = usePlayerStore((s) => s.togglePlay);
@@ -60,7 +71,7 @@ const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
   const prevLocked = useTrackSwitchCooldown(TRACK_SWITCH_PREV_SCOPE);
 
   const compactCtrl =
-    'flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97] disabled:cursor-default disabled:text-white/28';
+    'flex h-[clamp(28px,1.9vw,32px)] w-[clamp(28px,1.9vw,32px)] items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/58 transition-all duration-200 outline-none hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white active:scale-[0.97] disabled:cursor-default disabled:text-white/28';
   const compactAccentCtrl = (active: boolean) =>
     active ? `${compactCtrl} theme-accent-soft text-white/96 hover:text-white/96` : compactCtrl;
 
@@ -73,7 +84,7 @@ const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
   }, [track]);
 
   return (
-    <div className="flex items-center gap-2 pl-2.5">
+    <div className="flex items-center gap-[clamp(5px,0.45vw,8px)] pl-[clamp(6px,0.65vw,10px)]">
       <AddToPlaylistDialog trackUrn={track.urn}>
         <button type="button" className={compactCtrl}>
           <ListPlus size={16} />
@@ -93,7 +104,7 @@ const CompactLyricsDockTransport = React.memo(({ track }: { track: Track }) => {
       <button
         type="button"
         onClick={togglePlay}
-        className="flex h-12 w-12 items-center justify-center rounded-full bg-white text-black shadow-[0_14px_32px_rgba(255,255,255,0.16)] transition-all duration-200 hover:scale-[1.03] active:scale-[0.97] outline-none"
+        className="flex h-[clamp(42px,2.8vw,48px)] w-[clamp(42px,2.8vw,48px)] items-center justify-center rounded-full bg-white text-black shadow-[0_14px_32px_rgba(255,255,255,0.16)] transition-all duration-200 hover:scale-[1.03] active:scale-[0.97] outline-none"
       >
         {isPlaying ? pauseBlack18 : playBlack18}
       </button>
@@ -136,8 +147,13 @@ const LyricsMiniPlayerDock = ({
   const navigate = useNavigate();
   const controlsCollapsed = useSettingsStore((s) => s.lyricsMiniPlayerControlsCollapsed);
   const setControlsCollapsed = useSettingsStore((s) => s.setLyricsMiniPlayerControlsCollapsed);
+  const coverOnlyCollapsed = useSettingsStore((s) => s.lyricsMiniPlayerCoverOnlyCollapsed);
+  const setCoverOnlyCollapsed = useSettingsStore(
+    (s) => s.setLyricsMiniPlayerCoverOnlyCollapsed,
+  );
   const effectiveControlsCollapsed = forceCollapsed || controlsCollapsed;
   const dockRef = useRef<HTMLDivElement | null>(null);
+  const [titleBaseSize, setTitleBaseSize] = useState(getLyricsMiniPlayerTitleBaseSize);
   const [r, g, b] = color;
   const dockAnimationClass =
     closeAnimation === 'toMiniPlayer'
@@ -161,6 +177,49 @@ const LyricsMiniPlayerDock = ({
     },
     [openTrackPage],
   );
+  const handleToggleControlsCollapsed = useCallback(() => {
+    setCoverOnlyCollapsed(false);
+    setControlsCollapsed(!controlsCollapsed);
+  }, [controlsCollapsed, setControlsCollapsed, setCoverOnlyCollapsed]);
+  const handleExitCoverOnlyCollapsed = useCallback(() => {
+    setCoverOnlyCollapsed(false);
+    setControlsCollapsed(false);
+  }, [setControlsCollapsed, setCoverOnlyCollapsed]);
+  const handleToggleCoverOnlyCollapsed = useCallback(
+    (event: React.MouseEvent) => {
+      event.preventDefault();
+      if (controlsCollapsed) return;
+      setCoverOnlyCollapsed(true);
+      setControlsCollapsed(true);
+    },
+    [controlsCollapsed, setControlsCollapsed, setCoverOnlyCollapsed],
+  );
+
+  useEffect(() => {
+    let rafId: number | null = null;
+    const updateTitleBaseSize = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const nextTitleBaseSize = getLyricsMiniPlayerTitleBaseSize();
+        setTitleBaseSize((currentTitleBaseSize) =>
+          Math.abs(currentTitleBaseSize - nextTitleBaseSize) < 0.1
+            ? currentTitleBaseSize
+            : nextTitleBaseSize,
+        );
+      });
+    };
+
+    updateTitleBaseSize();
+    window.addEventListener('resize', updateTitleBaseSize);
+    window.visualViewport?.addEventListener('resize', updateTitleBaseSize);
+
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', updateTitleBaseSize);
+      window.visualViewport?.removeEventListener('resize', updateTitleBaseSize);
+    };
+  }, []);
 
   useEffect(() => {
     const blockLyricsScrollUnderMiniPlayer = (event: WheelEvent) => {
@@ -199,19 +258,74 @@ const LyricsMiniPlayerDock = ({
     <div
       ref={dockRef}
       data-lyrics-mini-player="true"
-      className={`lyrics-mini-player-dock ${dockAnimationClass}`}
+      className={`lyrics-mini-player-dock ${
+        coverOnlyCollapsed ? 'lyrics-mini-player-dock-cover-only' : ''
+      } ${dockAnimationClass}`}
       onWheel={(event) => {
         event.stopPropagation();
         if (event.cancelable) {
           event.preventDefault();
         }
       }}
-      style={{ width: 'min(420px, calc(100vw - 32px))' }}
+      style={{
+        width: coverOnlyCollapsed
+          ? 'clamp(116px, calc(7vw + 16px), 132px)'
+          : 'min(clamp(360px, 24.5vw, 420px), calc(100vw - 32px))',
+      }}
     >
       <div
-        className="lyrics-mini-player-shell group/lyrics-mini-player relative overflow-hidden rounded-[30px] border border-white/[0.12] bg-black/[0.28] p-4 text-white shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_0_1px_rgba(255,255,255,0.03)_inset]"
-        style={{ backdropFilter: 'blur(30px) saturate(1.38)' }}
+        className={`lyrics-mini-player-shell group/lyrics-mini-player relative overflow-hidden text-white ${
+          coverOnlyCollapsed
+            ? 'lyrics-mini-player-cover-shell flex items-center justify-start rounded-[clamp(22px,1.45vw,26px)] border border-white/[0.12] bg-black/[0.28] p-[7px] shadow-[0_20px_54px_rgba(0,0,0,0.42),0_0_0_1px_rgba(255,255,255,0.035)_inset]'
+            : 'rounded-[30px] border border-white/[0.12] bg-black/[0.28] p-4 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_0_1px_rgba(255,255,255,0.03)_inset]'
+        }`}
+        style={
+          coverOnlyCollapsed
+            ? {
+                backdropFilter: 'blur(28px) saturate(1.34)',
+              }
+            : {
+                backdropFilter: 'blur(30px) saturate(1.38)',
+                borderRadius: 'clamp(24px, 1.56vw, 30px)',
+                padding: 'clamp(12px, 0.95vw, 16px)',
+              }
+        }
       >
+        {coverOnlyCollapsed ? (
+          <>
+            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.09)_0%,rgba(255,255,255,0.035)_52%,rgba(255,255,255,0.018)_100%)]" />
+            <div
+              className="pointer-events-none absolute inset-0 opacity-80"
+              style={{
+                background: `radial-gradient(circle at 20% 82%, rgba(${r}, ${g}, ${b}, 0.24) 0%, transparent 58%)`,
+              }}
+            />
+            <div className="pointer-events-none absolute inset-px rounded-[clamp(21px,1.38vw,25px)] border border-white/[0.06]" />
+            <button
+              type="button"
+              onClick={handleExitCoverOnlyCollapsed}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              title={t('track.showMiniPlayerControls', 'Show controls')}
+              aria-label={t('track.showMiniPlayerControls', 'Show controls')}
+              className="absolute right-[clamp(9px,0.75vw,12px)] top-[clamp(9px,0.75vw,12px)] z-30 flex h-[clamp(24px,1.65vw,28px)] w-[clamp(24px,1.65vw,28px)] items-center justify-center rounded-full border border-white/[0.08] bg-black/[0.24] text-white/54 opacity-0 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-md transition-all duration-200 ease-[var(--ease-apple)] hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white/88 group-hover/lyrics-mini-player:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+            >
+              <ChevronUp size={14} />
+            </button>
+            <div className="lyrics-mini-player-cover-art relative z-10">
+              <LyricsMiniPlayerArtwork
+                track={track}
+                controlsCollapsed
+                coverOnly
+                hideArtwork={hideArtwork}
+                onOpenArtworkLightbox={onOpenArtworkLightbox}
+              />
+            </div>
+          </>
+        ) : (
+          <>
         <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0.035)_18%,rgba(255,255,255,0.015)_100%)]" />
         <div
           className="pointer-events-none absolute inset-0 opacity-85"
@@ -222,11 +336,15 @@ const LyricsMiniPlayerDock = ({
             `,
           }}
         />
-        <div className="pointer-events-none absolute inset-px rounded-[29px] border border-white/[0.06]" />
+        <div
+          className="pointer-events-none absolute inset-px rounded-[29px] border border-white/[0.06]"
+          style={{ borderRadius: 'calc(clamp(24px, 1.56vw, 30px) - 1px)' }}
+        />
         {!forceCollapsed ? (
           <button
             type="button"
-            onClick={() => setControlsCollapsed(!controlsCollapsed)}
+            onClick={handleToggleControlsCollapsed}
+            onContextMenu={handleToggleCoverOnlyCollapsed}
             title={
               controlsCollapsed
                 ? t('track.showMiniPlayerControls', 'Show controls')
@@ -237,14 +355,14 @@ const LyricsMiniPlayerDock = ({
                 ? t('track.showMiniPlayerControls', 'Show controls')
                 : t('track.hideMiniPlayerControls', 'Hide controls')
             }
-            className="absolute right-3 top-3 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-black/[0.24] text-white/54 opacity-0 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-md transition-all duration-200 ease-[var(--ease-apple)] hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white/88 focus-visible:opacity-100 focus-visible:outline-none group-hover/lyrics-mini-player:opacity-100"
+            className="absolute right-[clamp(9px,0.75vw,12px)] top-[clamp(9px,0.75vw,12px)] z-20 flex h-[clamp(24px,1.65vw,28px)] w-[clamp(24px,1.65vw,28px)] items-center justify-center rounded-full border border-white/[0.08] bg-black/[0.24] text-white/54 opacity-0 shadow-[0_8px_24px_rgba(0,0,0,0.18)] backdrop-blur-md transition-all duration-200 ease-[var(--ease-apple)] hover:border-white/[0.14] hover:bg-white/[0.08] hover:text-white/88 focus-visible:opacity-100 focus-visible:outline-none group-hover/lyrics-mini-player:opacity-100"
           >
             {controlsCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
         ) : null}
 
         <div className="lyrics-mini-player-content relative">
-          <div className="lyrics-mini-player-header flex items-start gap-4">
+          <div className="lyrics-mini-player-header flex items-start gap-[clamp(10px,0.9vw,16px)]">
             <LyricsMiniPlayerArtwork
               track={track}
               controlsCollapsed={effectiveControlsCollapsed}
@@ -255,8 +373,8 @@ const LyricsMiniPlayerDock = ({
             <div className="min-w-0 flex-1 pt-1">
               <AdaptiveTrackTitle
                 text={track.title}
-                baseSize={18}
-                minSize={14}
+                baseSize={titleBaseSize}
+                minSize={Math.max(12.5, titleBaseSize - 4)}
                 step={0.1}
                 role="link"
                 tabIndex={0}
@@ -267,7 +385,7 @@ const LyricsMiniPlayerDock = ({
               <button
                 type="button"
                 onClick={openArtistPage}
-                className="mt-1 block max-w-full truncate text-[13px] font-medium text-white/46 transition-colors hover:text-white/72 focus-visible:text-white/72 focus-visible:outline-none cursor-pointer"
+                className="mt-1 block max-w-full truncate text-[clamp(11px,0.78vw,13px)] font-medium text-white/46 transition-colors hover:text-white/72 focus-visible:text-white/72 focus-visible:outline-none cursor-pointer"
                 title={track.user.username}
               >
                 {track.user.username}
@@ -287,18 +405,20 @@ const LyricsMiniPlayerDock = ({
             className={`transition-[max-height,opacity,transform,margin] duration-300 ease-[var(--ease-apple)] ${
               effectiveControlsCollapsed
                 ? 'mt-0 max-h-0 translate-y-2 overflow-hidden opacity-0 pointer-events-none'
-                : 'mt-4 max-h-[180px] translate-y-0 overflow-visible opacity-100'
+                : 'mt-[clamp(12px,0.95vw,16px)] max-h-[180px] translate-y-0 overflow-visible opacity-100'
             }`}
           >
-            <div className="lyrics-mini-player-transport flex items-center justify-between gap-3">
+            <div className="lyrics-mini-player-transport flex items-center justify-between gap-[clamp(6px,0.7vw,12px)]">
               <CompactLyricsDockTransport track={track} />
             </div>
 
-            <div className="lyrics-mini-player-volume mt-4 rounded-[20px] border border-white/[0.06] bg-black/[0.16] px-6.5 py-2.5">
+            <div className="lyrics-mini-player-volume mt-[clamp(10px,0.85vw,16px)] rounded-[clamp(16px,1.05vw,20px)] border border-white/[0.06] bg-black/[0.16] px-[clamp(18px,1.55vw,26px)] py-[clamp(8px,0.65vw,10px)]">
               <FullscreenVolumeSlider />
             </div>
           </div>
         </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -308,17 +428,23 @@ const LyricsMiniPlayerArtwork = React.memo(
   ({
     track,
     controlsCollapsed,
+    coverOnly = false,
     hideArtwork,
     onOpenArtworkLightbox,
   }: {
     track: Track;
     controlsCollapsed: boolean;
+    coverOnly?: boolean;
     hideArtwork: boolean;
     onOpenArtworkLightbox: (sourceElement: HTMLElement | null) => void;
   }) => {
     const { t } = useTranslation();
     const isPlaying = usePlayerStore((s) => s.isPlaying);
     const togglePlay = usePlayerStore((s) => s.togglePlay);
+    const next = usePlayerStore((s) => s.next);
+    const prevTrack = usePlayerStore((s) => s.prev);
+    const nextLocked = useTrackSwitchCooldown(TRACK_SWITCH_NEXT_SCOPE);
+    const prevLocked = useTrackSwitchCooldown(TRACK_SWITCH_PREV_SCOPE);
     const previewArtSources = useMemo(
       () =>
         uniqueArtworkSources([
@@ -372,15 +498,22 @@ const LyricsMiniPlayerArtwork = React.memo(
 
     return (
       <div
-        className={`group/lyrics-mini-art relative h-[88px] w-[88px] shrink-0 overflow-hidden rounded-[24px] ring-1 ring-white/[0.1] shadow-[0_16px_36px_rgba(0,0,0,0.35)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-          controlsCollapsed ? '' : 'cursor-zoom-in hover:scale-[1.025]'
+        className={`group/lyrics-mini-art relative shrink-0 overflow-hidden rounded-[clamp(18px,1.25vw,24px)] ring-1 ring-white/[0.1] shadow-[0_16px_36px_rgba(0,0,0,0.35)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+          coverOnly
+            ? 'h-[clamp(100px,7vw,116px)] w-[clamp(100px,7vw,116px)]'
+            : 'h-[clamp(70px,5.2vw,88px)] w-[clamp(70px,5.2vw,88px)]'
+        } ${
+          controlsCollapsed || coverOnly ? '' : 'cursor-zoom-in hover:scale-[1.025]'
         }`}
       >
         {hasArtwork ? (
           <>
-            <div ref={artworkFrameRef} className="absolute inset-0 overflow-hidden rounded-[24px]">
+            <div
+              ref={artworkFrameRef}
+              className="absolute inset-0 overflow-hidden rounded-[clamp(18px,1.25vw,24px)]"
+            >
               {hideArtwork ? (
-                <div className="absolute inset-0 rounded-[24px] bg-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]" />
+                <div className="absolute inset-0 rounded-[clamp(18px,1.25vw,24px)] bg-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]" />
               ) : (
                 <>
                   <img
@@ -429,18 +562,47 @@ const LyricsMiniPlayerArtwork = React.memo(
           </div>
         )}
         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0)_45%,rgba(0,0,0,0.14)_100%)]" />
-        {controlsCollapsed && (
+        {coverOnly ? (
+          <div className="absolute inset-0 z-10 flex items-center justify-center gap-1 bg-black/0 opacity-0 transition-all duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-art:bg-black/[0.22] group-hover/lyrics-mini-art:opacity-100">
+            <button
+              type="button"
+              onClick={prevTrack}
+              disabled={prevLocked}
+              aria-label="Previous"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black/34 text-white/88 shadow-[0_10px_26px_rgba(0,0,0,0.24)] backdrop-blur-md transition-all duration-200 hover:bg-white/18 hover:text-white active:scale-[0.96] disabled:text-white/28"
+            >
+              <SkipBack size={14} fill="currentColor" />
+            </button>
+            <button
+              type="button"
+              onClick={togglePlay}
+              aria-label={isPlaying ? 'Pause' : 'Play'}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/94 text-black shadow-[0_12px_30px_rgba(0,0,0,0.26)] transition-all duration-200 hover:scale-[1.03] active:scale-[0.97]"
+            >
+              {isPlaying ? pauseBlack18 : playBlack18}
+            </button>
+            <button
+              type="button"
+              onClick={next}
+              disabled={nextLocked}
+              aria-label="Next"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black/34 text-white/88 shadow-[0_10px_26px_rgba(0,0,0,0.24)] backdrop-blur-md transition-all duration-200 hover:bg-white/18 hover:text-white active:scale-[0.96] disabled:text-white/28"
+            >
+              <SkipForward size={14} fill="currentColor" />
+            </button>
+          </div>
+        ) : controlsCollapsed ? (
           <button
             type="button"
             onClick={togglePlay}
             aria-label={isPlaying ? 'Pause' : 'Play'}
             className="absolute inset-0 z-10 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-player:bg-black/[0.18] group-hover/lyrics-mini-player:opacity-100 focus-visible:bg-black/[0.18] focus-visible:opacity-100 focus-visible:outline-none"
           >
-            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/92 text-black shadow-[0_12px_28px_rgba(0,0,0,0.24)] transition-transform duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-player:scale-100 scale-[0.92]">
+            <span className="flex h-[clamp(34px,2.35vw,40px)] w-[clamp(34px,2.35vw,40px)] items-center justify-center rounded-full bg-white/92 text-black shadow-[0_12px_28px_rgba(0,0,0,0.24)] transition-transform duration-200 ease-[var(--ease-apple)] group-hover/lyrics-mini-player:scale-100 scale-[0.92]">
               {isPlaying ? pauseBlack18 : playBlack18}
             </span>
           </button>
-        )}
+        ) : null}
         {!controlsCollapsed && !hideArtwork && (
           <button
             type="button"
@@ -448,7 +610,7 @@ const LyricsMiniPlayerArtwork = React.memo(
             aria-label={t('track.viewArtwork', 'View')}
             className="absolute inset-0 z-10 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/lyrics-mini-art:bg-black/[0.18] group-hover/lyrics-mini-art:opacity-100 focus-visible:bg-black/[0.18] focus-visible:opacity-100 focus-visible:outline-none"
           >
-            <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/18 bg-white/[0.16] text-white/92 shadow-[0_14px_36px_rgba(0,0,0,0.26)] backdrop-blur-md transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] scale-[0.9] group-hover/lyrics-mini-art:scale-100">
+            <span className="flex h-[clamp(34px,2.35vw,40px)] w-[clamp(34px,2.35vw,40px)] items-center justify-center rounded-full border border-white/18 bg-white/[0.16] text-white/92 shadow-[0_14px_36px_rgba(0,0,0,0.26)] backdrop-blur-md transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] scale-[0.9] group-hover/lyrics-mini-art:scale-100">
               <Eye size={16} />
             </span>
           </button>
