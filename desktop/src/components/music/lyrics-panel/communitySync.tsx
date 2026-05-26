@@ -545,6 +545,7 @@ export const CommunitySyncEditor = React.memo(
     onSeekLine,
     onUpdateTimestamp,
     onUpdatePlainLyrics,
+    onReset,
     onCancel,
     t,
   }: {
@@ -558,11 +559,13 @@ export const CommunitySyncEditor = React.memo(
     onSeekLine: (index: number) => void;
     onUpdateTimestamp: (index: number, nextTime: number) => void;
     onUpdatePlainLyrics: (plainLyrics: string) => void;
+    onReset: () => void;
     onCancel: () => void;
     t: TFunction;
   }) => {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const [textEditorOpen, setTextEditorOpen] = useState(false);
+    const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
     const [textEditorValue, setTextEditorValue] = useState(session.plainLyrics);
     const syncedCount = session.lines.filter((line) => typeof line.time === 'number').length;
     const canPublish = isCommunitySyncSessionComplete(session);
@@ -582,6 +585,11 @@ export const CommunitySyncEditor = React.memo(
       onUpdatePlainLyrics(textEditorValue);
       setTextEditorOpen(false);
     }, [onUpdatePlainLyrics, textEditorValue]);
+
+    const confirmReset = useCallback(() => {
+      onReset();
+      setResetConfirmOpen(false);
+    }, [onReset]);
 
     useEffect(() => {
       const container = containerRef.current;
@@ -727,6 +735,14 @@ export const CommunitySyncEditor = React.memo(
               </button>
               <button
                 type="button"
+                onClick={() => setResetConfirmOpen(true)}
+                disabled={syncedCount === 0}
+                className="inline-flex h-10 items-center rounded-full border border-white/[0.08] bg-white/[0.04] px-4 text-[12px] font-medium text-white/62 transition-all duration-200 hover:border-white/[0.12] hover:bg-white/[0.08] hover:text-white disabled:cursor-default disabled:opacity-38"
+              >
+                {t('track.communitySyncRestart', 'Начать заново')}
+              </button>
+              <button
+                type="button"
                 onClick={onInsertPause}
                 disabled={seekPending}
                 className="inline-flex h-10 items-center rounded-full border border-white/[0.08] bg-white/[0.05] px-4 text-[12px] font-medium text-white/66 transition-all duration-200 hover:border-white/[0.12] hover:bg-white/[0.09] hover:text-white disabled:cursor-default disabled:opacity-42"
@@ -786,6 +802,8 @@ export const CommunitySyncEditor = React.memo(
                 onClick={() => setTextEditorOpen(false)}
               >
                 <div
+                  role="dialog"
+                  aria-modal="true"
                   className="flex h-[min(82vh,720px)] w-[min(92vw,720px)] flex-col rounded-[28px] border border-white/[0.08] bg-[rgba(12,12,16,0.88)] p-5 shadow-[0_42px_160px_rgba(0,0,0,0.64)] backdrop-blur-[30px]"
                   onClick={(event) => event.stopPropagation()}
                 >
@@ -826,6 +844,48 @@ export const CommunitySyncEditor = React.memo(
                       className="inline-flex h-10 items-center rounded-full border border-white/[0.1] bg-white/[0.12] px-5 text-[12px] font-semibold text-white shadow-[0_14px_40px_rgba(255,255,255,0.08)] transition-all duration-200 hover:border-white/[0.16] hover:bg-white/[0.18] hover:shadow-[0_0_26px_rgba(255,255,255,0.12)]"
                     >
                       {t('common.save', 'Сохранить')}
+                    </button>
+                  </div>
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
+        {resetConfirmOpen && typeof document !== 'undefined'
+          ? createPortal(
+              <div
+                className="fixed inset-0 z-[96] flex items-center justify-center bg-black/72 backdrop-blur-[18px]"
+                onClick={() => setResetConfirmOpen(false)}
+              >
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  className="w-[min(92vw,460px)] rounded-[30px] border border-white/[0.08] bg-[rgba(12,12,16,0.88)] px-6 py-6 shadow-[0_42px_160px_rgba(0,0,0,0.64)] backdrop-blur-[30px] animate-fade-in-up"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="text-[18px] font-semibold text-white/90">
+                    {t('track.communitySyncRestartConfirmTitle', 'Начать заново?')}
+                  </div>
+                  <div className="mt-3 text-[13px] leading-6 text-white/54">
+                    {t(
+                      'track.communitySyncRestartConfirmText',
+                      'Это очистит все синхронизированные строчки. Текст останется, но тайминги нужно будет поставить заново.',
+                    )}
+                  </div>
+                  <div className="mt-6 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setResetConfirmOpen(false)}
+                      className="inline-flex h-10 items-center rounded-full border border-white/[0.08] bg-white/[0.04] px-4 text-[12px] font-medium text-white/62 transition-all duration-200 hover:border-white/[0.12] hover:bg-white/[0.08] hover:text-white"
+                    >
+                      {t('common.no', 'Нет')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={confirmReset}
+                      className="inline-flex h-10 items-center rounded-full border border-white/[0.1] bg-white/[0.12] px-5 text-[12px] font-semibold text-white shadow-[0_14px_40px_rgba(255,255,255,0.08)] transition-all duration-200 hover:border-white/[0.16] hover:bg-white/[0.18] hover:shadow-[0_0_26px_rgba(255,255,255,0.12)]"
+                    >
+                      {t('common.yes', 'Да')}
                     </button>
                   </div>
                 </div>
@@ -876,6 +936,8 @@ export const CommunitySyncPublishConfirm = React.memo(
         onClick={pending ? undefined : onClose}
       >
         <div
+          role="dialog"
+          aria-modal="true"
           className="w-[min(92vw,560px)] rounded-[30px] border border-white/[0.08] bg-[rgba(12,12,16,0.82)] px-6 py-6 shadow-[0_42px_160px_rgba(0,0,0,0.64)] backdrop-blur-[30px] animate-fade-in-up"
           onClick={(event) => event.stopPropagation()}
         >

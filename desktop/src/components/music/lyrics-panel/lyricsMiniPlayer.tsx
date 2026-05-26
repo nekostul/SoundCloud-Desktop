@@ -284,10 +284,10 @@ const LyricsMiniPlayerDock = ({
           </div>
 
           <div
-            className={`overflow-hidden transition-[max-height,opacity,transform,margin] duration-300 ease-[var(--ease-apple)] ${
+            className={`transition-[max-height,opacity,transform,margin] duration-300 ease-[var(--ease-apple)] ${
               effectiveControlsCollapsed
-                ? 'mt-0 max-h-0 translate-y-2 opacity-0 pointer-events-none'
-                : 'mt-4 max-h-[180px] translate-y-0 opacity-100'
+                ? 'mt-0 max-h-0 translate-y-2 overflow-hidden opacity-0 pointer-events-none'
+                : 'mt-4 max-h-[180px] translate-y-0 overflow-visible opacity-100'
             }`}
           >
             <div className="lyrics-mini-player-transport flex items-center justify-between gap-3">

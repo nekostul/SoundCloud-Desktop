@@ -97,6 +97,20 @@ const COMMUNITY_SYNC_SEEK_HOLD_MS = 9000;
 const COMMUNITY_SYNC_SEEK_MIN_HOLD_MS = 700;
 const COMMUNITY_SYNC_SEEK_LAND_EPSILON_SEC = 0.75;
 
+function buildLocalLyricsResultFromCommunitySession(session: CommunitySyncSession): LyricsResult {
+  const synced = session.lines.flatMap((line) =>
+    typeof line.time === 'number'
+      ? [{ time: line.time, text: line.kind === 'pause' ? '' : line.text }]
+      : [],
+  );
+
+  return {
+    plain: session.plainLyrics,
+    synced: synced.length > 0 ? synced : null,
+    source: 'local',
+  };
+}
+
 type CommunitySyncSeekHold = {
   trackUrn: string | null;
   time: number;
@@ -1136,6 +1150,37 @@ const FullscreenPanels = React.memo(() => {
     setCommunitySyncStage('sync');
   }, []);
 
+  const applyCommunityLyricsResult = useCallback(
+    (trackUrnForLyrics: string, result: LyricsResult, extraQueries: LyricsSearchQuery[] = []) => {
+      setCommunityLyricsOverrideByTrack((current) => ({
+        ...current,
+        [trackUrnForLyrics]: result,
+      }));
+
+      if (trackUrnForLyrics === trackUrn && activeManualQuery) {
+        manualLyricsRef.current.set(trackUrnForLyrics, {
+          ...activeManualQuery,
+          lyrics: result,
+        });
+      } else {
+        autoLyricsRef.current.set(trackUrnForLyrics, result);
+      }
+
+      const queries = [{ artist: reqArtist, title: reqTitle }, ...extraQueries];
+      for (const query of queries) {
+        queryClient.setQueryData(
+          ['lyrics', LYRICS_SEARCH_QUERY_VERSION, trackUrnForLyrics, query.artist, query.title],
+          result,
+        );
+      }
+
+      void saveLyricsResultToCache(trackUrnForLyrics, result).catch((error) => {
+        console.error('Failed to save community lyrics cache', error);
+      });
+    },
+    [activeManualQuery, queryClient, reqArtist, reqTitle, trackUrn],
+  );
+
   const persistCommunitySyncDraft = useCallback(
     (session: CommunitySyncSession) => {
       if (!communitySyncTrackMeta) return;
@@ -1151,6 +1196,15 @@ const FullscreenPanels = React.memo(() => {
       });
     },
     [communitySyncTrackMeta, removeCommunityDraft, saveCommunityDraft],
+  );
+
+  const persistCommunitySyncSessionEdit = useCallback(
+    (session: CommunitySyncSession) => {
+      persistCommunitySyncDraft(session);
+      if (!trackUrn || session.source !== 'local') return;
+      applyCommunityLyricsResult(trackUrn, buildLocalLyricsResultFromCommunitySession(session));
+    },
+    [applyCommunityLyricsResult, persistCommunitySyncDraft, trackUrn],
   );
 
   const handleCommunitySyncLine = useCallback(() => {
@@ -1184,8 +1238,12 @@ const FullscreenPanels = React.memo(() => {
 
     communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
-    persistCommunitySyncDraft(nextSession);
-  }, [getCommunitySyncTimestampSource, isCommunitySyncSeekBlocked, persistCommunitySyncDraft]);
+    persistCommunitySyncSessionEdit(nextSession);
+  }, [
+    getCommunitySyncTimestampSource,
+    isCommunitySyncSeekBlocked,
+    persistCommunitySyncSessionEdit,
+  ]);
 
   const handleCommunitySyncUndo = useCallback(() => {
     if (isCommunitySyncSeekBlocked()) return;
@@ -1233,9 +1291,9 @@ const FullscreenPanels = React.memo(() => {
 
     communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
-    persistCommunitySyncDraft(nextSession);
+    persistCommunitySyncSessionEdit(nextSession);
     seekCommunitySyncPlayback(restoreTime, nextSession.activeIndex);
-  }, [isCommunitySyncSeekBlocked, persistCommunitySyncDraft, seekCommunitySyncPlayback]);
+  }, [isCommunitySyncSeekBlocked, persistCommunitySyncSessionEdit, seekCommunitySyncPlayback]);
 
   const handleCommunitySyncInsertPause = useCallback(() => {
     if (isCommunitySyncSeekBlocked()) return;
@@ -1265,8 +1323,12 @@ const FullscreenPanels = React.memo(() => {
 
     communitySyncSessionRef.current = nextSession;
     setCommunitySyncSession(nextSession);
-    persistCommunitySyncDraft(nextSession);
-  }, [getCommunitySyncTimestampSource, isCommunitySyncSeekBlocked, persistCommunitySyncDraft]);
+    persistCommunitySyncSessionEdit(nextSession);
+  }, [
+    getCommunitySyncTimestampSource,
+    isCommunitySyncSeekBlocked,
+    persistCommunitySyncSessionEdit,
+  ]);
 
   const handleCommunityTimestampCommit = useCallback(
     (index: number, nextTime: number) => {
@@ -1294,9 +1356,9 @@ const FullscreenPanels = React.memo(() => {
 
       communitySyncSessionRef.current = nextSession;
       setCommunitySyncSession(nextSession);
-      persistCommunitySyncDraft(nextSession);
+      persistCommunitySyncSessionEdit(nextSession);
     },
-    [persistCommunitySyncDraft],
+    [persistCommunitySyncSessionEdit],
   );
 
   const handleCommunitySyncSeekLine = useCallback(
@@ -1332,37 +1394,6 @@ const FullscreenPanels = React.memo(() => {
     setCommunitySyncStage('confirm');
   }, [communitySyncTrackMeta]);
 
-  const applyCommunityLyricsResult = useCallback(
-    (trackUrnForLyrics: string, result: LyricsResult, extraQueries: LyricsSearchQuery[] = []) => {
-      setCommunityLyricsOverrideByTrack((current) => ({
-        ...current,
-        [trackUrnForLyrics]: result,
-      }));
-
-      if (trackUrnForLyrics === trackUrn && activeManualQuery) {
-        manualLyricsRef.current.set(trackUrnForLyrics, {
-          ...activeManualQuery,
-          lyrics: result,
-        });
-      } else {
-        autoLyricsRef.current.set(trackUrnForLyrics, result);
-      }
-
-      const queries = [{ artist: reqArtist, title: reqTitle }, ...extraQueries];
-      for (const query of queries) {
-        queryClient.setQueryData(
-          ['lyrics', LYRICS_SEARCH_QUERY_VERSION, trackUrnForLyrics, query.artist, query.title],
-          result,
-        );
-      }
-
-      void saveLyricsResultToCache(trackUrnForLyrics, result).catch((error) => {
-        console.error('Failed to save community lyrics cache', error);
-      });
-    },
-    [activeManualQuery, queryClient, reqArtist, reqTitle, trackUrn],
-  );
-
   const handleCommunityPlainLyricsUpdate = useCallback(
     (plainLyrics: string) => {
       const currentSession = communitySyncSessionRef.current;
@@ -1378,36 +1409,45 @@ const FullscreenPanels = React.memo(() => {
 
       const nextSession: CommunitySyncSession = {
         ...nextSessionBase,
+        source: 'local',
         activeIndex: getCommunitySyncPlaybackIndex(
           nextSessionBase.lines,
           getCommunitySyncTimestampSource(),
           nextSessionBase.activeIndex,
         ),
       };
-      const synced = nextSession.lines.flatMap((line) =>
-        typeof line.time === 'number'
-          ? [{ time: line.time, text: line.kind === 'pause' ? '' : line.text }]
-          : [],
-      );
-      const localLyrics: LyricsResult = {
-        plain: nextSession.plainLyrics,
-        synced: synced.length > 0 ? synced : null,
-        source: 'local',
-      };
 
       communitySyncSessionRef.current = nextSession;
       setCommunitySyncSession(nextSession);
-      persistCommunitySyncDraft(nextSession);
-      applyCommunityLyricsResult(trackUrn, localLyrics);
+      persistCommunitySyncSessionEdit(nextSession);
     },
-    [
-      applyCommunityLyricsResult,
-      getCommunitySyncTimestampSource,
-      persistCommunitySyncDraft,
-      t,
-      trackUrn,
-    ],
+    [getCommunitySyncTimestampSource, persistCommunitySyncSessionEdit, t, trackUrn],
   );
+
+  const handleCommunitySyncReset = useCallback(() => {
+    const currentSession = communitySyncSessionRef.current;
+    if (!currentSession) return;
+
+    const nextLines = currentSession.lines
+      .filter((line) => line.kind === 'lyric')
+      .map((line) => ({
+        kind: 'lyric' as const,
+        text: line.text,
+        time: null,
+      }));
+    if (nextLines.length === 0) return;
+
+    const nextSession: CommunitySyncSession = {
+      ...currentSession,
+      lines: nextLines,
+      activeIndex: -1,
+    };
+
+    communitySyncSeekHoldRef.current = null;
+    communitySyncSessionRef.current = nextSession;
+    setCommunitySyncSession(nextSession);
+    persistCommunitySyncSessionEdit(nextSession);
+  }, [persistCommunitySyncSessionEdit]);
 
   const handleCommunityPublishConfirm = useCallback(async () => {
     const currentSession = communitySyncSessionRef.current;
@@ -1963,6 +2003,7 @@ const FullscreenPanels = React.memo(() => {
                     onSeekLine={handleCommunitySyncSeekLine}
                     onUpdateTimestamp={handleCommunityTimestampCommit}
                     onUpdatePlainLyrics={handleCommunityPlainLyricsUpdate}
+                    onReset={handleCommunitySyncReset}
                     onCancel={closeCommunitySyncWithoutSave}
                     t={t}
                   />

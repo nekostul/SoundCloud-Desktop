@@ -20,8 +20,8 @@ const MAX_GENIUS_CANDIDATE_PAGES = 2;
 const MAX_GENIUS_FALLBACK_ATTEMPTS = 2;
 const MAX_ACCEPTED_DURATION_DELTA_SEC = 2.25;
 // Bump to drop stale cache entries after lyrics search pipeline changes.
-const LYRICS_SEARCH_CACHE_VERSION = 22;
-export const LYRICS_SEARCH_QUERY_VERSION = 23;
+const LYRICS_SEARCH_CACHE_VERSION = 25;
+export const LYRICS_SEARCH_QUERY_VERSION = 26;
 const LYRIC_PAUSE_MARKER = '♪♪♪';
 const PAUSE_SECTION_LINE_REGEX =
   /^(?:instrumental|interlude|solo|guitar solo|drum solo|проигрыш|проигрыши|инструментал|соло)(?:\s+(?:x|х|×)?\d+)?$/iu;
@@ -128,6 +128,8 @@ const EXTRA_TITLE_NOISE_PATTERNS = [
   /\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b/g,
   /\b\d{4}[-./]\d{1,2}[-./]\d{1,2}\b/g,
   /\*+$/g,
+  /\*?\s*music(?:\s+video)?\s+in\s+description\b/gi,
+  /\bin\s+description\b/gi,
   /\b(?:official\s+)?(?:audio|video|lyrics?\s+video|visualizer|lyric\s+video)\b/gi,
   /\bofficial\b/gi,
   /\blyrics?\b/gi,
@@ -1966,10 +1968,15 @@ type LrclibEntry = {
   duration?: number;
 };
 
+function hasLrclibSyncedLyrics(entry: LrclibEntry): boolean {
+  return Boolean(entry.syncedLyrics && parseLRC(entry.syncedLyrics).length > 0);
+}
+
 function toResultLrclib(entry: LrclibEntry): LyricsResult | null {
   const plain = entry.plainLyrics || null;
   const parsedSynced = entry.syncedLyrics ? parseLRC(entry.syncedLyrics) : null;
   const synced = parsedSynced && parsedSynced.length > 0 ? parsedSynced : null;
+  if (!synced) return null;
   return normalizeLyricsResult({ plain, synced, source: 'lrclib' });
 }
 
@@ -2626,6 +2633,72 @@ function transliterateCyrillicToLatin(value: string): string {
     .join('');
 }
 
+const LATIN_TO_CYRILLIC_TRANSLIT_CHUNKS: Array<[string, string]> = [
+  ['shch', 'щ'],
+  ['sch', 'щ'],
+  ['yo', 'ё'],
+  ['jo', 'ё'],
+  ['yu', 'ю'],
+  ['ju', 'ю'],
+  ['ya', 'я'],
+  ['ja', 'я'],
+  ['ye', 'е'],
+  ['je', 'е'],
+  ['zh', 'ж'],
+  ['kh', 'х'],
+  ['ch', 'ч'],
+  ['sh', 'ш'],
+  ['ts', 'ц'],
+  ['a', 'а'],
+  ['b', 'б'],
+  ['v', 'в'],
+  ['g', 'г'],
+  ['d', 'д'],
+  ['e', 'е'],
+  ['z', 'з'],
+  ['i', 'и'],
+  ['j', 'й'],
+  ['k', 'к'],
+  ['l', 'л'],
+  ['m', 'м'],
+  ['n', 'н'],
+  ['o', 'о'],
+  ['p', 'п'],
+  ['r', 'р'],
+  ['s', 'с'],
+  ['t', 'т'],
+  ['u', 'у'],
+  ['f', 'ф'],
+  ['h', 'х'],
+  ['c', 'к'],
+  ['y', 'ы'],
+];
+
+function transliterateLatinToCyrillic(value: string): string | null {
+  const raw = String(value || '').trim();
+  if (!raw || /[а-яё]/iu.test(raw) || !/[a-z]/i.test(raw)) return null;
+
+  let output = '';
+  let index = 0;
+  while (index < raw.length) {
+    const rest = raw.slice(index).toLowerCase();
+    const chunk = LATIN_TO_CYRILLIC_TRANSLIT_CHUNKS.find(([latin]) => rest.startsWith(latin));
+    if (chunk) {
+      output += chunk[1];
+      index += chunk[0].length;
+      continue;
+    }
+
+    output += raw[index];
+    index += 1;
+  }
+
+  const normalized = output.replace(/\s+/g, ' ').trim();
+  return normalized && normalizeSearchText(normalized) !== normalizeSearchText(raw)
+    ? normalized
+    : null;
+}
+
 function softenLatinVariant(value: string): string {
   return normalizeSearchText(value)
     .replace(/shch/g, 'sch')
@@ -2705,6 +2778,65 @@ function collectUploadStyleTitleHints(value: string | null | undefined): string[
   return hints;
 }
 
+function collectFeaturedTitleBaseHints(value: string | null | undefined): string[] {
+  const hints: string[] = [];
+  const seen = new Set<string>();
+  const push = (next: string) => {
+    const trimmed = String(next || '').trim();
+    const normalized = normalizeSearchText(trimmed);
+    if (!normalized || seen.has(normalized) || isNoiseTitleHint(trimmed)) return;
+    seen.add(normalized);
+    hints.push(trimmed);
+  };
+
+  const raw = String(value || '').trim();
+  if (!raw) return hints;
+
+  for (const source of [raw, stripBrackets(raw), cleanLoose(raw), stripBrackets(cleanLoose(raw))]) {
+    const cleaned = stripSoundCloudGarbage(stripNoise(source)).replace(/\s+/g, ' ').trim();
+    if (!cleaned) continue;
+
+    const featureMatch = cleaned.match(
+      /^(.+?)\s*(?:\+|feat\.?|featuring|ft\.?)\s*[\p{L}\p{N}_][\p{L}\p{N}_ .-]*$/iu,
+    );
+    if (featureMatch?.[1]) push(featureMatch[1]);
+  }
+
+  return hints;
+}
+
+function collectLatinToCyrillicTitleHints(values: Array<string | null | undefined>): string[] {
+  const hints: string[] = [];
+  const seen = new Set<string>();
+  const push = (next: string | null | undefined) => {
+    const transliterated = transliterateLatinToCyrillic(String(next || ''));
+    const normalized = normalizeSearchText(transliterated || '');
+    if (
+      !transliterated ||
+      !normalized ||
+      seen.has(normalized) ||
+      isNoiseTitleHint(transliterated)
+    ) {
+      return;
+    }
+    seen.add(normalized);
+    hints.push(transliterated);
+  };
+
+  for (const value of values) {
+    const raw = String(value || '').trim();
+    if (!raw) continue;
+
+    push(raw);
+    push(stripBrackets(raw));
+    push(cleanLoose(raw));
+    push(stripBrackets(cleanLoose(raw)));
+    for (const baseHint of collectFeaturedTitleBaseHints(raw)) push(baseHint);
+  }
+
+  return hints;
+}
+
 function collectLooseTitleOnlyCandidates(values: Array<string | null | undefined>): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();
@@ -2728,6 +2860,8 @@ function collectLooseTitleOnlyCandidates(values: Array<string | null | undefined
       cleanLoose(raw),
       stripDecorative(cleanLoose(raw)),
       stripBrackets(cleanLoose(raw)),
+      ...collectFeaturedTitleBaseHints(raw),
+      ...collectLatinToCyrillicTitleHints([raw]),
       ...collectStylizedTextVariants(raw),
       ...collectUploadStyleTitleHints(value),
       ...collectParentheticalTitleHints(value),
@@ -3560,6 +3694,23 @@ function collectLrclibSearchAttempts(
     profile.originalTitle;
   const canonicalArtistWithoutAliases = stripBrackets(artist);
   const canonicalTitleWithoutTranslation = stripBrackets(title);
+  const focusedTitleHints = Array.from(
+    new Map(
+      [
+        ...collectFeaturedTitleBaseHints(title),
+        ...collectFeaturedTitleBaseHints(profile.requestedTitle),
+        ...collectFeaturedTitleBaseHints(profile.originalTitle),
+        ...collectLatinToCyrillicTitleHints([
+          title,
+          profile.requestedTitle,
+          profile.originalTitle,
+          originalUploadTitle,
+        ]),
+      ]
+        .filter(Boolean)
+        .map((hint) => [normalizeSearchText(hint), hint] as const),
+    ).values(),
+  );
   const titleSeeds = [
     extractProbableTrackTitle(title),
     extractProbableTrackTitle(profile.requestedTitle),
@@ -3575,6 +3726,9 @@ function collectLrclibSearchAttempts(
   pushStrict(artist, title);
   pushStrict(canonicalArtistWithoutAliases, canonicalTitleWithoutTranslation);
   pushStrict(canonicalArtistWithoutAliases, originalUploadTitle);
+  for (const focusedTitleHint of focusedTitleHints.slice(0, 3)) {
+    pushStrict(canonicalArtistWithoutAliases || artist, focusedTitleHint);
+  }
   pushStrict(
     extractProbableCanonicalArtist(artist, title) ?? artist,
     canonicalTitleWithoutTranslation || title,
@@ -3646,11 +3800,58 @@ function pickExactLrclibUploadCandidate(
   );
 }
 
+async function lrclibFetchExact(
+  params: Record<string, string>,
+  signal: AbortSignal,
+): Promise<LyricsResult | null> {
+  if (!params.artist_name || !params.track_name) return null;
+
+  try {
+    const url = `${LRCLIB_API}/get?${new URLSearchParams(params)}`;
+    logLyricsPipeline('LRCLIB exact fetch', { params });
+    const entry = await requestJson<LrclibEntry>(url, signal);
+    logLyricsPipeline('LRCLIB exact response', {
+      params,
+      artistName: entry?.artistName ?? null,
+      trackName: entry?.trackName ?? null,
+      duration: entry?.duration ?? null,
+      hasPlain: Boolean(entry?.plainLyrics),
+      hasSynced: Boolean(entry?.syncedLyrics),
+    });
+
+    if (
+      entry &&
+      isCompatibleLrclibArtistQuery(entry.artistName, params.artist_name) &&
+      isSameLrclibQueryPart(entry.trackName, params.track_name)
+    ) {
+      if (!hasLrclibSyncedLyrics(entry)) {
+        logLyricsPipeline('LRCLIB exact plain-only result ignored', {
+          params,
+          artistName: entry.artistName,
+          trackName: entry.trackName,
+        });
+        return null;
+      }
+      return toResultLrclib(entry);
+    }
+  } catch (error) {
+    logLyricsPipeline('LRCLIB exact fetch failed', {
+      params,
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    });
+  }
+
+  return null;
+}
+
 async function lrclibFetch(
   params: Record<string, string>,
   profile: LyricsSearchProfile,
   signal: AbortSignal,
 ): Promise<LyricsResult | null> {
+  const exactResult = await lrclibFetchExact(params, signal);
+  if (exactResult) return exactResult;
+
   try {
     const url = `${LRCLIB_API}/search?${new URLSearchParams(params)}`;
     logLyricsPipeline('LRCLIB fetch', { params });
@@ -3670,7 +3871,17 @@ async function lrclibFetch(
     });
     if (!data?.length) return null;
 
-    const exactUploadMatch = pickExactLrclibUploadCandidate(data, params);
+    const syncedData = data.filter(hasLrclibSyncedLyrics);
+    if (syncedData.length !== data.length) {
+      logLyricsPipeline('LRCLIB plain-only results ignored', {
+        params,
+        ignored: data.length - syncedData.length,
+        remaining: syncedData.length,
+      });
+    }
+    if (!syncedData.length) return null;
+
+    const exactUploadMatch = pickExactLrclibUploadCandidate(syncedData, params);
     if (exactUploadMatch) {
       logLyricsPipeline('LRCLIB exact upload match accepted', {
         params,
@@ -3681,7 +3892,7 @@ async function lrclibFetch(
       return toResultLrclib(exactUploadMatch);
     }
 
-    const best = pickBestLyricsCandidate(data, profile, (entry) => ({
+    const best = pickBestLyricsCandidate(syncedData, profile, (entry) => ({
       artist: entry.artistName,
       title: entry.trackName,
       extraText: entry.albumName,

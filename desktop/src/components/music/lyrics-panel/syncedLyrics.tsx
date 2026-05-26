@@ -324,6 +324,11 @@ setIntroExitProgress(
   const activeTime = getActiveLyricTime(time);
   const visualTime = getSmoothLyricTime();
   const currentLines = linesRef.current;
+  const isPauseLine = (line: (typeof currentLines)[number] | undefined) => {
+    if (!line) return false;
+    const text = line.text.trim();
+    return text.length === 0 || text === PAUSE_MARKER || text === '...';
+  };
 
   const idx = findActiveIndex(currentLines, activeTime);
   const prev = activeRef.current;
@@ -331,19 +336,24 @@ setIntroExitProgress(
 if (idx !== activeRef.current) {
   activeRef.current = idx;
   setActiveIndex(idx);
+  applyStates(idx, prev);
 
         if (idx >= 0 && idx < lineEls.length) {
           const el = lineEls[idx];
-      const top = getCenteredLyricScrollTop(container, el, centerOffsetRatio);
       const now = performance.now();
 
           if (!manualScrollDetachedRef.current) {
             const start = container.scrollTop;
-            const target = top;
+            const shouldTrackLayoutShift =
+              isPauseLine(currentLines[prev]) ||
+              isPauseLine(currentLines[idx]) ||
+              isPauseLine(currentLines[idx - 1]);
+            const trackLayoutShiftUntil = shouldTrackLayoutShift ? now + 820 : 0;
             cancelAutoScrollAnimation();
             const autoScrollToken = autoScrollTokenRef.current;
 
             let current = start;
+            let lastTarget = getCenteredLyricScrollTop(container, el, centerOffsetRatio);
 
             const animateScroll = () => {
               if (
@@ -354,11 +364,18 @@ if (idx !== activeRef.current) {
                 return;
               }
 
+              const target = getCenteredLyricScrollTop(container, el, centerOffsetRatio);
+              const targetChanged = Math.abs(target - lastTarget) > 0.5;
+              lastTarget = target;
               current += (target - current) * 0.085;
 
               container.scrollTop = current;
 
-              if (Math.abs(target - current) > 0.5) {
+              if (
+                Math.abs(target - current) > 0.5 ||
+                (shouldTrackLayoutShift && performance.now() < trackLayoutShiftUntil) ||
+                targetChanged
+              ) {
                 autoScrollRafRef.current = requestAnimationFrame(animateScroll);
               } else {
                 autoScrollRafRef.current = null;
@@ -373,8 +390,6 @@ if (idx !== activeRef.current) {
           cancelAutoScrollAnimation();
           container.scrollTo({ top: 0, behavior: 'auto' });
         }
-
-    applyStates(idx, prev);
   }
 
   if (idx !== -1) {
@@ -1008,6 +1023,11 @@ const tick = (ts: number) => {
   const currentLines = linesRef.current;
   const currentFeatures = getCurrentFeatures();
   const flooredFeatures = buildFlooredFeatures(currentFeatures);
+  const isPauseLine = (line: (typeof currentLines)[number] | undefined) => {
+    if (!line) return false;
+    const text = line.text.trim();
+    return text.length === 0 || text === PAUSE_MARKER || text === '...';
+  };
 
   const idx = findActiveIndex(currentLines, activeTime);
   const prev = activeRef.current;
@@ -1016,19 +1036,24 @@ const tick = (ts: number) => {
     activeRef.current = idx;
     lineActivatedAtRef.current = visualTime;
     visualProgressRef.current = 0;
+    applyVisualStates(idx, prev);
 
     if (idx >= 0 && idx < lineEls.length) {
       const el = lineEls[idx];
-      const top = getCenteredLyricScrollTop(container, el);
       const now = performance.now();
 
       if (!manualScrollDetachedRef.current) {
         const start = container.scrollTop;
-        const target = top;
+        const shouldTrackLayoutShift =
+          isPauseLine(currentLines[prev]) ||
+          isPauseLine(currentLines[idx]) ||
+          isPauseLine(currentLines[idx - 1]);
+        const trackLayoutShiftUntil = shouldTrackLayoutShift ? now + 820 : 0;
         cancelAutoScrollAnimation();
         const autoScrollToken = autoScrollTokenRef.current;
 
         let current = start;
+        let lastTarget = getCenteredLyricScrollTop(container, el);
 
         const animateScroll = () => {
           if (
@@ -1039,11 +1064,18 @@ const tick = (ts: number) => {
             return;
           }
 
+          const target = getCenteredLyricScrollTop(container, el);
+          const targetChanged = Math.abs(target - lastTarget) > 0.5;
+          lastTarget = target;
           current += (target - current) * 0.085;
 
           container.scrollTop = current;
 
-          if (Math.abs(target - current) > 0.5) {
+          if (
+            Math.abs(target - current) > 0.5 ||
+            (shouldTrackLayoutShift && performance.now() < trackLayoutShiftUntil) ||
+            targetChanged
+          ) {
             autoScrollRafRef.current = requestAnimationFrame(animateScroll);
           } else {
             autoScrollRafRef.current = null;
@@ -1058,8 +1090,6 @@ const tick = (ts: number) => {
       cancelAutoScrollAnimation();
       container.scrollTo({ top: 0, behavior: 'auto' });
     }
-
-    applyVisualStates(idx, prev);
   }
 
   

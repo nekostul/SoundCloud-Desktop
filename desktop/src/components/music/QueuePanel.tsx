@@ -313,6 +313,8 @@ export const QueuePanel = React.memo(
           aria-hidden={!open}
         >
           <div
+            role="dialog"
+            aria-modal="true"
             className={`pointer-events-auto relative flex h-full w-[368px] max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-[30px] border border-white/[0.08] transition-all duration-[360ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${
               open
                 ? 'translate-x-0 scale-100 opacity-100'

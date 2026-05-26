@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import type { LyricsSource } from '../../../lib/lyrics';
 import { Loader2, X } from '../../../lib/icons';
+import type { LyricsSource } from '../../../lib/lyrics';
 import { SOURCE_LABELS } from './sourceLabels';
 
 export const LyricsSearchModal = React.memo(
@@ -45,6 +45,8 @@ export const LyricsSearchModal = React.memo(
             onClick={onClose}
           >
             <div
+              role="dialog"
+              aria-modal="true"
               className="relative w-[min(560px,calc(100vw-3rem))] rounded-[28px] border border-white/10 bg-[#101012]/98 p-8 shadow-[0_32px_128px_rgba(0,0,0,0.8)] animate-zoom-in"
               onClick={(e) => e.stopPropagation()}
             >
@@ -122,4 +124,3 @@ export const LyricsSearchModal = React.memo(
       : null;
   },
 );
-

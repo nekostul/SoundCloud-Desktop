@@ -198,8 +198,87 @@ type RootWindow = Window & {
 // React StrictMode doubles mounts/effects in dev and tanks WebKitGTK FPS in tauri dev.
 const useStrictMode = !(import.meta.env.DEV && isTauriRuntime());
 
+const MODAL_DRAG_CONTENT_SELECTOR = [
+  '[role="dialog"]',
+  '[aria-modal="true"]',
+  '.dialog-content',
+  '[data-modal-content="true"]',
+].join(',');
+
+function getModalDragContent(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null;
+  const content = target.closest<HTMLElement>(MODAL_DRAG_CONTENT_SELECTOR);
+  if (!content || content === document.body || content === document.documentElement) return null;
+  return content;
+}
+
+function useModalDragDismissGuard() {
+  useEffect(() => {
+    let pointerStartContent: HTMLElement | null = null;
+    let clearTimer: number | null = null;
+
+    const clearPointerStart = () => {
+      pointerStartContent = null;
+      if (clearTimer !== null) {
+        window.clearTimeout(clearTimer);
+        clearTimer = null;
+      }
+    };
+
+    const scheduleClearPointerStart = () => {
+      if (clearTimer !== null) window.clearTimeout(clearTimer);
+      clearTimer = window.setTimeout(clearPointerStart, 0);
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      if (clearTimer !== null) {
+        window.clearTimeout(clearTimer);
+        clearTimer = null;
+      }
+      pointerStartContent = getModalDragContent(event.target);
+    };
+
+    const handlePointerUp = () => {
+      if (pointerStartContent) scheduleClearPointerStart();
+    };
+
+    const handleClick = (event: MouseEvent) => {
+      if (!pointerStartContent) return;
+      if (!pointerStartContent.isConnected) {
+        clearPointerStart();
+        return;
+      }
+
+      const clickedInsideStartContent =
+        event.target instanceof Node && pointerStartContent.contains(event.target);
+      if (!clickedInsideStartContent) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+      }
+
+      clearPointerStart();
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown, true);
+    window.addEventListener('pointerup', handlePointerUp, true);
+    window.addEventListener('pointercancel', clearPointerStart, true);
+    window.addEventListener('click', handleClick, true);
+
+    return () => {
+      clearPointerStart();
+      window.removeEventListener('pointerdown', handlePointerDown, true);
+      window.removeEventListener('pointerup', handlePointerUp, true);
+      window.removeEventListener('pointercancel', clearPointerStart, true);
+      window.removeEventListener('click', handleClick, true);
+    };
+  }, []);
+}
+
 function AppRoot({ children }: { children: React.ReactNode }) {
-  return useStrictMode ? <React.StrictMode>{children}</React.StrictMode> : <>{children}</>;
+  useModalDragDismissGuard();
+  return useStrictMode ? <React.StrictMode>{children}</React.StrictMode> : children;
 }
 
 function clearDevPerformanceTimeline() {
