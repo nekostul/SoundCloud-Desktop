@@ -465,8 +465,10 @@ export const FullscreenVolumeSlider = React.memo(() => {
 
   return (
     <div
+      data-lyrics-mini-player-volume="true"
       className="flex w-full max-w-[320px] items-center gap-2 group/vol"
-      onWheel={(event) => {
+      onWheelCapture={(event) => {
+        event.stopPropagation();
         if (event.cancelable) {
           event.preventDefault();
         }

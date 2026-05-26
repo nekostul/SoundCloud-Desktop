@@ -137,6 +137,7 @@ const LyricsMiniPlayerDock = ({
   const controlsCollapsed = useSettingsStore((s) => s.lyricsMiniPlayerControlsCollapsed);
   const setControlsCollapsed = useSettingsStore((s) => s.setLyricsMiniPlayerControlsCollapsed);
   const effectiveControlsCollapsed = forceCollapsed || controlsCollapsed;
+  const dockRef = useRef<HTMLDivElement | null>(null);
   const [r, g, b] = color;
   const dockAnimationClass =
     closeAnimation === 'toMiniPlayer'
@@ -161,9 +162,50 @@ const LyricsMiniPlayerDock = ({
     [openTrackPage],
   );
 
+  useEffect(() => {
+    const blockLyricsScrollUnderMiniPlayer = (event: WheelEvent) => {
+      const dock = dockRef.current;
+      if (!dock) return;
+
+      const rect = dock.getBoundingClientRect();
+      const isOverDock =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+      if (!isOverDock) return;
+
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest('[data-lyrics-mini-player-volume="true"]')) {
+        event.stopPropagation();
+      }
+    };
+
+    window.addEventListener('wheel', blockLyricsScrollUnderMiniPlayer, {
+      capture: true,
+      passive: false,
+    });
+
+    return () => {
+      window.removeEventListener('wheel', blockLyricsScrollUnderMiniPlayer, true);
+    };
+  }, []);
+
   return (
     <div
+      ref={dockRef}
+      data-lyrics-mini-player="true"
       className={`lyrics-mini-player-dock ${dockAnimationClass}`}
+      onWheel={(event) => {
+        event.stopPropagation();
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+      }}
       style={{ width: 'min(420px, calc(100vw - 32px))' }}
     >
       <div

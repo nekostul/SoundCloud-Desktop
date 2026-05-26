@@ -13,15 +13,15 @@ const ENABLE_QWEN_ASR = false;
 const ENABLE_KROKO_ASR = false;
 const DEV_LYRICS_DEBUG = import.meta.env.DEV;
 const LYRICS_MISS_CACHE_TTL_MS = 10 * 60 * 1000;
-const MAX_LRCLIB_QUERY_ATTEMPTS = 4;
+const MAX_LRCLIB_QUERY_ATTEMPTS = 8;
 const MAX_LRCLIB_TITLE_ONLY_ATTEMPTS = 3;
 const MAX_GENIUS_QUERIES = 2;
 const MAX_GENIUS_CANDIDATE_PAGES = 2;
 const MAX_GENIUS_FALLBACK_ATTEMPTS = 2;
 const MAX_ACCEPTED_DURATION_DELTA_SEC = 2.25;
-// Bump to drop stale cache entries after bounded LRCLIB/Genius search changes.
-const LYRICS_SEARCH_CACHE_VERSION = 17;
-export const LYRICS_SEARCH_QUERY_VERSION = 18;
+// Bump to drop stale cache entries after lyrics search pipeline changes.
+const LYRICS_SEARCH_CACHE_VERSION = 22;
+export const LYRICS_SEARCH_QUERY_VERSION = 23;
 const LYRIC_PAUSE_MARKER = '♪♪♪';
 const PAUSE_SECTION_LINE_REGEX =
   /^(?:instrumental|interlude|solo|guitar solo|drum solo|проигрыш|проигрыши|инструментал|соло)(?:\s+(?:x|х|×)?\d+)?$/iu;
@@ -140,6 +140,19 @@ function logLyricsDebug(message: string, details?: unknown) {
     return;
   }
   console.log(`[Lyrics] ${message}`, details);
+}
+
+function logLyricsPipeline(message: string, details?: unknown) {
+  const line = details === undefined ? message : `${message} ${JSON.stringify(details)}`;
+  if (details === undefined) {
+    console.log(`[LyricsPipeline] ${message}`);
+  } else {
+    console.log(`[LyricsPipeline] ${message}`, details);
+  }
+
+  if (isTauriRuntime()) {
+    void invoke('lyrics_pipeline_log', { message: line }).catch(() => {});
+  }
 }
 
 function warnLyricsDebug(message: string, details?: unknown) {
@@ -963,14 +976,21 @@ function extractGeniusLyricsFromHtml(html: string): string | null {
 
 async function requestText(url: string, signal?: AbortSignal): Promise<string> {
   const isGeniusRequest = /^https:\/\/(?:www\.)?genius\.com\//i.test(url);
-  const headers = isGeniusRequest
-    ? {
-        Accept: 'text/html,application/json;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-        'User-Agent':
-          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
-      }
-    : undefined;
+  const isLrclibRequest = /^https:\/\/lrclib\.net\/api\//i.test(url);
+  let headers: Record<string, string> | undefined;
+  if (isGeniusRequest) {
+    headers = {
+      Accept: 'text/html,application/json;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+      'User-Agent':
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+    };
+  } else if (isLrclibRequest) {
+    headers = {
+      Accept: 'application/json,*/*;q=0.8',
+      'Lrclib-Client': 'SoundCloud Desktop',
+    };
+  }
   if (isTauriRuntime()) {
     return await fetchMediaText(url, {
       accept: headers?.Accept,
@@ -2041,6 +2061,123 @@ function stripSoundCloudGarbage(value: string): string {
     .trim();
 }
 
+const SOUNDCLOUD_TITLE_SUFFIX_PATTERNS = [
+  /\s*(?:\(|\[).*$/u,
+  /\s+(?:prod\.?|produced)(?:\s+by)?\b.*$/iu,
+  /\s+(?:beat|type\s+beat|mixed|mastered|recorded|written|shot|directed|edit(?:ed)?|remix(?:ed)?)(?:\s+by)\b.*$/iu,
+  /\s*[-\u2013\u2014|/\\]+\s*(?:prod\.?|produced|beat|type\s+beat|snippet|demo|preview|free\s*download|free\s*dl|out\s+now|official|lyrics?|visualizer|audio|video)\b.*$/iu,
+  /\s+\b(?:snippet|demo|preview|free\s*download|free\s*dl|out\s+now)\b.*$/iu,
+];
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripSoundCloudTitleSuffixes(value: string): string {
+  let next = String(value || '').trim();
+  if (!next) return '';
+
+  for (const pattern of SOUNDCLOUD_TITLE_SUFFIX_PATTERNS) {
+    next = next.replace(pattern, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  return next;
+}
+
+function removeArtistDuplicateFromTitle(title: string, artist: string): string {
+  const rawTitle = String(title || '').trim();
+  const rawArtist = String(artist || '').trim();
+  if (!rawTitle || !rawArtist) return rawTitle;
+
+  const directPattern = new RegExp(
+    `^\\s*${escapeRegExp(rawArtist)}\\s*(?:[-\\u2013\\u2014:|/\\\\]+\\s*)?`,
+    'iu',
+  );
+  const direct = rawTitle.replace(directPattern, '').replace(/\s+/g, ' ').trim();
+  if (direct && normalizeSearchText(direct) !== normalizeSearchText(rawTitle)) {
+    return direct;
+  }
+
+  const titleTokens = tokenizeSearchText(rawTitle);
+  const artistTokens = tokenizeSearchText(rawArtist);
+  if (
+    artistTokens.length > 0 &&
+    titleTokens.length > artistTokens.length &&
+    artistTokens.every((token, index) => titleTokens[index] === token)
+  ) {
+    return titleTokens.slice(artistTokens.length).join(' ');
+  }
+
+  return rawTitle;
+}
+
+function cleanupSoundCloudArtistPart(value: string): string {
+  const raw = stripAsciiControlCharacters(String(value || ''))
+    .normalize('NFKC')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!raw) return '';
+
+  return stripSoundCloudGarbage(
+    stripBrackets(cleanLoose(normalizeUnderscores(stripDecorative(raw)))),
+  )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cleanupSoundCloudTitlePart(title: string, artist: string): string {
+  const raw = stripAsciiControlCharacters(String(title || ''))
+    .normalize('NFKC')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!raw) return '';
+
+  let cleaned = stripDecorative(normalizeUnderscores(raw));
+  cleaned = stripSoundCloudTitleSuffixes(cleaned);
+  cleaned = stripSoundCloudGarbage(cleaned);
+  cleaned = cleanLoose(cleaned);
+  cleaned = stripSoundCloudTitleSuffixes(cleaned);
+  cleaned = stripBrackets(cleaned);
+  cleaned = removeArtistDuplicateFromTitle(cleaned, artist);
+
+  return cleaned.replace(/\s+/g, ' ').trim();
+}
+
+function cleanupSoundCloudLyricsQuery(
+  artist: string,
+  title: string,
+  originalTitle: string,
+  uploaderUsername: string,
+): { artist: string; title: string } | null {
+  const rawTitle = String(title || originalTitle || '').trim();
+  if (!rawTitle) return null;
+
+  const parsedTitle = splitArtistTitle(rawTitle) ?? splitArtistTitle(originalTitle);
+  const artistSeed = parsedTitle?.[0] || artist || uploaderUsername;
+  const titleSeed = parsedTitle?.[1] || rawTitle;
+  const cleanedArtist =
+    cleanupSoundCloudArtistPart(artistSeed) ||
+    cleanupSoundCloudArtistPart(artist) ||
+    cleanupSoundCloudArtistPart(uploaderUsername);
+  const cleanedTitle =
+    cleanupSoundCloudTitlePart(titleSeed, cleanedArtist || artistSeed) ||
+    extractProbableTrackTitle(titleSeed) ||
+    stripBrackets(titleSeed);
+
+  if (!cleanedTitle) return null;
+
+  const normalizedInput = `${normalizeSearchText(artistSeed)}::${normalizeSearchText(titleSeed)}`;
+  const normalizedCleaned = `${normalizeSearchText(cleanedArtist || artistSeed)}::${normalizeSearchText(cleanedTitle)}`;
+  if (normalizedCleaned === normalizedInput) return null;
+
+  return {
+    artist: cleanedArtist || artistSeed,
+    title: cleanedTitle,
+  };
+}
+
 function normalizeLrclibQueryPart(value: string): string {
   const raw = stripAsciiControlCharacters(String(value || ''))
     .normalize('NFKC')
@@ -2050,7 +2187,7 @@ function normalizeLrclibQueryPart(value: string): string {
   if (!raw) return '';
 
   const cleaned = cleanLoose(stripSoundCloudGarbage(normalizeUnderscores(stripDecorative(raw))));
-  const dedupedCleaned = dedupeAdjacentSearchTokens(cleaned);
+  const dedupedCleaned = dedupeAdjacentQueryTokens(cleaned);
   if (dedupedCleaned) return dedupedCleaned;
 
   const fallback = stripSoundCloudGarbage(normalizeUnderscores(raw)).replace(/\s+/g, ' ').trim();
@@ -2313,6 +2450,21 @@ function dedupeAdjacentSearchTokens(value: string): string {
   const deduped: string[] = [];
   for (const token of tokens) {
     if (deduped[deduped.length - 1] === token) continue;
+    deduped.push(token);
+  }
+  return deduped.join(' ');
+}
+
+function dedupeAdjacentQueryTokens(value: string): string {
+  const tokens = String(value || '')
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length <= 1) return tokens.join(' ');
+
+  const deduped: string[] = [];
+  for (const token of tokens) {
+    const previous = deduped[deduped.length - 1];
+    if (previous && normalizeSearchText(previous) === normalizeSearchText(token)) continue;
     deduped.push(token);
   }
   return deduped.join(' ');
@@ -3400,6 +3552,14 @@ function collectLrclibSearchAttempts(
     if (!normalizedTitle) return;
     push('title', { track_name: normalizedTitle });
   };
+  const parsedOriginalTitle = splitArtistTitle(profile.originalTitle);
+  const originalUploadArtist = parsedOriginalTitle?.[0] || profile.uploaderUsername;
+  const originalUploadTitle =
+    parsedOriginalTitle?.[1] ||
+    extractProbableTrackTitle(profile.originalTitle) ||
+    profile.originalTitle;
+  const canonicalArtistWithoutAliases = stripBrackets(artist);
+  const canonicalTitleWithoutTranslation = stripBrackets(title);
   const titleSeeds = [
     extractProbableTrackTitle(title),
     extractProbableTrackTitle(profile.requestedTitle),
@@ -3413,7 +3573,13 @@ function collectLrclibSearchAttempts(
   ].filter((value): value is string => Boolean(value?.trim()));
 
   pushStrict(artist, title);
-  pushStrict(extractProbableCanonicalArtist(artist, title) ?? artist, title);
+  pushStrict(canonicalArtistWithoutAliases, canonicalTitleWithoutTranslation);
+  pushStrict(canonicalArtistWithoutAliases, originalUploadTitle);
+  pushStrict(
+    extractProbableCanonicalArtist(artist, title) ?? artist,
+    canonicalTitleWithoutTranslation || title,
+  );
+  pushStrict(originalUploadArtist, originalUploadTitle);
 
   const seenTitleKeys = new Set<string>();
   for (const titleCandidate of titleSeeds) {
@@ -3427,6 +3593,59 @@ function collectLrclibSearchAttempts(
   return attempts.slice(0, MAX_LRCLIB_QUERY_ATTEMPTS);
 }
 
+function isSameLrclibQueryPart(left: string | null | undefined, right: string | null | undefined) {
+  const normalizedLeft = normalizeSearchText(normalizeLrclibQueryPart(String(left || '')));
+  const normalizedRight = normalizeSearchText(normalizeLrclibQueryPart(String(right || '')));
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+function isCompatibleLrclibArtistQuery(
+  candidate: string | null | undefined,
+  query: string | null | undefined,
+) {
+  const normalizedCandidate = normalizeSearchText(
+    normalizeLrclibQueryPart(String(candidate || '')),
+  );
+  const normalizedQuery = normalizeSearchText(normalizeLrclibQueryPart(String(query || '')));
+  if (!normalizedCandidate || !normalizedQuery) return false;
+  if (normalizedCandidate === normalizedQuery) return true;
+
+  const canUseSubstring = Math.min(normalizedCandidate.length, normalizedQuery.length) >= 4;
+  if (
+    canUseSubstring &&
+    (normalizedCandidate.includes(normalizedQuery) || normalizedQuery.includes(normalizedCandidate))
+  ) {
+    return true;
+  }
+
+  const candidateParts = String(candidate || '')
+    .split(/\s*(?:,|&|\+|\/|\\|\bx\b|\bfeat\.?\b|\bfeaturing\b|\bft\.?\b)\s*/iu)
+    .map((part) => normalizeSearchText(normalizeLrclibQueryPart(part)))
+    .filter(Boolean);
+
+  return candidateParts.some(
+    (part) =>
+      part === normalizedQuery ||
+      (Math.min(part.length, normalizedQuery.length) >= 4 &&
+        (part.includes(normalizedQuery) || normalizedQuery.includes(part))),
+  );
+}
+
+function pickExactLrclibUploadCandidate(
+  entries: LrclibEntry[],
+  params: Record<string, string>,
+): LrclibEntry | null {
+  if (!params.artist_name || !params.track_name) return null;
+
+  return (
+    entries.find(
+      (entry) =>
+        isCompatibleLrclibArtistQuery(entry.artistName, params.artist_name) &&
+        isSameLrclibQueryPart(entry.trackName, params.track_name),
+    ) ?? null
+  );
+}
+
 async function lrclibFetch(
   params: Record<string, string>,
   profile: LyricsSearchProfile,
@@ -3434,16 +3653,60 @@ async function lrclibFetch(
 ): Promise<LyricsResult | null> {
   try {
     const url = `${LRCLIB_API}/search?${new URLSearchParams(params)}`;
+    logLyricsPipeline('LRCLIB fetch', { params });
     const data = await requestJson<LrclibEntry[]>(url, signal);
+    logLyricsPipeline('LRCLIB response', {
+      params,
+      count: data?.length ?? 0,
+      first: data?.[0]
+        ? {
+            artistName: data[0].artistName,
+            trackName: data[0].trackName,
+            duration: data[0].duration,
+            hasPlain: Boolean(data[0].plainLyrics),
+            hasSynced: Boolean(data[0].syncedLyrics),
+          }
+        : null,
+    });
     if (!data?.length) return null;
+
+    const exactUploadMatch = pickExactLrclibUploadCandidate(data, params);
+    if (exactUploadMatch) {
+      logLyricsPipeline('LRCLIB exact upload match accepted', {
+        params,
+        artistName: exactUploadMatch.artistName,
+        trackName: exactUploadMatch.trackName,
+        duration: exactUploadMatch.duration,
+      });
+      return toResultLrclib(exactUploadMatch);
+    }
+
     const best = pickBestLyricsCandidate(data, profile, (entry) => ({
       artist: entry.artistName,
       title: entry.trackName,
       extraText: entry.albumName,
       durationSec: entry.duration,
     }));
+    logLyricsPipeline(best ? 'LRCLIB ranked match accepted' : 'LRCLIB ranked match rejected', {
+      params,
+      requestedArtist: profile.requestedArtist,
+      requestedTitle: profile.requestedTitle,
+      originalTitle: profile.originalTitle,
+      uploaderUsername: profile.uploaderUsername,
+      best: best
+        ? {
+            artistName: best.artistName,
+            trackName: best.trackName,
+            duration: best.duration,
+          }
+        : null,
+    });
     return best ? toResultLrclib(best) : null;
-  } catch {
+  } catch (error) {
+    logLyricsPipeline('LRCLIB fetch failed', {
+      params,
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    });
     return null;
   }
 }
@@ -3462,6 +3725,15 @@ async function searchLrclib(
   };
 
   for (const attempt of collectLrclibSearchAttempts(artist, title, profile)) {
+    logLyricsPipeline('LRCLIB attempt', {
+      stage: attempt.stage,
+      params: attempt.params,
+      syncedOnly,
+      requestedArtist: profile.requestedArtist,
+      requestedTitle: profile.requestedTitle,
+      originalTitle: profile.originalTitle,
+      uploaderUsername: profile.uploaderUsername,
+    });
     const result = await tryFetch(attempt.params);
     if (result) {
       logLyricsDebug('LRCLIB match accepted', {
@@ -3528,12 +3800,35 @@ function isAcceptedGeniusCandidate(
   return scored.titleScore >= 0.58;
 }
 
-async function searchGenius(
+type GeniusTrackMatch = {
+  artist: string;
+  lyrics: LyricsResult | null;
+  title: string;
+  url: string;
+};
+
+function buildGeniusTrackMatch(
+  candidate: GeniusSearchCandidate,
+  plainLyrics: string,
+): GeniusTrackMatch {
+  return {
+    artist: candidate.artist,
+    lyrics: normalizeLyricsResult({
+      plain: normalizeGeniusPlainLyrics(plainLyrics),
+      synced: null,
+      source: 'genius',
+    }),
+    title: candidate.title,
+    url: candidate.url,
+  };
+}
+
+async function searchGeniusTrack(
   artist: string,
   title: string,
   signal: AbortSignal,
   options: LyricsSearchOptions = {},
-): Promise<LyricsResult | null> {
+): Promise<GeniusTrackMatch | null> {
   try {
     const profile = buildLyricsSearchProfile(artist, title, {
       ...options,
@@ -3548,14 +3843,7 @@ async function searchGenius(
           if (!pageCandidate || !isAcceptedGeniusCandidate(profile, pageCandidate)) {
             continue;
           }
-          const result = normalizeLyricsResult({
-            plain: normalizeGeniusPlainLyrics(extractGeniusLyricsFromHtml(html) || ''),
-            synced: null,
-            source: 'genius',
-          });
-          if (result) {
-            return result;
-          }
+          return buildGeniusTrackMatch(pageCandidate, extractGeniusLyricsFromHtml(html) || '');
         } catch {
           // try next direct slug candidate
         }
@@ -3602,19 +3890,15 @@ async function searchGenius(
       isAcceptedGeniusCandidate(profile, candidate),
     );
 
+    let metadataOnlyMatch: GeniusTrackMatch | null = null;
     for (const candidate of acceptedCandidates.slice(0, MAX_GENIUS_CANDIDATE_PAGES)) {
       const html = await requestText(candidate.url, signal);
-      const result = normalizeLyricsResult({
-        plain: normalizeGeniusPlainLyrics(extractGeniusLyricsFromHtml(html) || ''),
-        synced: null,
-        source: 'genius',
-      });
-      if (result) {
-        return result;
-      }
+      const match = buildGeniusTrackMatch(candidate, extractGeniusLyricsFromHtml(html) || '');
+      if (match.lyrics) return match;
+      metadataOnlyMatch ??= match;
     }
 
-    return candidatesByUrl.size === 0 ? await tryDirectUrls() : null;
+    return metadataOnlyMatch ?? (candidatesByUrl.size === 0 ? await tryDirectUrls() : null);
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       return null;
@@ -3978,6 +4262,12 @@ export async function searchLyrics(
     }
 
     const saveMatchedLyrics = async (result: LyricsResult) => {
+      logLyricsPipeline('saving lyrics result', {
+        trackUrn,
+        source: result.source,
+        hasPlain: Boolean(result.plain),
+        hasSynced: Boolean(result.synced?.length),
+      });
       lyricsMissCache.delete(missCacheKey);
       await saveLyricsToCache(trackUrn, {
         ...result,
@@ -4004,56 +4294,125 @@ export async function searchLyrics(
       stripBrackets(originalTitle) ||
       requestedTitle ||
       originalTitle;
-    const lrclibTitle = requestedTitle || originalTitle || canonicalTitle;
 
-    if (lrclibTitle) {
-      const profile = buildLyricsSearchProfile(canonicalArtist, lrclibTitle, {
+    const runLyricsSearchPipeline = async (
+      artist: string,
+      title: string,
+      stage: 'initial' | 'cleanup',
+    ): Promise<{ lyrics: LyricsResult | null; geniusFallback: LyricsResult | null }> => {
+      const attemptArtist = String(artist || '').trim();
+      const attemptTitle = String(title || '').trim();
+      if (!attemptTitle) return { lyrics: null, geniusFallback: null };
+
+      logLyricsDebug('trying Genius metadata match for lyrics search', {
+        trackUrn,
+        artist: attemptArtist,
+        title: attemptTitle,
+        stage,
+      });
+
+      const geniusMatch = await searchGeniusTrack(attemptArtist, attemptTitle, sig, {
         ...options,
         uploaderUsername,
         originalTitle,
       });
-      const lrclibResult = await searchLrclib(canonicalArtist, lrclibTitle, profile, sig);
-      if (lrclibResult) {
-        logLyricsDebug('resolved lyrics via bounded LRCLIB search', {
-          trackUrn,
-          artist: canonicalArtist,
-          title: lrclibTitle,
-        });
-        return await saveMatchedLyrics(lrclibResult);
-      }
-    }
+      logLyricsPipeline('Genius metadata result', {
+        stage,
+        requestedArtist: attemptArtist,
+        requestedTitle: attemptTitle,
+        found: Boolean(geniusMatch),
+        artist: geniusMatch?.artist ?? null,
+        title: geniusMatch?.title ?? null,
+        hasLyrics: Boolean(geniusMatch?.lyrics),
+        url: geniusMatch?.url ?? null,
+      });
 
-    const geniusAttempts: Array<{ artist: string; title: string }> = [];
-    const seenGeniusAttempts = new Set<string>();
-    const pushGeniusAttempt = (artist: string, title: string) => {
+      const lrclibArtist = geniusMatch?.artist?.trim() || attemptArtist;
+      const lrclibTitle = geniusMatch?.title?.trim() || attemptTitle;
+      const profile = buildLyricsSearchProfile(lrclibArtist, lrclibTitle, {
+        ...options,
+        uploaderUsername,
+        originalTitle: stage === 'cleanup' ? attemptTitle : originalTitle,
+      });
+
+      const lrclibResult = await searchLrclib(lrclibArtist, lrclibTitle, profile, sig);
+      if (lrclibResult) {
+        logLyricsDebug('resolved lyrics via LRCLIB after Genius metadata search', {
+          trackUrn,
+          artist: lrclibArtist,
+          title: lrclibTitle,
+          stage,
+        });
+        return { lyrics: await saveMatchedLyrics(lrclibResult), geniusFallback: null };
+      }
+
+      if (geniusMatch?.lyrics) {
+        logLyricsDebug('keeping Genius lyrics as fallback after LRCLIB miss', {
+          trackUrn,
+          artist: geniusMatch.artist,
+          title: geniusMatch.title,
+          stage,
+        });
+      }
+
+      return { lyrics: null, geniusFallback: geniusMatch?.lyrics ?? null };
+    };
+
+    const pipelineAttempts: Array<{ artist: string; title: string; stage: 'initial' | 'cleanup' }> =
+      [];
+    const seenPipelineAttempts = new Set<string>();
+    const pushPipelineAttempt = (artist: string, title: string, stage: 'initial' | 'cleanup') => {
       const trimmedArtist = String(artist || '').trim();
       const trimmedTitle = String(title || '').trim();
       if (!trimmedTitle) return;
       const key = `${normalizeSearchText(trimmedArtist)}::${normalizeSearchText(trimmedTitle) || normalizeSymbolicSearchText(trimmedTitle)}`;
-      if (!key || seenGeniusAttempts.has(key)) return;
-      seenGeniusAttempts.add(key);
-      geniusAttempts.push({ artist: trimmedArtist, title: trimmedTitle });
+      if (!key || seenPipelineAttempts.has(key)) return;
+      seenPipelineAttempts.add(key);
+      pipelineAttempts.push({ artist: trimmedArtist, title: trimmedTitle, stage });
     };
 
-    pushGeniusAttempt(canonicalArtist, canonicalTitle);
-    if (parsedRequested) pushGeniusAttempt(parsedRequested[0], parsedRequested[1]);
-    if (parsedOriginal) pushGeniusAttempt(parsedOriginal[0], parsedOriginal[1]);
-    if (canonicalTitle !== requestedTitle) pushGeniusAttempt(requestedArtist, canonicalTitle);
+    pushPipelineAttempt(canonicalArtist, canonicalTitle, 'initial');
+    if (parsedRequested) pushPipelineAttempt(parsedRequested[0], parsedRequested[1], 'initial');
+    if (parsedOriginal) pushPipelineAttempt(parsedOriginal[0], parsedOriginal[1], 'initial');
+    if (canonicalTitle !== requestedTitle) {
+      pushPipelineAttempt(requestedArtist, canonicalTitle, 'initial');
+    }
 
-    for (const attempt of geniusAttempts.slice(0, MAX_GENIUS_FALLBACK_ATTEMPTS)) {
-      logLyricsDebug('trying targeted Genius after bounded LRCLIB miss', {
+    let geniusFallback: LyricsResult | null = null;
+    for (const attempt of pipelineAttempts.slice(0, MAX_GENIUS_FALLBACK_ATTEMPTS)) {
+      const result = await runLyricsSearchPipeline(attempt.artist, attempt.title, attempt.stage);
+      if (result.lyrics) return result.lyrics;
+      geniusFallback ??= result.geniusFallback;
+    }
+
+    const cleanedQuery = cleanupSoundCloudLyricsQuery(
+      requestedArtist,
+      requestedTitle,
+      originalTitle,
+      uploaderUsername,
+    );
+    if (cleanedQuery) {
+      logLyricsDebug('retrying lyrics search with cleaned SoundCloud title', {
         trackUrn,
-        artist: attempt.artist,
-        title: attempt.title,
+        artist: cleanedQuery.artist,
+        title: cleanedQuery.title,
       });
-      const res = await searchGenius(attempt.artist, attempt.title, sig, {
-        ...options,
-        uploaderUsername,
-        originalTitle,
+      const result = await runLyricsSearchPipeline(
+        cleanedQuery.artist,
+        cleanedQuery.title,
+        'cleanup',
+      );
+      if (result.lyrics) return result.lyrics;
+      geniusFallback ??= result.geniusFallback;
+    }
+
+    if (geniusFallback) {
+      logLyricsDebug('resolved lyrics via Genius after LRCLIB cleanup miss', {
+        trackUrn,
+        requestedArtist,
+        requestedTitle,
       });
-      if (res) {
-        return await saveMatchedLyrics(res);
-      }
+      return await saveMatchedLyrics(geniusFallback);
     }
 
     const descriptionLyrics = normalizeDescriptionLyricsText(options.description || '');

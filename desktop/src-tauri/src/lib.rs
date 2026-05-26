@@ -548,6 +548,11 @@ fn save_framerate_config(app: tauri::AppHandle, target: u32, unlocked: bool) {
     audio_player::set_framerate_config(&state, config.target, config.unlocked);
 }
 
+#[tauri::command]
+fn lyrics_pipeline_log(message: String) {
+    println!("[LyricsPipeline] {message}");
+}
+
 #[derive(serde::Serialize)]
 struct ExternalHttpResponse {
     status: u16,
@@ -1206,6 +1211,7 @@ pub fn run() {
             ytmusic_import::ytmusic_import_start,
             ytmusic_import::ytmusic_import_stop,
             save_framerate_config,
+            lyrics_pipeline_log,
             set_app_icon,
             set_custom_app_icon,
             copy_custom_app_icon,

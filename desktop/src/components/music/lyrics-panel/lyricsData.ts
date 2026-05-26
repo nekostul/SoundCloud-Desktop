@@ -110,10 +110,12 @@ export function useResolvedLyrics<
     trackUrn ?? null,
     manualQuery,
   );
-  const cachedAutoLyrics =
+  const cachedAutoLyricsCandidate =
     !manualQuery && autoLyricsRef && trackUrn
       ? (autoLyricsRef.current.get(trackUrn) ?? null)
       : null;
+  const cachedAutoLyrics =
+    cachedAutoLyricsCandidate?.source === 'genius' ? null : cachedAutoLyricsCandidate;
   const cachedLegacyLyrics =
     !manualQuery && !autoLyricsRef && trackUrn
       ? (legacyLyricsCacheRef.current.get(trackUrn) ?? null)
