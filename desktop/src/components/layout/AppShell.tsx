@@ -533,7 +533,9 @@ export const AppShell = React.memo(() => {
             onScroll={handleContentScroll}
             className="app-shell-scroll h-full overflow-y-auto overflow-x-hidden relative z-10"
           >
-            <StableOutlet />
+            <div className={isMobile ? 'min-h-full' : 'app-shell-page-spacer min-h-full'}>
+              <StableOutlet />
+            </div>
           </div>
           <div ref={customScrollbarThumbRef} className="app-shell-scrollbar-thumb" aria-hidden />
         </main>

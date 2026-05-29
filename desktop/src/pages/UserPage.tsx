@@ -33,8 +33,8 @@ import {
   Disc3,
   ExternalLink,
   Globe,
-  headphones11,
   Headphones,
+  headphones11,
   heart11,
   Instagram,
   LinkIcon,
@@ -52,9 +52,9 @@ import {
 } from '../lib/icons';
 import { useTrackPlay } from '../lib/useTrackPlay';
 import { useAuthStore } from '../stores/auth';
+import { useHeaderState } from '../stores/header';
 import type { Track } from '../stores/player';
 import { usePlayerStore } from '../stores/player';
-import { useHeaderState } from '../stores/header';
 
 function getProfileDate(value: string | null | undefined): number {
   if (!value) return 0;
@@ -112,10 +112,7 @@ function formatMonthlyPlays(
 ) {
   if (!value) return null;
   const isRussian = /^ru(?:-|$)/i.test(language || '');
-  const label = t(
-    'user.monthlyListeners',
-    isRussian ? 'слушателей за месяц' : 'monthly listeners',
-  );
+  const label = t('user.monthlyListeners', isRussian ? 'слушателей за месяц' : 'monthly listeners');
 
   if (value >= 1_000_000) {
     const amount = trimTrailingZeroes((value / 1_000_000).toFixed(2));
@@ -181,7 +178,11 @@ function HeroPlayButton({ tracks }: { tracks: Track[] }) {
           />
         )}
       </span>
-      {isPlaying ? t('user.pause', 'Пауза') : isPaused ? t('user.continue', 'Продолжить') : t('user.listen', 'Слушать')}
+      {isPlaying
+        ? t('user.pause', 'Пауза')
+        : isPaused
+          ? t('user.continue', 'Продолжить')
+          : t('user.listen', 'Слушать')}
     </button>
   );
 }
@@ -398,9 +399,9 @@ const ReleaseCard = React.memo(function ReleaseCard({
         compact ? '' : 'shadow-[0_24px_80px_rgba(0,0,0,0.28)]'
       }`}
     >
-                  <div
-                    className={`relative ${compact ? 'aspect-square' : 'aspect-[0.95]'} rounded-[inherit] cursor-pointer overflow-hidden`}
-                  >
+      <div
+        className={`relative ${compact ? 'aspect-square' : 'aspect-[0.95]'} rounded-[inherit] cursor-pointer overflow-hidden`}
+      >
         {cover ? (
           <img
             src={cover}
@@ -520,7 +521,9 @@ export function UserPage() {
   const tracks = useMemo(() => dedupeTracks(popularTracksData), [popularTracksData]);
   const popularTracks = useMemo(() => tracks.slice(0, 5), [tracks]);
   const newestTrack = useMemo(
-    () => [...tracks].sort((a, b) => getProfileDate(b.created_at) - getProfileDate(a.created_at))[0] ?? null,
+    () =>
+      [...tracks].sort((a, b) => getProfileDate(b.created_at) - getProfileDate(a.created_at))[0] ??
+      null,
     [tracks],
   );
   const releaseTracks = useMemo(
@@ -536,7 +539,9 @@ export function UserPage() {
   );
   const playlists = useMemo(
     () =>
-      Array.from(new Map(playlistsQuery.playlists.map((playlist) => [playlist.urn, playlist])).values()).slice(0, 6),
+      Array.from(
+        new Map(playlistsQuery.playlists.map((playlist) => [playlist.urn, playlist])).values(),
+      ).slice(0, 6),
     [playlistsQuery.playlists],
   );
   const similarArtists = useMemo(() => {
@@ -544,7 +549,9 @@ export function UserPage() {
       insights?.similarArtists && insights.similarArtists.length > 0
         ? insights.similarArtists
         : followingsQuery.users;
-    return dedupeUsers(base).filter((candidate) => candidate.urn !== user?.urn).slice(0, 7);
+    return dedupeUsers(base)
+      .filter((candidate) => candidate.urn !== user?.urn)
+      .slice(0, 7);
   }, [followingsQuery.users, insights?.similarArtists, user?.urn]);
 
   const avatar = art(user?.avatar_url, 't500x500');
@@ -576,11 +583,17 @@ export function UserPage() {
   }, [insights, insightsLoading, monthlyPlays, platforms, urn, user?.username]);
 
   useEffect(() => {
+    if (!urn) return;
+
     setShowFullAvatar(false);
     setShowCompactHeader(false);
     setCompactHeaderVisible(false);
     const scrollContainer = pageRootRef.current?.parentElement;
     scrollContainer?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+
+    return () => {
+      setCompactHeaderVisible(false);
+    };
   }, [urn, setCompactHeaderVisible]);
 
   const scrollToTop = () => {
@@ -589,6 +602,8 @@ export function UserPage() {
   };
 
   useEffect(() => {
+    if (!urn) return;
+
     const scrollContainer = pageRootRef.current?.parentElement;
     const heroSection = heroSectionRef.current;
     if (!scrollContainer || !heroSection) return;
@@ -615,22 +630,35 @@ export function UserPage() {
       rafId = requestAnimationFrame(updateCompactHeader);
     };
 
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => {
+            scheduleUpdate();
+          })
+        : null;
+
     scheduleUpdate();
     scrollContainer.addEventListener('scroll', scheduleUpdate, { passive: true });
     window.addEventListener('resize', scheduleUpdate);
+    resizeObserver?.observe(scrollContainer);
+    resizeObserver?.observe(heroSection);
 
     return () => {
       scrollContainer.removeEventListener('scroll', scheduleUpdate);
       window.removeEventListener('resize', scheduleUpdate);
+      resizeObserver?.disconnect();
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [urn, insightsLoading, monthlyPlays, user?.followers_count, user?.plan, webProfiles.length, visiblePlatforms.length]);
+  }, [urn, setCompactHeaderVisible]);
 
   const avatarModal =
     showFullAvatar && avatar && typeof document !== 'undefined'
       ? createPortal(
           <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/90 p-8 backdrop-blur-md sm:p-12">
-            <div className="absolute inset-0 cursor-pointer" onClick={() => setShowFullAvatar(false)} />
+            <div
+              className="absolute inset-0 cursor-pointer"
+              onClick={() => setShowFullAvatar(false)}
+            />
             <button
               type="button"
               onClick={() => setShowFullAvatar(false)}
@@ -703,7 +731,12 @@ export function UserPage() {
                   data-sc-disable-context-image="true"
                   className="relative w-10 h-10 rounded-full overflow-hidden ring-1 ring-white/[0.08] shrink-0 cursor-pointer"
                 >
-                  <Avatar key={user.urn || urn} src={user.avatar_url} alt={user.username} size={40} />
+                  <Avatar
+                    key={user.urn || urn}
+                    src={user.avatar_url}
+                    alt={user.username}
+                    size={40}
+                  />
                 </button>
                 <div className="relative min-w-0 flex-1">
                   <h1 className="text-[28px] leading-none font-extrabold tracking-tight text-white truncate">
@@ -724,249 +757,259 @@ export function UserPage() {
           </div>
         </div>
 
-      <div className="space-y-8">
-        {isOwnProfile && (
-          <div className="rounded-[24px] border border-amber-500/16 bg-amber-500/[0.08] px-5 py-3.5 text-[13px] text-amber-200/90 flex items-center gap-3">
-            <AlertCircle size={18} />
-            {t('user.publicProfile')}
-          </div>
-        )}
+        <div className="space-y-8">
+          {isOwnProfile && (
+            <div className="rounded-[24px] border border-amber-500/16 bg-amber-500/[0.08] px-5 py-3.5 text-[13px] text-amber-200/90 flex items-center gap-3">
+              <AlertCircle size={18} />
+              {t('user.publicProfile')}
+            </div>
+          )}
 
-        <section {...userContextProps} ref={heroSectionRef} className="relative">
-          <div className="relative px-0 py-2 md:py-4 lg:py-6">
-            <div className="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-8 items-center">
-              <button
-                type="button"
-                onClick={() => avatar && setShowFullAvatar(true)}
-                data-sc-disable-context-image="true"
-                className="relative w-[180px] h-[180px] md:w-[220px] md:h-[220px] rounded-full overflow-hidden ring-1 ring-white/[0.08] bg-white/[0.03] shadow-[0_28px_70px_rgba(0,0,0,0.34)] cursor-pointer transition-transform duration-300 ease-[var(--ease-apple)] hover:scale-[1.02]"
-              >
-                {avatar ? (
-                  <img
-                    key={user.urn || avatar}
-                    src={avatar}
-                    alt={user.username}
-                    className="block w-full h-full object-cover"
-                    decoding="async"
-                  />
+          <section {...userContextProps} ref={heroSectionRef} className="relative">
+            <div className="relative px-0 py-2 md:py-4 lg:py-6">
+              <div className="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-8 items-center">
+                <button
+                  type="button"
+                  onClick={() => avatar && setShowFullAvatar(true)}
+                  data-sc-disable-context-image="true"
+                  className="relative w-[180px] h-[180px] md:w-[220px] md:h-[220px] rounded-full overflow-hidden ring-1 ring-white/[0.08] bg-white/[0.03] shadow-[0_28px_70px_rgba(0,0,0,0.34)] cursor-pointer transition-transform duration-300 ease-[var(--ease-apple)] hover:scale-[1.02]"
+                >
+                  {avatar ? (
+                    <img
+                      key={user.urn || avatar}
+                      src={avatar}
+                      alt={user.username}
+                      className="block w-full h-full object-cover"
+                      decoding="async"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <Users size={56} className="text-white/20" />
+                    </div>
+                  )}
+                </button>
+
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-3 mb-3">
+                    {user.plan && user.plan !== 'Free' && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#ffd047]/14 border border-[#ffd047]/25 px-3 py-1.5 text-[12px] font-semibold text-[#ffe08a]">
+                        <Sparkles size={12} />
+                        {user.plan}
+                      </span>
+                    )}
+                  </div>
+
+                  <h2 className="text-[42px] md:text-[64px] leading-[0.96] font-black tracking-[-0.04em] text-white">
+                    {user.username}
+                  </h2>
+
+                  {buildProfileMeta(user) && (
+                    <p className="mt-3 text-[14px] text-white/58 max-w-[780px]">
+                      {buildProfileMeta(user)}
+                    </p>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-3 mt-5">
+                    {monthlyPlays && (
+                      <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.06] px-4 py-2 text-[13px] font-medium text-white/82">
+                        <Headphones size={15} className="text-white/54" />
+                        {monthlyPlays}
+                      </div>
+                    )}
+                    {!monthlyPlays && insightsLoading && (
+                      <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.06] px-4 py-2 text-[13px] font-medium text-white/70">
+                        <Loader2 size={14} className="animate-spin text-white/48" />
+                        {t('user.loadingListeners', 'Слушатели...')}
+                      </div>
+                    )}
+                    {user.followers_count != null && (
+                      <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.04] px-4 py-2 text-[13px] font-medium text-white/70">
+                        <Users size={14} className="text-white/45" />
+                        {fc(user.followers_count)} {t('user.followers').toLowerCase()}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 mt-7">
+                    <HeroPlayButton tracks={tracks} />
+                    <SoundWaveLaunchButton
+                      seedTracks={tracks}
+                      context={{
+                        kind: 'artist',
+                        key: user.urn,
+                        title: user.username,
+                        subtitle: user.full_name || undefined,
+                      }}
+                      variant="hero"
+                    />
+                    {!isOwnProfile && <FollowBtn userUrn={user.urn} />}
+                    <CopyLinkButton url={user.permalink_url} />
+                  </div>
+
+                  {visiblePlatforms.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2.5 mt-7">
+                      {visiblePlatforms.map((platform) => (
+                        <a
+                          key={`${platform.source}-${platform.matchedName}`}
+                          href={platform.url || undefined}
+                          target={platform.url ? '_blank' : undefined}
+                          rel={platform.url ? 'noopener noreferrer' : undefined}
+                          className={`inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.04] px-3 py-2 text-[12px] text-white/66 ${
+                            platform.url
+                              ? 'hover:bg-white/[0.08] hover:text-white transition-colors'
+                              : ''
+                          }`}
+                        >
+                          <Globe size={13} className="text-white/42" />
+                          {platform.label}
+                          {platform.url && <ExternalLink size={12} className="text-white/34" />}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+
+                  {webProfiles.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2.5 mt-4">
+                      {webProfiles.slice(0, 5).map((link) => (
+                        <a
+                          key={link.id}
+                          href={link.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-black/18 px-3 py-2 text-[12px] text-white/62 hover:bg-white/[0.08] hover:text-white transition-colors"
+                        >
+                          {getWebIcon(link.service)}
+                          <span className="truncate max-w-[180px]">{link.title}</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.1fr)_360px] gap-8">
+            <section className="min-w-0 space-y-4">
+              <SectionHeading title={t('user.popular', 'Популярные треки')} />
+
+              <div className="rounded-[32px] border border-white/[0.06] bg-white/[0.03] p-3 md:p-4 shadow-[0_24px_70px_rgba(0,0,0,0.22)]">
+                {tracksLoading ? (
+                  <div className="py-10 flex justify-center">
+                    <Loader2 size={24} className="animate-spin text-white/24" />
+                  </div>
+                ) : popularTracks.length === 0 ? (
+                  <EmptyPanel title={t('user.noPopularTracksFound')} />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <Users size={56} className="text-white/20" />
-                  </div>
-                )}
-              </button>
-
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-3 mb-3">
-                  {user.plan && user.plan !== 'Free' && (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#ffd047]/14 border border-[#ffd047]/25 px-3 py-1.5 text-[12px] font-semibold text-[#ffe08a]">
-                      <Sparkles size={12} />
-                      {user.plan}
-                    </span>
-                  )}
-                </div>
-
-                <h2 className="text-[42px] md:text-[64px] leading-[0.96] font-black tracking-[-0.04em] text-white">
-                  {user.username}
-                </h2>
-
-                {buildProfileMeta(user) && (
-                  <p className="mt-3 text-[14px] text-white/58 max-w-[780px]">{buildProfileMeta(user)}</p>
-                )}
-
-                <div className="flex flex-wrap items-center gap-3 mt-5">
-                  {monthlyPlays && (
-                    <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.06] px-4 py-2 text-[13px] font-medium text-white/82">
-                      <Headphones size={15} className="text-white/54" />
-                      {monthlyPlays}
-                    </div>
-                  )}
-                  {!monthlyPlays && insightsLoading && (
-                    <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.06] px-4 py-2 text-[13px] font-medium text-white/70">
-                      <Loader2 size={14} className="animate-spin text-white/48" />
-                      {t('user.loadingListeners', 'Слушатели...')}
-                    </div>
-                  )}
-                  {user.followers_count != null && (
-                    <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.04] px-4 py-2 text-[13px] font-medium text-white/70">
-                      <Users size={14} className="text-white/45" />
-                      {fc(user.followers_count)} {t('user.followers').toLowerCase()}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-3 mt-7">
-                  <HeroPlayButton tracks={tracks} />
-                  <SoundWaveLaunchButton
-                    seedTracks={tracks}
-                    context={{
-                      kind: 'artist',
-                      key: user.urn,
-                      title: user.username,
-                      subtitle: user.full_name || undefined,
-                    }}
-                    variant="hero"
-                  />
-                  {!isOwnProfile && <FollowBtn userUrn={user.urn} />}
-                  <CopyLinkButton url={user.permalink_url} />
-                </div>
-
-                {visiblePlatforms.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2.5 mt-7">
-                    {visiblePlatforms.map((platform) => (
-                      <a
-                        key={`${platform.source}-${platform.matchedName}`}
-                        href={platform.url || undefined}
-                        target={platform.url ? '_blank' : undefined}
-                        rel={platform.url ? 'noopener noreferrer' : undefined}
-                        className={`inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.04] px-3 py-2 text-[12px] text-white/66 ${
-                          platform.url ? 'hover:bg-white/[0.08] hover:text-white transition-colors' : ''
-                        }`}
-                      >
-                        <Globe size={13} className="text-white/42" />
-                        {platform.label}
-                        {platform.url && <ExternalLink size={12} className="text-white/34" />}
-                      </a>
-                    ))}
-                  </div>
-                )}
-
-                {webProfiles.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2.5 mt-4">
-                    {webProfiles.slice(0, 5).map((link) => (
-                      <a
-                        key={link.id}
-                        href={link.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-black/18 px-3 py-2 text-[12px] text-white/62 hover:bg-white/[0.08] hover:text-white transition-colors"
-                      >
-                        {getWebIcon(link.service)}
-                        <span className="truncate max-w-[180px]">{link.title}</span>
-                      </a>
+                  <div className="space-y-1.5">
+                    {popularTracks.map((track, index) => (
+                      <PopularTrackRow key={track.urn} track={track} index={index} queue={tracks} />
                     ))}
                   </div>
                 )}
               </div>
-            </div>
-          </div>
-        </section>
+            </section>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.1fr)_360px] gap-8">
-          <section className="min-w-0 space-y-4">
-            <SectionHeading title={t('user.popular', 'Популярные треки')} />
-
-            <div className="rounded-[32px] border border-white/[0.06] bg-white/[0.03] p-3 md:p-4 shadow-[0_24px_70px_rgba(0,0,0,0.22)]">
-              {tracksLoading ? (
-                <div className="py-10 flex justify-center">
-                  <Loader2 size={24} className="animate-spin text-white/24" />
-                </div>
-              ) : popularTracks.length === 0 ? (
-                <EmptyPanel title={t('user.noPopularTracksFound')} />
+            <aside className="space-y-4">
+              <SectionHeading title={t('user.newRelease', 'Новый релиз')} />
+              {newestTrack ? (
+                <ReleaseCard track={newestTrack} />
               ) : (
-                <div className="space-y-1.5">
-                  {popularTracks.map((track, index) => (
-                    <PopularTrackRow key={track.urn} track={track} index={index} queue={tracks} />
-                  ))}
-                </div>
+                <EmptyPanel title={t('user.noTracksFound')} />
               )}
-            </div>
-          </section>
 
-          <aside className="space-y-4">
-            <SectionHeading title={t('user.newRelease', 'Новый релиз')} />
-            {newestTrack ? (
-              <ReleaseCard track={newestTrack} />
-            ) : (
-              <EmptyPanel title={t('user.noTracksFound')} />
-            )}
+              {user.description && (
+                <section className="rounded-[32px] border border-white/[0.06] bg-white/[0.03] p-5">
+                  <h3 className="text-[13px] font-bold uppercase tracking-[0.18em] text-white/36 mb-3">
+                    {t('user.about')}
+                  </h3>
+                  <p className="text-[13px] leading-6 text-white/62 whitespace-pre-wrap break-words">
+                    {user.description}
+                  </p>
+                </section>
+              )}
 
-            {user.description && (
-              <section className="rounded-[32px] border border-white/[0.06] bg-white/[0.03] p-5">
-                <h3 className="text-[13px] font-bold uppercase tracking-[0.18em] text-white/36 mb-3">
-                  {t('user.about')}
-                </h3>
-                <p className="text-[13px] leading-6 text-white/62 whitespace-pre-wrap break-words">
-                  {user.description}
-                </p>
-              </section>
-            )}
+              {insightsLoading && !insights && (
+                <section className="rounded-[32px] border border-white/[0.06] bg-white/[0.03] px-5 py-6 flex items-center gap-3 text-white/42 text-[13px]">
+                  <Loader2 size={18} className="animate-spin" />
+                  {t('user.loadingInsights', 'Собираем данные об артисте')}
+                </section>
+              )}
+            </aside>
+          </div>
 
-            {insightsLoading && !insights && (
-              <section className="rounded-[32px] border border-white/[0.06] bg-white/[0.03] px-5 py-6 flex items-center gap-3 text-white/42 text-[13px]">
-                <Loader2 size={18} className="animate-spin" />
-                {t('user.loadingInsights', 'Собираем данные об артисте')}
-              </section>
-            )}
-          </aside>
-        </div>
+          {releaseTracks.length > 0 && (
+            <section className="space-y-4">
+              <SectionHeading title={t('user.popularReleases', 'Популярные релизы')} />
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-5">
+                {releaseTracks.map((track) => (
+                  <ReleaseCard key={track.urn} track={track} compact />
+                ))}
+              </div>
+            </section>
+          )}
 
-        {releaseTracks.length > 0 && (
-          <section className="space-y-4">
-            <SectionHeading title={t('user.popularReleases', 'Популярные релизы')} />
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-5">
-              {releaseTracks.map((track) => (
-                <ReleaseCard key={track.urn} track={track} compact />
-              ))}
-            </div>
-          </section>
-        )}
+          {playlists.length > 0 && (
+            <section className="space-y-4">
+              <SectionHeading title={t('user.playlists')} />
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-5">
+                {playlists.map((playlist) => (
+                  <PlaylistCard key={playlist.urn} playlist={playlist} showPlayback />
+                ))}
+              </div>
+            </section>
+          )}
 
-        {playlists.length > 0 && (
-          <section className="space-y-4">
-            <SectionHeading title={t('user.playlists')} />
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-5">
-              {playlists.map((playlist) => (
-                <PlaylistCard key={playlist.urn} playlist={playlist} showPlayback />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {similarArtists.length > 0 && (
-          <section className="space-y-4">
-            <SectionHeading title={t('user.similarArtists', 'Похожие исполнители')} />
+          {similarArtists.length > 0 && (
+            <section className="space-y-4">
+              <SectionHeading title={t('user.similarArtists', 'Похожие исполнители')} />
               <div className="rounded-[32px] border border-white/[0.06] bg-white/[0.03] overflow-hidden">
                 <div className="p-5 md:p-6 overflow-x-auto">
                   <div className="flex items-start gap-6 min-w-max">
-                {similarArtists.map((artist) => (
-                  <SimilarArtistCard key={artist.urn} user={artist} />
+                    {similarArtists.map((artist) => (
+                      <SimilarArtistCard key={artist.urn} user={artist} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {webProfiles.length > 5 && (
+            <section className="space-y-4">
+              <SectionHeading title={t('user.links')} />
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {webProfiles.slice(5).map((link) => (
+                  <a
+                    key={link.id}
+                    href={link.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="group rounded-[24px] border border-white/[0.06] bg-white/[0.03] px-4 py-4 flex items-center gap-3 hover:bg-white/[0.05] hover:border-white/[0.1] transition-all duration-200"
+                  >
+                    <div className="w-10 h-10 rounded-full bg-white/[0.06] flex items-center justify-center text-white/46 group-hover:text-white transition-colors">
+                      {getWebIcon(link.service)}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[13px] font-semibold text-white/84 truncate">
+                        {link.title}
+                      </p>
+                      {link.username && (
+                        <p className="text-[11px] text-white/36 truncate mt-0.5">
+                          @{link.username}
+                        </p>
+                      )}
+                    </div>
+                  </a>
                 ))}
               </div>
-            </div>
-          </div>
-          </section>
-        )}
+            </section>
+          )}
 
-        {webProfiles.length > 5 && (
-          <section className="space-y-4">
-            <SectionHeading title={t('user.links')} />
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {webProfiles.slice(5).map((link) => (
-                <a
-                  key={link.id}
-                  href={link.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="group rounded-[24px] border border-white/[0.06] bg-white/[0.03] px-4 py-4 flex items-center gap-3 hover:bg-white/[0.05] hover:border-white/[0.1] transition-all duration-200"
-                >
-                  <div className="w-10 h-10 rounded-full bg-white/[0.06] flex items-center justify-center text-white/46 group-hover:text-white transition-colors">
-                    {getWebIcon(link.service)}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-[13px] font-semibold text-white/84 truncate">{link.title}</p>
-                    {link.username && <p className="text-[11px] text-white/36 truncate mt-0.5">@{link.username}</p>}
-                  </div>
-                </a>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {!tracksLoading && tracks.length === 0 && playlists.length === 0 && (
-          <EmptyPanel title={t('user.noTracksFound')} />
-        )}
-      </div>
+          {!tracksLoading && tracks.length === 0 && playlists.length === 0 && (
+            <EmptyPanel title={t('user.noTracksFound')} />
+          )}
+        </div>
       </div>
     </>
   );

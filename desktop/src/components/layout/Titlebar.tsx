@@ -12,13 +12,11 @@ export const Titlebar = React.memo(() => {
   const close = () => getCurrentWindow().close();
 
   return (
-    <div className="h-10 flex items-center px-4 select-none shrink-0 border-b border-white/[0]">
+    <div className="relative z-50 h-10 shrink-0 select-none border-b border-white/[0] px-4 flex items-center">
       <div className="flex items-center gap-1.5">
         <div className="flex items-center gap-1.5 min-w-0" data-tauri-drag-region>
           <Disc3 size={14} className="text-accent" strokeWidth={2} />
-          <span className="text-[11px] font-semibold tracking-tight text-white/30">
-            SoundCloud
-          </span>
+          <span className="text-[11px] font-semibold tracking-tight text-white/30">SoundCloud</span>
         </div>
       </div>
 

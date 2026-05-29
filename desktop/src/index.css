@@ -505,6 +505,10 @@ body,
   background: rgba(255, 255, 255, 0.15);
 }
 
+.app-shell-page-spacer {
+  padding-bottom: 104px;
+}
+
 /* ── Glass ──────────────────────────────────────────────────── */
 .glass {
   background: var(--theme-glass-bg);
