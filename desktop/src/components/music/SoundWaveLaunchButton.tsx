@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { AudioLines, Loader2 } from '../../lib/icons';
+import { dedupeWaveQueue } from '../../lib/soundwave-canonical';
 import {
   buildWaveQueueFromPlayerContext,
   createInitialSoundWaveQueue,
@@ -62,8 +63,7 @@ export function SoundWaveLaunchButton({
   const [isLoading, setIsLoading] = useState(false);
 
   const playableSeeds = useMemo(
-    () =>
-      dedupeTracksByUrn(seedTracks).filter((track) => track?.urn && track.access !== 'blocked'),
+    () => dedupeTracksByUrn(seedTracks).filter((track) => track?.urn && track.access !== 'blocked'),
     [seedTracks],
   );
 
@@ -112,10 +112,15 @@ export function SoundWaveLaunchButton({
         const player = usePlayerStore.getState();
         if (player.queueSource !== 'soundwave') return;
 
-        const existing = new Set(player.queue.map((track) => track.urn));
-        const fresh = tail.filter((track) => !existing.has(track.urn));
-        if (fresh.length > 0) {
-          player.addToQueue(fresh);
+        const existingUrns = new Set(player.queue.map((track) => track.urn).filter(Boolean));
+        const protectedUrns = new Set(player.currentTrack?.urn ? [player.currentTrack.urn] : []);
+        const nextQueue = dedupeWaveQueue([...player.queue, ...tail], {
+          stage: 'launch-tail-final',
+          protectedUrns,
+        });
+        const hasNewTracks = nextQueue.some((track) => !existingUrns.has(track.urn));
+        if (hasNewTracks) {
+          player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
         }
       });
     } finally {

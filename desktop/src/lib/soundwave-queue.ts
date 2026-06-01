@@ -1,5 +1,18 @@
 import { type Track, usePlayerStore } from '../stores/player';
-import { fetchWaveTailFromSeed, hydrateByIds, trackIdFromTrack, type SoundWaveMode } from './soundwave';
+import {
+  fetchWaveTailFromSeed,
+  hydrateByIds,
+  type SoundWaveMode,
+  trackIdFromTrack,
+} from './soundwave';
+import {
+  canonicalScore,
+  collapseVariations,
+  dedupeWaveQueue,
+  hasSameWork,
+  isSameWork,
+  isVariationSuppressed,
+} from './soundwave-canonical';
 import {
   filterSoundWaveTracks,
   getSoundWaveBlockedUrns,
@@ -23,14 +36,14 @@ export function dedupeTracksByUrn(tracks: Track[]): Track[] {
   return unique;
 }
 
-export function createInitialSoundWaveQueue(
-  seedTracks: Track[],
-  mode: SoundWaveMode,
-): Track[] {
-  const unique = filterSoundWaveTracks(dedupeTracksByUrn(seedTracks), {
-    minTracks: 1,
-    includeRecentIfNeeded: true,
-  });
+export function createInitialSoundWaveQueue(seedTracks: Track[], mode: SoundWaveMode): Track[] {
+  const unique = dedupeWaveQueue(
+    filterSoundWaveTracks(dedupeTracksByUrn(seedTracks), {
+      minTracks: 1,
+      includeRecentIfNeeded: true,
+    }),
+    { stage: 'initial-seeds' },
+  );
   if (unique.length === 0) return [];
 
   const initialCount = mode === 'diverse' ? Math.min(4, unique.length) : Math.min(3, unique.length);
@@ -58,10 +71,9 @@ export async function buildWaveQueueFromSeeds(
 ): Promise<Track[]> {
   const targetSize = Math.max(1, context?.targetSize ?? HOME_WAVE_QUEUE_TARGET);
   const queueTracks = dedupeTracksByUrn(context?.queueTracks ?? []);
-  const anchors = dedupeTracksByUrn([
-    ...(context?.recentTracks ?? []),
-    ...seedTracks,
-  ]).filter((track) => !!track?.urn);
+  const anchors = dedupeTracksByUrn([...(context?.recentTracks ?? []), ...seedTracks]).filter(
+    (track) => !!track?.urn,
+  );
 
   if (anchors.length === 0) return [];
 
@@ -75,7 +87,8 @@ export async function buildWaveQueueFromSeeds(
   const recentTrackIds = idsFromUrns(anchors.map((track) => track.urn));
   const selected: Track[] = [];
   const selectedUrns = new Set<string>();
-  const anchorLimit = mode === 'diverse' ? RELATED_ANCHOR_LIMIT : Math.max(2, RELATED_ANCHOR_LIMIT - 1);
+  const anchorLimit =
+    mode === 'diverse' ? RELATED_ANCHOR_LIMIT : Math.max(2, RELATED_ANCHOR_LIMIT - 1);
 
   for (const anchor of anchors.slice(0, anchorLimit)) {
     const anchorId = trackIdFromTrack(anchor);
@@ -89,22 +102,42 @@ export async function buildWaveQueueFromSeeds(
       recentTrackIds,
     });
 
-    const tracks = filterSoundWaveTracks(await hydrateByIds(recs), {
-      hideLiked,
-      excludeUrns: new Set([...antiRepeatUrns, ...selectedUrns]),
-      minTracks: Math.min(6, targetSize),
-      includeRecentIfNeeded: true,
-    });
+    const tracks = collapseVariations(
+      filterSoundWaveTracks(await hydrateByIds(recs), {
+        hideLiked,
+        excludeUrns: new Set([...antiRepeatUrns, ...selectedUrns]),
+        minTracks: Math.min(6, targetSize),
+        includeRecentIfNeeded: true,
+      }),
+      { stage: 'tail-anchor' },
+    );
 
     for (const track of tracks) {
       if (!track?.urn || selectedUrns.has(track.urn)) continue;
+      if (hasSameWork(queueTracks, track) || isVariationSuppressed(track)) {
+        continue;
+      }
+
+      const duplicateIndex = selected.findIndex((candidate) => isSameWork(candidate, track));
+      if (duplicateIndex >= 0) {
+        const existing = selected[duplicateIndex];
+        if (canonicalScore(track) > canonicalScore(existing)) {
+          selectedUrns.delete(existing.urn);
+          selected[duplicateIndex] = track;
+          selectedUrns.add(track.urn);
+        }
+        continue;
+      }
+
       selected.push(track);
       selectedUrns.add(track.urn);
-      if (selected.length >= targetSize) return selected;
+      if (selected.length >= targetSize) {
+        return dedupeWaveQueue(selected, { stage: 'tail-final' });
+      }
     }
   }
 
-  return selected;
+  return dedupeWaveQueue(selected, { stage: 'tail-final' });
 }
 
 export async function buildWaveQueueFromPlayerContext(opts: {
@@ -133,8 +166,10 @@ export async function buildWaveQueueFromPlayerContext(opts: {
     ...buildRecentTracksFromQueue(queue.slice(0, queueIndex + 1)),
   ]);
 
+  const protectedQueueTracks = queueIndex >= 0 ? queue.slice(0, queueIndex + 1) : [currentTrack];
+
   return buildWaveQueueFromSeeds(contextRecentTracks, opts.languages, opts.mode, opts.hideLiked, {
-    queueTracks: queue,
+    queueTracks: protectedQueueTracks,
     recentTracks: contextRecentTracks,
     targetSize: opts.targetSize,
   });

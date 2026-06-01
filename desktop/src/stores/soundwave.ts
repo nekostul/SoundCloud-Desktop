@@ -5,6 +5,13 @@ import type { TrackLanguageProfile } from '../lib/language-detection';
 import { initLikedUrns } from '../lib/likes';
 import { hydrateByIds, type RecommendResult, type SoundWaveMode } from '../lib/soundwave';
 import {
+  collapseVariations,
+  dedupeWaveQueue,
+  isVariationSuppressed,
+  registerPlayedForSuppression,
+  resetVariationSuppression,
+} from '../lib/soundwave-canonical';
+import {
   blockSoundWaveTrackForToday,
   filterSoundWaveTracks,
   markSoundWaveTrackPlayed,
@@ -194,12 +201,15 @@ function finalizeNativeTracks(
     limit: number;
   },
 ): Track[] {
-  return filterSoundWaveTracks(dedupeTracksByUrn(tracks), {
+  const filtered = filterSoundWaveTracks(dedupeTracksByUrn(tracks), {
     hideLiked: opts.hideLiked,
     excludeUrns: new Set([...opts.playedUrns, ...getDislikedUrns()]),
     minTracks: Math.min(8, opts.limit),
     includeRecentIfNeeded: true,
-  }).slice(0, opts.limit);
+  });
+  return collapseVariations(filtered, { stage: 'native-batch' })
+    .filter((track) => !isVariationSuppressed(track))
+    .slice(0, opts.limit);
 }
 
 async function fetchNativeHomeTracks(limit: number, mode: SoundWaveMode): Promise<Track[]> {
@@ -345,8 +355,9 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
 
     try {
       const batch = await generateBatch({ startup: true });
-      if (batch.length > 0) {
-        usePlayerStore.getState().play(batch[0], batch, 'soundwave');
+      const finalBatch = dedupeWaveQueue(batch, { stage: 'start-final' });
+      if (finalBatch.length > 0) {
+        usePlayerStore.getState().play(finalBatch[0], finalBatch, 'soundwave');
         set({ startupVisible: true, startupProgress: 100, startupStage: 'done' });
         scheduleStartupHide(set);
       } else {
@@ -381,6 +392,11 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     if (currentTrack?.urn && !normalizedQueue.some((track) => track.urn === currentTrack.urn)) {
       normalizedQueue = [currentTrack, ...normalizedQueue];
     }
+    normalizedQueue = dedupeWaveQueue(normalizedQueue, {
+      stage: 'start-from-queue-final',
+      protectedUrns:
+        preserveCurrentTrack && currentTrack?.urn ? new Set([currentTrack.urn]) : undefined,
+    });
     if (normalizedQueue.length === 0) return;
 
     const { init, stop } = get();
@@ -429,6 +445,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       clearTimeout(startupProgressHideTimer);
       startupProgressHideTimer = null;
     }
+    resetVariationSuppression();
     set({
       isActive: false,
       isSuspended: false,
@@ -483,6 +500,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
   markTrackPlayed: (track) => {
     if (!track?.urn) return;
     markSoundWaveTrackPlayed(track);
+    registerPlayedForSuppression(track);
     set((state) => {
       if (state.playedUrns.has(track.urn)) return {};
       const playedUrns = new Set(state.playedUrns);
@@ -537,9 +555,16 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
 
     if (tail.length === 0) return [];
 
-    const nextQueue = dedupeTracksByUrn([...queueHead, ...tail]);
+    const protectedUrns = new Set(queueHead.map((track) => track.urn).filter(Boolean));
+    const nextQueue = dedupeWaveQueue(dedupeTracksByUrn([...queueHead, ...tail]), {
+      stage: `refresh-final:${reason}`,
+      protectedUrns,
+    });
+    const finalTail = nextQueue.filter((track) => !protectedUrns.has(track.urn));
+    if (finalTail.length === 0) return [];
+
     usePlayerStore.getState().replaceQueueKeepingCurrent(nextQueue, 'soundwave');
-    return tail;
+    return finalTail;
   },
 
   recordFeedback: (track, type) => {

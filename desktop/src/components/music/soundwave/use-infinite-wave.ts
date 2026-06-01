@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { dedupeWaveQueue } from '../../../lib/soundwave-canonical';
 import type { Track } from '../../../stores/player';
 import { usePlayerStore } from '../../../stores/player';
 
@@ -57,11 +58,22 @@ export function useInfiniteWave(opts: {
       (async () => {
         try {
           const next = await fetchMoreRef.current();
-          const existing = new Set(usePlayerStore.getState().queue.map((t) => t.urn));
-          const fresh = next.filter((t) => !existing.has(t.urn));
+          const player = usePlayerStore.getState();
+          const existingUrns = new Set(player.queue.map((track) => track.urn).filter(Boolean));
+          const protectedUrns = new Set(
+            player.queue
+              .slice(0, Math.max(0, player.queueIndex + 1))
+              .map((track) => track.urn)
+              .filter(Boolean),
+          );
+          const nextQueue = dedupeWaveQueue([...player.queue, ...next], {
+            stage: 'infinite-wave-final',
+            protectedUrns,
+          });
+          const fresh = nextQueue.filter((track) => !existingUrns.has(track.urn));
           if (fresh.length > 0) {
-            usePlayerStore.getState().addToQueue(fresh);
-            for (const t of fresh) ownedRef.current.add(t.urn);
+            player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
+            for (const track of fresh) ownedRef.current.add(track.urn);
           }
         } catch (e) {
           console.debug('[soundwave] infinite refill failed:', e);

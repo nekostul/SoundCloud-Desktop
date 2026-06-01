@@ -1,3 +1,4 @@
+import { listen } from '@tauri-apps/api/event';
 import {
   Car,
   Check,
@@ -18,12 +19,12 @@ import {
 } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Pause, Play, Settings } from '../../lib/icons';
 import { isAppBackgrounded } from '../../lib/app-visibility';
+import { Pause, Play, Settings } from '../../lib/icons';
 import { SUPPORTED_LANGUAGES } from '../../lib/language-detection';
+import { dedupeWaveQueue } from '../../lib/soundwave-canonical';
 import { usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
 import {
@@ -144,7 +145,6 @@ export const SoundWaveHero: React.FC = () => {
   const queue = usePlayerStore((s) => s.queue);
   const queueIndex = usePlayerStore((s) => s.queueIndex);
   const queueLength = usePlayerStore((s) => s.queue.length);
-  const addToQueue = usePlayerStore((s) => s.addToQueue);
 
   const isActive = useSoundWaveStore((s) => s.isActive);
   const isSuspended = useSoundWaveStore((s) => s.isSuspended);
@@ -171,6 +171,8 @@ export const SoundWaveHero: React.FC = () => {
   const setSoundwaveSelectedGenres = useSettingsStore((s) => s.setSoundwaveSelectedGenres);
   const setSoundwaveHideLiked = useSettingsStore((s) => s.setSoundwaveHideLiked);
   const selectedPreset = getPresetByKey(selectedPresetKey);
+  const currentTrackUrn = currentTrack?.urn;
+  const currentTrackStreamQuality = currentTrack?.streamQuality;
 
   // Prefetching logic
   useEffect(() => {
@@ -188,14 +190,28 @@ export const SoundWaveHero: React.FC = () => {
       generateBatch()
         .then((newTracks) => {
           if (newTracks.length > 0) {
-            addToQueue(newTracks);
+            const player = usePlayerStore.getState();
+            const existingUrns = new Set(player.queue.map((track) => track.urn).filter(Boolean));
+            const protectedUrns = new Set(
+              player.queue
+                .slice(0, Math.max(0, player.queueIndex + 1))
+                .map((track) => track.urn)
+                .filter(Boolean),
+            );
+            const nextQueue = dedupeWaveQueue([...player.queue, ...newTracks], {
+              stage: 'hero-prefetch-final',
+              protectedUrns,
+            });
+            if (nextQueue.some((track) => !existingUrns.has(track.urn))) {
+              player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
+            }
           }
         })
         .finally(() => {
           isPrefetchingRef.current = false;
         });
     }
-  }, [isActive, isSuspended, queueIndex, queueLength, generateBatch, addToQueue, isInitialLoading]);
+  }, [isActive, isSuspended, queueIndex, queueLength, generateBatch, isInitialLoading]);
 
   useEffect(() => {
     if (!isAwaitingFirstTrack) return;
@@ -206,7 +222,7 @@ export const SoundWaveHero: React.FC = () => {
       return;
     }
 
-    if (!currentTrack || !currentTrack.streamQuality) {
+    if (!currentTrackUrn || !currentTrackStreamQuality) {
       awaitingFirstPlayableRef.current = true;
       return;
     }
@@ -215,7 +231,7 @@ export const SoundWaveHero: React.FC = () => {
       setIsAwaitingFirstTrack(false);
       awaitingFirstPlayableRef.current = false;
     }
-  }, [isAwaitingFirstTrack, isActive, currentTrack?.urn, currentTrack?.streamQuality]);
+  }, [isAwaitingFirstTrack, isActive, currentTrackUrn, currentTrackStreamQuality]);
 
   useEffect(() => {
     if (!isGenreMenuOpen) {
@@ -519,7 +535,6 @@ export const SoundWaveHero: React.FC = () => {
     } else if (!isSuspended) {
       stopWave();
     }
-
   };
 
   const handleToggleWave = () => {
@@ -714,7 +729,6 @@ export const SoundWaveHero: React.FC = () => {
               <span>{t('soundwave.configure')}</span>
             </button>
           </div>
-
         </div>
       </div>
 

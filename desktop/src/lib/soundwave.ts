@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { Track } from '../stores/player';
 import { api } from './api';
+import { collapseVariations } from './soundwave-canonical';
 import { filterSoundWaveTracks, getTrackIdFromUrn } from './soundwave-freshness';
 
 export interface RecommendResult {
@@ -78,11 +79,22 @@ export function useSoundWave(opts: {
   const mode: SoundWaveMode = opts.mode ?? 'similar';
   const hideLiked = !!opts.hideLiked;
   const refreshToken = opts.refreshToken ?? 0;
-  const excludeTrackIds = [...new Set(opts.excludeTrackIds?.map((value) => value.trim()).filter(Boolean))];
+  const excludeTrackIds = [
+    ...new Set(opts.excludeTrackIds?.map((value) => value.trim()).filter(Boolean)),
+  ];
   const excludeKey = excludeTrackIds.join(',');
 
   return useQuery({
-    queryKey: ['soundwave', 'native', limit, languages ?? 'all', mode, hideLiked, refreshToken, excludeKey],
+    queryKey: [
+      'soundwave',
+      'native',
+      limit,
+      languages ?? 'all',
+      mode,
+      hideLiked,
+      refreshToken,
+      excludeKey,
+    ],
     enabled: opts.enabled !== false,
     staleTime: SW_STALE_MS,
     gcTime: SW_GC_MS,
@@ -101,12 +113,15 @@ export function useSoundWave(opts: {
           id.startsWith('soundcloud:tracks:') ? [id] : [id, `soundcloud:tracks:${id}`],
         ),
       );
-      const tracks = filterSoundWaveTracks(hydrated, {
-        hideLiked,
-        excludeUrns,
-        minTracks: Math.min(8, limit),
-        includeRecentIfNeeded: true,
-      }).slice(0, limit);
+      const tracks = collapseVariations(
+        filterSoundWaveTracks(hydrated, {
+          hideLiked,
+          excludeUrns,
+          minTracks: Math.min(8, limit),
+          includeRecentIfNeeded: true,
+        }),
+        { stage: 'hook-native' },
+      ).slice(0, limit);
 
       return { tracks, recs };
     },
@@ -134,10 +149,13 @@ export function useSoundWaveSimilar(opts: {
       const recs = await api<RecommendResult[]>(
         `/recommendations/similar/${encodeURIComponent(trackId!)}?${qs}`,
       ).catch(() => [] as RecommendResult[]);
-      const tracks = filterSoundWaveTracks(await hydrateByIds(recs), {
-        minTracks: Math.min(8, limit),
-        includeRecentIfNeeded: true,
-      }).slice(0, limit);
+      const tracks = collapseVariations(
+        filterSoundWaveTracks(await hydrateByIds(recs), {
+          minTracks: Math.min(8, limit),
+          includeRecentIfNeeded: true,
+        }),
+        { stage: 'hook-similar' },
+      ).slice(0, limit);
 
       return { tracks, recs };
     },

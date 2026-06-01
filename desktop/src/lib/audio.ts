@@ -21,6 +21,7 @@ import {
 } from './cache';
 import { art } from './formatters';
 import { isTauriRuntime } from './runtime';
+import { dedupeWaveQueue } from './soundwave-canonical';
 import { filterSoundWaveTracks } from './soundwave-freshness';
 import { buildWaveQueueFromPlayerContext, dedupeTracksByUrn } from './soundwave-queue';
 import { getTrackWaveform } from './waveform';
@@ -3045,7 +3046,26 @@ async function autoplayRelated(lastTrack: Track) {
       return;
     }
 
-    usePlayerStore.getState().addToQueue(fresh);
+    const player = usePlayerStore.getState();
+    if (queueSource === 'soundwave') {
+      const protectedUrns = new Set(
+        player.queue
+          .slice(0, Math.max(0, player.queueIndex + 1))
+          .map((track) => track.urn)
+          .filter(Boolean),
+      );
+      const nextQueue = dedupeWaveQueue([...player.queue, ...fresh], {
+        stage: 'autoplay-related-final',
+        protectedUrns,
+      });
+      if (!nextQueue.some((track) => !protectedUrns.has(track.urn))) {
+        player.pause();
+        return;
+      }
+      player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
+    } else {
+      player.addToQueue(fresh);
+    }
     usePlayerStore.getState().next();
   } catch (e) {
     console.error('Autoplay related failed:', e);
