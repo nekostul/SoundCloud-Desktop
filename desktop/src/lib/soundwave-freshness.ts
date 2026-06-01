@@ -25,9 +25,9 @@ function readStorage(): FreshnessStorage {
   if (typeof localStorage === 'undefined') return emptyStorage();
 
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') as
-      | Partial<FreshnessStorage>
-      | null;
+    const parsed = JSON.parse(
+      localStorage.getItem(STORAGE_KEY) || 'null',
+    ) as Partial<FreshnessStorage> | null;
     if (!parsed || parsed.day !== localDayKey()) return emptyStorage();
 
     return {
@@ -52,6 +52,14 @@ function writeStorage(value: FreshnessStorage) {
 
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+  } catch {}
+}
+
+export function resetSoundWaveFreshness() {
+  if (typeof localStorage === 'undefined') return;
+
+  try {
+    localStorage.removeItem(STORAGE_KEY);
   } catch {}
 }
 

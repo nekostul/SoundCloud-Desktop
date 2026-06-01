@@ -5,6 +5,7 @@ import { invalidateAllLikesCache } from '../../lib/hooks';
 import { Heart } from '../../lib/icons';
 import { optimisticToggleLike, setLikedUrn, useLiked } from '../../lib/likes';
 import type { Track } from '../../stores/player';
+import { useSoundWaveProfileStore } from '../../stores/soundwave-profile';
 
 export const LikeButton = React.memo(function LikeButton({
   track,
@@ -30,6 +31,7 @@ export const LikeButton = React.memo(function LikeButton({
       await api(`/likes/tracks/${encodeURIComponent(track.urn)}`, {
         method: next ? 'POST' : 'DELETE',
       });
+      useSoundWaveProfileStore.getState().recordTrackLiked(track, next);
     } catch {
       optimisticToggleLike(qc, track, !next);
     }

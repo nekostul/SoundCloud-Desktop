@@ -34,6 +34,7 @@ import {
   type SoundWavePreset,
   useSoundWaveStore,
 } from '../../stores/soundwave';
+import { useSoundWaveProfileStore } from '../../stores/soundwave-profile';
 
 const SOUNDWAVE_PRESET_MAP = {
   ...ACTIVITY_PRESETS,
@@ -202,7 +203,9 @@ export const SoundWaveHero: React.FC = () => {
               stage: 'hero-prefetch-final',
               protectedUrns,
             });
-            if (nextQueue.some((track) => !existingUrns.has(track.urn))) {
+            const freshTracks = nextQueue.filter((track) => !existingUrns.has(track.urn));
+            if (freshTracks.length > 0) {
+              useSoundWaveProfileStore.getState().recordWaveQueue(freshTracks, 'hero-prefetch');
               player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
             }
           }

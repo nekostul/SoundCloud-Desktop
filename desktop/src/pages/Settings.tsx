@@ -1,44 +1,47 @@
+import * as Dialog from '@radix-ui/react-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { LANGUAGE_OPTIONS, normalizeLanguage } from '../i18n/language';
-import { useSubscription } from '../lib/subscription';
+import { DirectOAuthSection } from '../components/settings/DirectOAuthSection';
+import { ProxySection as SharedProxySection } from '../components/settings/ProxySection';
 import { Skeleton } from '../components/ui/Skeleton.tsx';
+import { LANGUAGE_OPTIONS, normalizeLanguage } from '../i18n/language';
 import { useArtworkGradientPalette } from '../lib/artwork-palette';
 import { buildArtworkSurfaceVisual } from '../lib/artwork-surface';
 import { reloadCurrentTrack } from '../lib/audio';
-import { getApiBase } from '../lib/constants';
-import { FPS_PRESETS } from '../lib/framerate';
 import {
-  clearCache,
   clearAssetsCache,
+  clearCache,
+  clearLyricsCache,
   downloadWallpaper,
-  getCacheSize,
   getAssetsCacheSize,
+  getCacheSize,
+  getLyricsCacheSize,
   getWallpaperUrl,
   listWallpapers,
   removeWallpaper,
   saveWallpaperFromBuffer,
-  getLyricsCacheSize,
-  clearLyricsCache,
 } from '../lib/cache';
-import { Globe, Link, Loader2, Trash2, X } from '../lib/icons';
-
+import { getApiBase } from '../lib/constants';
+import { FPS_PRESETS } from '../lib/framerate';
+import { AlertCircle, Globe, Link, Loader2, Trash2, X } from '../lib/icons';
+import { resetVariationSuppression } from '../lib/soundwave-canonical';
+import { resetSoundWaveFreshness } from '../lib/soundwave-freshness';
+import { useSubscription } from '../lib/subscription';
+import { usePlayerStore } from '../stores/player';
 import {
   APP_ICON_VARIANTS,
-  THEME_PRESETS,
-  useSettingsStore,
   type AppIconVariant,
   type DiscordRpcButtonMode,
   type DiscordRpcMode,
+  THEME_PRESETS,
   type ThemeGradientAnimation,
   type ThemeGradientType,
   type ThemePreset,
+  useSettingsStore,
 } from '../stores/settings';
-import { usePlayerStore } from '../stores/player';
-import { DirectOAuthSection } from '../components/settings/DirectOAuthSection';
-import { ProxySection as SharedProxySection } from '../components/settings/ProxySection';
+import { useSoundWaveProfileStore } from '../stores/soundwave-profile';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -1504,9 +1507,7 @@ const ThemeSection = React.memo(function ThemeSection() {
                   <label className="text-[13px] text-white/50 font-medium">
                     {t('settings.themeDockBlur')}
                   </label>
-                  <span className="text-[12px] text-white/30 tabular-nums">
-                    {themeDockBlur}px
-                  </span>
+                  <span className="text-[12px] text-white/30 tabular-nums">{themeDockBlur}px</span>
                 </div>
                 <input
                   type="range"
@@ -2031,6 +2032,116 @@ const PlaybackSection = React.memo(function PlaybackSection() {
   );
 });
 
+const WaveResetSection = React.memo(function WaveResetSection() {
+  const { t } = useTranslation();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const handleResetWaveProfile = useCallback(async () => {
+    if (resetting) return;
+
+    setResetting(true);
+    try {
+      useSoundWaveProfileStore.getState().resetProfile();
+      resetSoundWaveFreshness();
+      resetVariationSuppression();
+      setConfirmOpen(false);
+      toast.success(t('settings.waveResetSuccess'));
+    } catch (error) {
+      console.error('[Wave] Failed to reset personalization', error);
+      toast.error(t('common.error'));
+    } finally {
+      setResetting(false);
+    }
+  }, [resetting, t]);
+
+  return (
+    <section className="bg-white/[0.02] border border-white/[0.05] backdrop-blur-[60px] rounded-3xl p-6 shadow-xl space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h3 className="text-[15px] font-bold text-white/80 tracking-tight">
+            {t('settings.waveResetTitle')}
+          </h3>
+          <p className="max-w-[560px] text-[12px] leading-relaxed text-white/42">
+            {t('settings.waveResetDescription')}
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setConfirmOpen(true)}
+          disabled={resetting}
+          className="inline-flex items-center gap-2 rounded-2xl border border-red-500/16 bg-red-500/10 px-4 py-2.5 text-[12px] font-semibold text-red-300 transition-all hover:bg-red-500/16 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {resetting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+          {t('settings.waveResetAction')}
+        </button>
+      </div>
+
+      <div className="rounded-2xl border border-white/[0.06] bg-white/[0.03] px-4 py-3">
+        <p className="text-[12px] leading-relaxed text-white/52">{t('settings.waveResetHint')}</p>
+      </div>
+
+      <Dialog.Root
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          if (!resetting) setConfirmOpen(open);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm animate-fade-in" />
+          <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[min(92vw,420px)] -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-white/[0.08] bg-[#141418]/95 p-6 shadow-2xl animate-fade-in-up">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-red-500/12 text-red-300">
+                <AlertCircle size={18} />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <Dialog.Title className="text-[16px] font-bold tracking-tight text-white/92">
+                  {t('settings.waveResetConfirmTitle')}
+                </Dialog.Title>
+                <Dialog.Description className="mt-2 text-[13px] leading-relaxed text-white/56">
+                  {t('settings.waveResetConfirmDescription')}
+                </Dialog.Description>
+              </div>
+
+              <Dialog.Close className="flex h-8 w-8 items-center justify-center rounded-xl text-white/28 transition-all hover:bg-white/[0.08] hover:text-white/72">
+                <X size={14} />
+              </Dialog.Close>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/[0.06] bg-white/[0.03] px-4 py-3">
+              <p className="text-[12px] leading-relaxed text-white/48">
+                {t('settings.waveResetConfirmHint')}
+              </p>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(false)}
+                disabled={resetting}
+                className="rounded-2xl px-4 py-2 text-[13px] font-medium text-white/56 transition-all hover:bg-white/[0.06] hover:text-white/84 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t('common.back')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleResetWaveProfile()}
+                disabled={resetting}
+                className="inline-flex items-center gap-2 rounded-2xl border border-red-500/20 bg-red-500/15 px-4 py-2 text-[13px] font-semibold text-red-200 transition-all hover:bg-red-500/22 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {resetting ? <Loader2 size={14} className="animate-spin" /> : null}
+                {t('settings.waveResetConfirmContinue')}
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </section>
+  );
+});
+
 const ProxySection = React.memo(function ProxySection() {
   return <SharedProxySection sectionId="settings-proxy-section" />;
 });
@@ -2350,6 +2461,7 @@ export function Settings() {
       <CacheSection />
       <ThemeSection />
       <PlaybackSection />
+      <WaveResetSection />
       <ConnectivitySection />
       <ProxySection />
       <EqualizerSection />

@@ -118,6 +118,13 @@ export interface Track {
 type RepeatMode = 'off' | 'one' | 'all';
 type TrackPlaybackRateMap = Record<string, number>;
 type TrackPlaybackRateEnabledMap = Record<string, boolean>;
+type QueueEndAdvanceHandler = (() => boolean) | null;
+
+let queueEndAdvanceHandler: QueueEndAdvanceHandler = null;
+
+export function setQueueEndAdvanceHandler(handler: QueueEndAdvanceHandler) {
+  queueEndAdvanceHandler = handler;
+}
 
 type PlaybackRateControlState = {
   currentTrack: Track | null;
@@ -380,6 +387,7 @@ export const usePlayerStore = create<PlayerState>()(
           const {
             queue,
             queueIndex,
+            queueSource,
             repeat,
             globalPlaybackRate,
             trackPlaybackRatesByUrn,
@@ -394,6 +402,9 @@ export const usePlayerStore = create<PlayerState>()(
             if (nextIdx >= queue.length) {
               if (repeat === 'all') nextIdx = 0;
               else {
+                if (queueSource === 'soundwave' && queueEndAdvanceHandler?.()) {
+                  return;
+                }
                 set({ isPlaying: false });
                 return;
               }

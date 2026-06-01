@@ -16,6 +16,7 @@ import {
   Repeat2,
   Scissors,
   SkipForward,
+  Sparkles,
   Trash2,
   UserRound,
   Users,
@@ -40,8 +41,12 @@ import { api } from '../../lib/api';
 import { invalidateAllLikesCache } from '../../lib/hooks';
 import { isUrnLiked, optimisticToggleLike } from '../../lib/likes';
 import { isTauriRuntime } from '../../lib/runtime';
+import { hydrateByIds, type RecommendResult, trackIdFromTrack } from '../../lib/soundwave';
 import { useAuthStore } from '../../stores/auth';
 import { type Track, usePlayerStore } from '../../stores/player';
+import { useSettingsStore } from '../../stores/settings';
+import { CHARACTER_PRESETS, useSoundWaveStore } from '../../stores/soundwave';
+import { useSoundWaveProfileStore } from '../../stores/soundwave-profile';
 import { AddToPlaylistDialog } from '../music/AddToPlaylistDialog';
 import {
   type ContextMenuPlaylistEntity,
@@ -517,6 +522,7 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
           method: nextLiked ? 'POST' : 'DELETE',
         });
         queryClient.invalidateQueries({ queryKey: ['track', track.urn, 'favoriters'] });
+        useSoundWaveProfileStore.getState().recordTrackLiked(cachedTrack ?? track, nextLiked);
       } catch {
         optimisticToggleLike(queryClient, cachedTrack ?? track, !nextLiked);
         throw new Error('toggle-track-like-failed');
@@ -598,6 +604,44 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
       } catch (error) {
         console.error('[context-menu] save image failed:', error);
         toast.error(t('contextMenu.imageSaveFailed'));
+      }
+    },
+    [t],
+  );
+
+  const startTrackFlow = useCallback(
+    async (track: Track) => {
+      const trackId = trackIdFromTrack(track);
+      const preset =
+        useSettingsStore.getState().soundwaveMode === 'diverse'
+          ? CHARACTER_PRESETS.discover
+          : CHARACTER_PRESETS.favorite;
+      const soundwave = useSoundWaveStore.getState();
+
+      soundwave.setTrackFlowLaunching(true);
+      try {
+        const similar = trackId
+          ? await api<RecommendResult[]>(
+              `/recommendations/similar/${encodeURIComponent(trackId)}?${new URLSearchParams({
+                limit: '20',
+                exclude: trackId,
+              }).toString()}`,
+              { quietHttpErrors: true },
+            ).catch(() => [] as RecommendResult[])
+          : [];
+        const relatedTracks = similar.length > 0 ? await hydrateByIds(similar) : [];
+        const queue = dedupeTracksByUrn([track, ...relatedTracks]);
+
+        await soundwave.startFromQueue({
+          queue: queue.length > 0 ? queue : [track],
+          seedTracks: queue.slice(0, 3),
+          preset,
+        });
+      } catch (error) {
+        console.error('[context-menu] failed to start track flow', error);
+        toast.error(t('common.error'));
+      } finally {
+        useSoundWaveStore.getState().setTrackFlowLaunching(false);
       }
     },
     [t],
@@ -859,6 +903,14 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
           },
         },
         {
+          id: 'start-track-flow',
+          label: t('contextMenu.myTrackFlow'),
+          icon: Sparkles,
+          onSelect: async () => {
+            await startTrackFlow(target.track);
+          },
+        },
+        {
           id: isTrackInQueue ? 'remove-track-from-queue' : 'add-track-to-queue',
           label: isTrackInQueue ? t('contextMenu.removeFromQueue') : t('player.addToQueue'),
           icon: isTrackInQueue ? Trash2 : ListPlus,
@@ -1062,6 +1114,7 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
     menuState,
     navigate,
     playerQueue,
+    startTrackFlow,
     t,
     toggleFollowUser,
     togglePlaylistLike,

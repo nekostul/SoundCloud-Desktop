@@ -16,10 +16,19 @@ import {
   filterSoundWaveTracks,
   markSoundWaveTrackPlayed,
 } from '../lib/soundwave-freshness';
-import { buildWaveQueueFromPlayerContext, dedupeTracksByUrn } from '../lib/soundwave-queue';
+import {
+  buildWaveQueueFromPlayerContext,
+  buildWaveQueueFromSeeds,
+  dedupeTracksByUrn,
+} from '../lib/soundwave-queue';
 import { useDislikesStore } from './dislikes';
 import { type Track, usePlayerStore } from './player';
 import { useSettingsStore } from './settings';
+import {
+  pickPersonalizedSeedTracks,
+  rankWaveCandidates,
+  useSoundWaveProfileStore,
+} from './soundwave-profile';
 
 export interface SoundWavePreset {
   name: string;
@@ -103,6 +112,9 @@ interface HistoryResponse {
 interface SoundWaveState {
   isActive: boolean;
   isSuspended: boolean;
+  isQueueRefilling: boolean;
+  isTrackFlowLaunching: boolean;
+  queueRefillReason: string | null;
   continuationStrategy: SoundWaveContinuationStrategy | null;
   isInitialLoading: boolean;
   startupProgress: number;
@@ -124,6 +136,8 @@ interface SoundWaveState {
   suspendedQueue: Track[] | null;
   suspendedQueueIndex: number;
   setStartupProgress: (progress: number, visible?: boolean, stage?: StartupStageKey) => void;
+  setQueueRefilling: (value: boolean, reason?: string | null) => void;
+  setTrackFlowLaunching: (value: boolean) => void;
 
   init: () => Promise<void>;
   start: (preset: SoundWavePreset) => Promise<void>;
@@ -231,6 +245,9 @@ function scheduleStartupHide(set: (state: Partial<SoundWaveState>) => void) {
 export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
   isActive: false,
   isSuspended: false,
+  isQueueRefilling: false,
+  isTrackFlowLaunching: false,
+  queueRefillReason: null,
   continuationStrategy: null,
   isInitialLoading: false,
   startupProgress: 0,
@@ -262,6 +279,17 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       startupVisible: visible,
       ...(stage ? { startupStage: stage } : {}),
     });
+  },
+
+  setQueueRefilling: (value, reason = null) => {
+    set({
+      isQueueRefilling: value,
+      queueRefillReason: value ? (reason ?? get().queueRefillReason) : null,
+    });
+  },
+
+  setTrackFlowLaunching: (value) => {
+    set({ isTrackFlowLaunching: value });
   },
 
   init: async () => {
@@ -336,10 +364,14 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     stop();
     set({ startupVisible: true, startupProgress: 8, startupStage: 'preset' });
     await init();
+    const sessionSeedTracks = pickPersonalizedSeedTracks(get().seedTracks, { limit: 12 });
 
     set({
       isActive: true,
       isSuspended: false,
+      isQueueRefilling: false,
+      isTrackFlowLaunching: false,
+      queueRefillReason: null,
       continuationStrategy: 'preset-batch',
       currentPreset: preset,
       launchContext: null,
@@ -352,19 +384,33 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       startupProgress: Math.max(get().startupProgress, 82),
       startupStage: 'batch',
     });
+    useSoundWaveProfileStore.getState().startSession({
+      presetKey: preset.name,
+      launchSource: 'preset',
+      seedTracks: sessionSeedTracks,
+    });
 
     try {
       const batch = await generateBatch({ startup: true });
       const finalBatch = dedupeWaveQueue(batch, { stage: 'start-final' });
       if (finalBatch.length > 0) {
+        useSoundWaveProfileStore.getState().recordWaveQueue(finalBatch, 'preset-start');
         usePlayerStore.getState().play(finalBatch[0], finalBatch, 'soundwave');
         set({ startupVisible: true, startupProgress: 100, startupStage: 'done' });
         scheduleStartupHide(set);
       } else {
-        set({ startupVisible: false, startupProgress: 0, startupStage: 'idle' });
+        useSoundWaveProfileStore.getState().finishSession();
+        set({
+          isActive: false,
+          continuationStrategy: null,
+          startupVisible: false,
+          startupProgress: 0,
+          startupStage: 'idle',
+        });
       }
     } catch (error) {
       console.error('[SoundWave] Start failed', error);
+      useSoundWaveProfileStore.getState().finishSession();
       set({
         isActive: false,
         continuationStrategy: null,
@@ -413,10 +459,17 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     }
 
     await init();
+    const sessionSeedTracks = pickPersonalizedSeedTracks(
+      seedTracks.length > 0 ? seedTracks : normalizedQueue,
+      { limit: 12 },
+    );
 
     set({
       isActive: true,
       isSuspended: false,
+      isQueueRefilling: false,
+      isTrackFlowLaunching: false,
+      queueRefillReason: null,
       continuationStrategy,
       currentPreset: preset,
       launchContext,
@@ -430,6 +483,26 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       startupStage: restartInPlace ? 'idle' : 'done',
       seedTracks: seedTracks.length > 0 ? dedupeTracksByUrn(seedTracks) : get().seedTracks,
     });
+    if (!restartInPlace) {
+      useSoundWaveProfileStore.getState().startSession({
+        presetKey: preset?.name ?? null,
+        launchSource: launchContext?.kind ?? continuationStrategy ?? 'queue',
+        seedTracks: sessionSeedTracks,
+      });
+    }
+
+    const currentTrackIndex = currentTrack?.urn
+      ? normalizedQueue.findIndex((track) => track.urn === currentTrack.urn)
+      : -1;
+    const queuedTracksToRecord =
+      preserveCurrentTrack && currentTrackIndex >= 0
+        ? normalizedQueue.slice(currentTrackIndex + 1)
+        : normalizedQueue;
+    if (queuedTracksToRecord.length > 0) {
+      useSoundWaveProfileStore
+        .getState()
+        .recordWaveQueue(queuedTracksToRecord, continuationStrategy ?? 'queue-start');
+    }
 
     const player = usePlayerStore.getState();
     if (preserveCurrentTrack && player.currentTrack) {
@@ -441,6 +514,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
   },
 
   stop: () => {
+    useSoundWaveProfileStore.getState().finishSession();
     if (startupProgressHideTimer) {
       clearTimeout(startupProgressHideTimer);
       startupProgressHideTimer = null;
@@ -449,6 +523,9 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     set({
       isActive: false,
       isSuspended: false,
+      isQueueRefilling: false,
+      isTrackFlowLaunching: false,
+      queueRefillReason: null,
       continuationStrategy: null,
       startupVisible: false,
       startupProgress: 0,
@@ -471,6 +548,9 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     const safeIndex = Math.max(0, Math.min(queueIndex, queue.length - 1));
     set({
       isSuspended: true,
+      isQueueRefilling: false,
+      isTrackFlowLaunching: false,
+      queueRefillReason: null,
       startupStage: 'caching',
       suspendedQueue: queue.map((track) => ({ ...track })),
       suspendedQueueIndex: safeIndex,
@@ -488,6 +568,9 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     usePlayerStore.getState().play(resumeTrack, suspendedQueue, 'soundwave');
     set({
       isSuspended: false,
+      isQueueRefilling: false,
+      isTrackFlowLaunching: false,
+      queueRefillReason: null,
       startupStage: 'done',
       suspendedQueue: null,
       suspendedQueueIndex: -1,
@@ -563,6 +646,12 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     const finalTail = nextQueue.filter((track) => !protectedUrns.has(track.urn));
     if (finalTail.length === 0) return [];
 
+    useSoundWaveProfileStore
+      .getState()
+      .recordWaveQueue(
+        finalTail,
+        continuationStrategy === 'contextual-tail' ? 'contextual-tail' : 'preset-refill',
+      );
     usePlayerStore.getState().replaceQueueKeepingCurrent(nextQueue, 'soundwave');
     return finalTail;
   },
@@ -582,7 +671,9 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     get().markTrackPlayed(track);
   },
 
-  trainTrackMood: () => {},
+  trainTrackMood: (track, mood) => {
+    useSoundWaveProfileStore.getState().recordMoodPreference(track, mood);
+  },
 
   generateBatch: async (options) => {
     if (inFlightGenerateBatch) return inFlightGenerateBatch;
@@ -601,20 +692,45 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       const settings = useSettingsStore.getState();
       const limit = settings.soundwaveHideLiked ? 36 : 24;
       const mode = resolveSoundWaveMode(currentPreset);
-      let tracks = await fetchNativeHomeTracks(limit * 2, mode);
+      const personalizedSeeds = pickPersonalizedSeedTracks(seedTracks, {
+        limit: mode === 'diverse' ? 12 : 9,
+        excludeUrns: playedUrns,
+      });
+      const seedTail =
+        personalizedSeeds.length > 0
+          ? await buildWaveQueueFromSeeds(
+              personalizedSeeds,
+              settings.soundwaveLanguages,
+              mode,
+              settings.soundwaveHideLiked,
+              {
+                recentTracks: personalizedSeeds.slice(0, 4),
+                targetSize: Math.max(limit * 2, 28),
+              },
+            )
+          : [];
+      let homeTracks = await fetchNativeHomeTracks(limit * 2, mode);
 
-      if (tracks.length === 0) {
-        tracks =
+      if (homeTracks.length === 0) {
+        homeTracks =
           currentPreset?.mode === 'favorite'
-            ? [...seedTracks, ...explorePool]
-            : [...explorePool, ...seedTracks];
+            ? [...personalizedSeeds, ...seedTracks, ...explorePool]
+            : [...explorePool, ...personalizedSeeds, ...seedTracks];
       }
 
-      return finalizeNativeTracks(tracks, {
+      const pool = dedupeTracksByUrn([
+        ...seedTail,
+        ...homeTracks,
+        ...explorePool,
+        ...personalizedSeeds,
+      ]);
+      const finalizedPool = finalizeNativeTracks(pool, {
         playedUrns,
         hideLiked: settings.soundwaveHideLiked,
-        limit,
+        limit: Math.max(limit * 3, 48),
       });
+      const ranked = rankWaveCandidates(finalizedPool, { limit, mode });
+      return ranked.length > 0 ? ranked : finalizedPool.slice(0, limit);
     };
 
     inFlightGenerateBatch = runGenerate().finally(() => {

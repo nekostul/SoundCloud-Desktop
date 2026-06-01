@@ -40,6 +40,7 @@ import { useArtworkStore, useFullscreenPanelStore, useLyricsStore } from '../../
 import { type Track, usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
 import { type MoodLabel, useSoundWaveStore } from '../../stores/soundwave';
+import { useSoundWaveProfileStore } from '../../stores/soundwave-profile';
 import {
   toContextMenuUserEntity,
   useContextMenuTarget,
@@ -163,6 +164,7 @@ function LikeButton({ track }: { track: Track }) {
         method: next ? 'POST' : 'DELETE',
       });
       qc.invalidateQueries({ queryKey: ['track', trackUrn, 'favoriters'] });
+      useSoundWaveProfileStore.getState().recordTrackLiked(trackData ?? track, next);
     } catch {
       setLiked(!next);
       optimisticToggleLike(qc, trackData ?? track, !next);
@@ -195,6 +197,9 @@ function DislikeButton({ trackUrn }: { trackUrn: string }) {
     if (!isDisliked) {
       const sw = useSoundWaveStore.getState();
       const currentTrack = usePlayerStore.getState().currentTrack;
+      if (currentTrack?.urn === trackUrn) {
+        useSoundWaveProfileStore.getState().recordTrackDisliked(currentTrack);
+      }
       if (sw.isActive && currentTrack && currentTrack.urn === trackUrn) {
         sw.recordFeedback(currentTrack, 'negative');
       }

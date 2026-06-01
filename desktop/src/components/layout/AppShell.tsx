@@ -1,4 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
+import { Loader2, Sparkles } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Outlet, useNavigate } from 'react-router-dom';
@@ -24,6 +25,7 @@ import { toggleWindowFullscreen } from '../../lib/window';
 import { useArtworkStore, useFullscreenPanelStore, useLyricsStore } from '../../stores/lyrics';
 import { usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
+import { useSoundWaveStore } from '../../stores/soundwave';
 import { FullscreenPanels } from '../music/LyricsPanel';
 import { QueuePanel } from '../music/QueuePanel';
 import { FloatingNavigation } from './FloatingNavigation';
@@ -228,6 +230,42 @@ const HardwareAccelSync = React.memo(() => {
   }, [enabled]);
 
   return null;
+});
+
+const WaveFloatingStatusChip = React.memo(({ mobile }: { mobile: boolean }) => {
+  const { t } = useTranslation();
+  const isQueueRefilling = useSoundWaveStore((s) => s.isQueueRefilling);
+  const isTrackFlowLaunching = useSoundWaveStore((s) => s.isTrackFlowLaunching);
+  const visible = isTrackFlowLaunching || isQueueRefilling;
+  const label = isTrackFlowLaunching
+    ? t('player.trackFlowPreparing')
+    : t('player.wavePreparing');
+
+  return (
+    <div
+      aria-hidden={!visible}
+      aria-live="polite"
+      className={`pointer-events-none fixed inset-x-0 z-[34] flex justify-center px-4 transition-all duration-200 ease-[var(--ease-apple)] ${
+        visible ? 'translate-y-0 opacity-100' : 'translate-y-3 opacity-0'
+      }`}
+      style={{
+        bottom: mobile ? 'calc(env(safe-area-inset-bottom, 0px) + 148px)' : '108px',
+      }}
+    >
+      <div
+        className="flex max-w-[calc(100vw-32px)] items-center gap-1 rounded-full border border-white/[0.08] bg-[rgba(10,10,14,0.9)] px-4 py-2 text-white shadow-[0_18px_52px_rgba(0,0,0,0.42)] backdrop-blur-[24px]"
+        style={{ marginLeft: mobile ? undefined : 'clamp(120px, 15vw, 260px)' }}
+      >
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.045] text-accent">
+          <Loader2 size={15} className="animate-spin" />
+        </span>
+        <span className="flex min-w-0 items-center gap-2 text-[12px] font-medium text-white/88">
+          <Sparkles size={13} className="shrink-0 text-accent/90" />
+          <span className="truncate">{label}</span>
+        </span>
+      </div>
+    </div>
+  );
 });
 
 /* ── AppShell ──────────────────────────────────────────────── */
@@ -558,6 +596,7 @@ export const AppShell = React.memo(() => {
         </div>
       )}
 
+      {!shellSuppressed && <WaveFloatingStatusChip mobile={isMobile} />}
       <QueuePanel open={queueOpen} onClose={onQueueClose} />
       <FullscreenPanels />
       <KeybindingsDialog open={kbOpen} onOpenChange={setKbOpen} />

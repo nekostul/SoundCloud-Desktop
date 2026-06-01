@@ -27,7 +27,7 @@ type ModifierKind =
   | 'live'
   | 'edit';
 
-interface WorkIdentity {
+export interface WorkIdentity {
   workKey: string;
   titleKey: string;
   artists: string[];
@@ -257,6 +257,10 @@ function identityForTrack(track: Track): WorkIdentity {
     modifierKind: kind,
     isDerivative,
   };
+}
+
+export function describeTrackWork(track: Track): WorkIdentity {
+  return identityForTrack(track);
 }
 
 export function workKeyForTrack(track: Track): string {

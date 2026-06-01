@@ -3,11 +3,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { AddToPlaylistDialog } from '../components/music/AddToPlaylistDialog';
 import {
   toContextMenuUserEntity,
   useContextMenuTarget,
 } from '../components/context-menu/context-menu-registry';
+import { AddToPlaylistDialog } from '../components/music/AddToPlaylistDialog';
 import { CopyLinkButton } from '../components/ui/CopyLinkButton';
 import { api } from '../lib/api';
 import { getCurrentTime, preloadTrack } from '../lib/audio';
@@ -49,6 +49,7 @@ import { optimisticToggleLike, setLikedUrn, useLiked } from '../lib/likes';
 import { useTrackPlay } from '../lib/useTrackPlay';
 import { useArtworkStore, useLyricsStore } from '../stores/lyrics';
 import { type Track, usePlayerStore } from '../stores/player';
+import { useSoundWaveProfileStore } from '../stores/soundwave-profile';
 
 function parseTags(tagList?: string): string[] {
   if (!tagList) return [];
@@ -84,6 +85,9 @@ const LikeBtn = React.memo(({ trackUrn, count }: { trackUrn: string; count?: num
         method: next ? 'POST' : 'DELETE',
       });
       qc.invalidateQueries({ queryKey: ['track', trackUrn, 'favoriters'] });
+      if (cachedTrack) {
+        useSoundWaveProfileStore.getState().recordTrackLiked(cachedTrack, next);
+      }
     } catch {
       setLocalCount((c) => c + (next ? -1 : 1));
       if (cachedTrack) optimisticToggleLike(qc, cachedTrack, !next);
@@ -404,15 +408,9 @@ export const TrackPage = React.memo(() => {
     (s) => !!trackUrn && s.currentTrack?.urn === trackUrn && s.isPlaying,
   );
 
-  const relatedTracks = useMemo(
-    () => relatedData?.collection ?? [],
-    [relatedData],
-  );
+  const relatedTracks = useMemo(() => relatedData?.collection ?? [], [relatedData]);
 
-  const favoriters = useMemo(
-    () => favoritersData?.collection ?? [],
-    [favoritersData],
-  );
+  const favoriters = useMemo(() => favoritersData?.collection ?? [], [favoritersData]);
 
   const trackContextProps = useContextMenuTarget(
     useMemo(() => {
@@ -421,9 +419,7 @@ export const TrackPage = React.memo(() => {
       return {
         type: 'track' as const,
         track,
-        queue: relatedTracks.length > 0
-          ? [track, ...relatedTracks]
-          : [track],
+        queue: relatedTracks.length > 0 ? [track, ...relatedTracks] : [track],
       };
     }, [relatedTracks, track]),
   );
@@ -434,9 +430,7 @@ export const TrackPage = React.memo(() => {
 
       const user = toContextMenuUserEntity(track.user);
 
-      return user
-        ? { type: 'user' as const, user }
-        : null;
+      return user ? { type: 'user' as const, user } : null;
     }, [track]),
   );
 
@@ -467,7 +461,10 @@ export const TrackPage = React.memo(() => {
   return (
     <div className="p-6 pb-4 space-y-7">
       {/* ── Hero ─────────────────────────────────────── */}
-      <section {...trackContextProps} className="relative rounded-3xl overflow-hidden glass-featured">
+      <section
+        {...trackContextProps}
+        className="relative rounded-3xl overflow-hidden glass-featured"
+      >
         {/* Blurred bg */}
         {cover && (
           <div className="absolute inset-0 pointer-events-none">

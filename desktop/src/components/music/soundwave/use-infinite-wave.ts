@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { dedupeWaveQueue } from '../../../lib/soundwave-canonical';
 import type { Track } from '../../../stores/player';
 import { usePlayerStore } from '../../../stores/player';
+import { useSoundWaveProfileStore } from '../../../stores/soundwave-profile';
 
 /**
  * Infinite SoundWave queue.
@@ -72,6 +73,7 @@ export function useInfiniteWave(opts: {
           });
           const fresh = nextQueue.filter((track) => !existingUrns.has(track.urn));
           if (fresh.length > 0) {
+            useSoundWaveProfileStore.getState().recordWaveQueue(fresh, 'infinite-refill');
             player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
             for (const track of fresh) ownedRef.current.add(track.urn);
           }

@@ -1,4 +1,5 @@
 import { type Track, usePlayerStore } from '../stores/player';
+import { pickPersonalizedSeedTracks, rankWaveCandidates } from '../stores/soundwave-profile';
 import {
   fetchWaveTailFromSeed,
   hydrateByIds,
@@ -71,13 +72,20 @@ export async function buildWaveQueueFromSeeds(
 ): Promise<Track[]> {
   const targetSize = Math.max(1, context?.targetSize ?? HOME_WAVE_QUEUE_TARGET);
   const queueTracks = dedupeTracksByUrn(context?.queueTracks ?? []);
-  const anchors = dedupeTracksByUrn([...(context?.recentTracks ?? []), ...seedTracks]).filter(
+  const baseAnchors = dedupeTracksByUrn([...(context?.recentTracks ?? []), ...seedTracks]).filter(
     (track) => !!track?.urn,
   );
 
-  if (anchors.length === 0) return [];
+  if (baseAnchors.length === 0) return [];
 
   const queueUrns = new Set(queueTracks.map((track) => track.urn).filter(Boolean));
+  const anchors = dedupeTracksByUrn([
+    ...baseAnchors,
+    ...pickPersonalizedSeedTracks(baseAnchors, {
+      limit: Math.max(8, RELATED_ANCHOR_LIMIT + 4),
+      excludeUrns: queueUrns,
+    }),
+  ]);
   const antiRepeatUrns = new Set([
     ...getSoundWaveBlockedUrns(),
     ...getSoundWaveRecentUrns(),
@@ -89,8 +97,9 @@ export async function buildWaveQueueFromSeeds(
   const selectedUrns = new Set<string>();
   const anchorLimit =
     mode === 'diverse' ? RELATED_ANCHOR_LIMIT : Math.max(2, RELATED_ANCHOR_LIMIT - 1);
+  const anchorsToProcess = anchors.slice(0, Math.min(anchors.length, anchorLimit + 3));
 
-  for (const anchor of anchors.slice(0, anchorLimit)) {
+  for (const anchor of anchorsToProcess) {
     const anchorId = trackIdFromTrack(anchor);
     if (!anchorId) continue;
 
@@ -131,13 +140,11 @@ export async function buildWaveQueueFromSeeds(
 
       selected.push(track);
       selectedUrns.add(track.urn);
-      if (selected.length >= targetSize) {
-        return dedupeWaveQueue(selected, { stage: 'tail-final' });
-      }
     }
   }
 
-  return dedupeWaveQueue(selected, { stage: 'tail-final' });
+  const ranked = rankWaveCandidates(selected, { limit: targetSize, mode });
+  return dedupeWaveQueue(ranked, { stage: 'tail-final' });
 }
 
 export async function buildWaveQueueFromPlayerContext(opts: {

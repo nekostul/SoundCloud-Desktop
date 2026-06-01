@@ -1,8 +1,17 @@
 import React, { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { art, dur } from '../../lib/formatters';
-import { GripVertical, pauseTextWhite12, playIcon32, Trash2, X } from '../../lib/icons';
+import {
+  GripVertical,
+  Loader2,
+  pauseTextWhite12,
+  playIcon32,
+  Sparkles,
+  Trash2,
+  X,
+} from '../../lib/icons';
 import { usePlayerStore } from '../../stores/player';
+import { useSoundWaveStore } from '../../stores/soundwave';
 import {
   toContextMenuUserEntity,
   useContextMenuTarget,
@@ -146,7 +155,9 @@ const QueueItemRow = React.memo(function QueueItemRow({
 
       <div
         className={`w-10 h-10 rounded-xl overflow-hidden shrink-0 relative cursor-pointer ${
-          isCurrent ? 'bg-white/[0.03] ring-1 ring-white/[0.06]' : 'bg-white/[0.02] ring-1 ring-white/[0.035]'
+          isCurrent
+            ? 'bg-white/[0.03] ring-1 ring-white/[0.06]'
+            : 'bg-white/[0.02] ring-1 ring-white/[0.035]'
         }`}
         onClick={() => onClick(absIdx)}
       >
@@ -287,15 +298,68 @@ const DraggableQueue = React.memo(({ startIndex }: { startIndex: number }) => {
   );
 });
 
+const WaveQueueRefillState = React.memo(function WaveQueueRefillState() {
+  const { t } = useTranslation();
+
+  return (
+    <div className="mt-3 flex h-full min-h-[220px] flex-col justify-center rounded-[24px] border border-white/[0.05] bg-black/12 px-4 py-4 backdrop-blur-[8px]">
+      <div className="flex items-center gap-3 px-1">
+        <span className="flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.05] text-accent shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
+          <Loader2 size={15} className="animate-spin" />
+        </span>
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 text-[12px] font-medium text-white/88">
+            <Sparkles size={12} className="text-accent/90" />
+            {t('player.wavePreparing')}
+          </p>
+          <p className="mt-0.5 text-[10px] text-white/36">{t('player.wavePreparingHint')}</p>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-col gap-2.5">
+        {[0, 1, 2].map((index) => (
+          <div
+            key={index}
+            className="flex items-center gap-3 rounded-[18px] border border-white/[0.035] bg-white/[0.025] px-3 py-2.5 animate-pulse"
+            style={{ animationDelay: `${index * 140}ms` }}
+          >
+            <div className="h-10 w-10 shrink-0 rounded-xl bg-white/[0.06]" />
+            <div className="min-w-0 flex-1">
+              <div
+                className="h-3 rounded-full bg-white/[0.08]"
+                style={{ width: index === 1 ? '58%' : index === 2 ? '72%' : '66%' }}
+              />
+              <div
+                className="mt-2 h-2 rounded-full bg-white/[0.05]"
+                style={{ width: index === 1 ? '34%' : index === 2 ? '41%' : '28%' }}
+              />
+            </div>
+            <div className="h-2 w-8 shrink-0 rounded-full bg-white/[0.05]" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+});
+
 /* ── Panel ───────────────────────────────────────────────────────── */
 export const QueuePanel = React.memo(
   ({ open, onClose }: { open: boolean; onClose: () => void }) => {
     const { t } = useTranslation();
     const queue = usePlayerStore((s) => s.queue);
     const queueIndex = usePlayerStore((s) => s.queueIndex);
+    const queueSource = usePlayerStore((s) => s.queueSource);
     const currentTrack = usePlayerStore((s) => s.currentTrack);
+    const isWaveActive = useSoundWaveStore((s) => s.isActive);
+    const isQueueRefilling = useSoundWaveStore((s) => s.isQueueRefilling);
 
     const upNextCount = queue.length - queueIndex - 1;
+    const showWaveQueueRefill =
+      Boolean(currentTrack) &&
+      queueSource === 'soundwave' &&
+      isWaveActive &&
+      isQueueRefilling &&
+      upNextCount <= 0;
 
     return (
       <>
@@ -380,7 +444,9 @@ export const QueuePanel = React.memo(
                 </>
               )}
 
-              {queue.length === 0 && (
+              {showWaveQueueRefill && <WaveQueueRefillState />}
+
+              {queue.length === 0 && !showWaveQueueRefill && (
                 <div className="flex flex-col items-center justify-center h-full rounded-[24px] border border-white/[0.04] bg-black/10 text-white/15 backdrop-blur-[8px]">
                   {playIcon32}
                   <p className="text-sm mt-3">{t('player.queueEmpty')}</p>

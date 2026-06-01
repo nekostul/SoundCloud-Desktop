@@ -12,6 +12,7 @@ import type { Track } from '../../stores/player';
 import { usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
 import { CHARACTER_PRESETS, useSoundWaveStore } from '../../stores/soundwave';
+import { useSoundWaveProfileStore } from '../../stores/soundwave-profile';
 
 type SoundWaveLaunchKind = 'playlist' | 'artist';
 
@@ -118,8 +119,9 @@ export function SoundWaveLaunchButton({
           stage: 'launch-tail-final',
           protectedUrns,
         });
-        const hasNewTracks = nextQueue.some((track) => !existingUrns.has(track.urn));
-        if (hasNewTracks) {
+        const freshTracks = nextQueue.filter((track) => !existingUrns.has(track.urn));
+        if (freshTracks.length > 0) {
+          useSoundWaveProfileStore.getState().recordWaveQueue(freshTracks, 'launch-tail');
           player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
         }
       });

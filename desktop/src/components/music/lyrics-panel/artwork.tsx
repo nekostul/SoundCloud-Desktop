@@ -42,6 +42,7 @@ import type { Track } from '../../../stores/player';
 import { usePlayerStore } from '../../../stores/player';
 import { useSettingsStore } from '../../../stores/settings';
 import { useSoundWaveStore } from '../../../stores/soundwave';
+import { useSoundWaveProfileStore } from '../../../stores/soundwave-profile';
 import { ProgressSlider, ProgressTime } from '../../layout/NowPlayingBar';
 import { AddToPlaylistDialog } from '../AddToPlaylistDialog';
 import { PlaybackSpeedPresets } from '../PlaybackSpeedPresets';
@@ -395,6 +396,7 @@ export const FullscreenLikeButton = React.memo(
           method: next ? 'POST' : 'DELETE',
         });
         qc.invalidateQueries({ queryKey: ['track', track.urn, 'favoriters'] });
+        useSoundWaveProfileStore.getState().recordTrackLiked(trackData ?? track, next);
       } catch {
         setLikedOverride(!next);
         optimisticToggleLike(qc, trackData ?? track, !next);
@@ -431,6 +433,7 @@ export const FullscreenDislikeButton = React.memo(
     const handleToggle = () => {
       toggle(trackUrn);
       if (!isDisliked) {
+        useSoundWaveProfileStore.getState().recordTrackDisliked(track);
         const sw = useSoundWaveStore.getState();
         if (sw.isActive) {
           sw.recordFeedback(track, 'negative');
