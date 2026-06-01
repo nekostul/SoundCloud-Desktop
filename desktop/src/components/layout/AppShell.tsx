@@ -487,8 +487,8 @@ export const AppShell = React.memo(() => {
       >
         {!isMobile && <Sidebar />}
 
-        <main
-          className="flex-2 mx-3 mt-[6px] mb-[16px] rounded-[17px] overflow-hidden border border-white/[0.15] relative"
+        <section
+          className="flex-2 mx-3 mt-[6px] mb-[16px] min-h-0 rounded-[17px] overflow-hidden border border-white/[0.15] relative"
           style={{
             backgroundColor: 'var(--bg-primary)',
             backgroundImage: themePreset === 'artwork' ? 'none' : 'var(--theme-app-background)',
@@ -528,28 +528,35 @@ export const AppShell = React.memo(() => {
             <CustomBackground />
           </div>
 
-          <div
-            ref={scrollContainerRef}
-            onScroll={handleContentScroll}
-            className="app-shell-scroll h-full overflow-y-auto overflow-x-hidden relative z-10"
-          >
-            <div className={isMobile ? 'min-h-full' : 'app-shell-page-spacer min-h-full'}>
-              <StableOutlet />
+          <main className="relative z-10 h-full">
+            <div
+              ref={scrollContainerRef}
+              onScroll={handleContentScroll}
+              className="app-shell-scroll h-full overflow-y-auto overflow-x-hidden relative"
+            >
+              <div className={isMobile ? 'min-h-full' : 'app-shell-page-spacer min-h-full'}>
+                <StableOutlet />
+              </div>
             </div>
-          </div>
-          <div ref={customScrollbarThumbRef} className="app-shell-scrollbar-thumb" aria-hidden />
-        </main>
+            <div ref={customScrollbarThumbRef} className="app-shell-scrollbar-thumb" aria-hidden />
+          </main>
+
+          {!isMobile && (
+            <div className="pointer-events-none absolute -inset-x-px -bottom-px z-20 flex flex-col">
+              <NowPlayingBar contained onQueueToggle={onQueueToggle} queueOpen={queueOpen} />
+            </div>
+          )}
+        </section>
       </div>
 
-      <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-10 flex flex-col">
-        <NowPlayingBar onQueueToggle={onQueueToggle} queueOpen={queueOpen} />
-
-        {isMobile && (
+      {isMobile && (
+        <div className="pointer-events-none fixed bottom-0 left-0 right-0 z-10 flex flex-col">
+          <NowPlayingBar onQueueToggle={onQueueToggle} queueOpen={queueOpen} />
           <div className="pointer-events-auto">
             <MobileNav />
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       <QueuePanel open={queueOpen} onClose={onQueueClose} />
       <FullscreenPanels />

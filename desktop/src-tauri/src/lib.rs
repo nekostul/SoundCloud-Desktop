@@ -918,7 +918,7 @@ fn append_bootstrap_error_log(message: &str) {
         return;
     };
 
-    let logs_dir = base_dir.join("com.soundcloud.desktop").join("logs");
+    let logs_dir = base_dir.join("com.sc.desk").join("logs");
     if fs::create_dir_all(&logs_dir).is_err() {
         eprintln!("{message}");
         return;

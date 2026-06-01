@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "soundcloud-desktop",
+  "productName": "sc-desk",
+  "mainBinaryName": "sc-desk",
   "version": "2.0.0",
-  "identifier": "com.soundcloud.desktop",
+  "identifier": "com.sc.desk",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",

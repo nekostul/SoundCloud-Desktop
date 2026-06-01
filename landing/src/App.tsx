@@ -17,12 +17,12 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { siApple, siDebian, siFlatpak, siGithub, siLinux, siRedhat } from 'simple-icons';
 
 /* ── Constants ── */
-const RELEASES = 'https://github.com/zxcloli666/SoundCloud-Desktop/releases/latest';
-const GITHUB = 'https://github.com/zxcloli666/SoundCloud-Desktop';
-const DISCUSS_FEATURE = 'https://github.com/zxcloli666/SoundCloud-Desktop/discussions/121';
-const DISCUSS_BUG = 'https://github.com/zxcloli666/SoundCloud-Desktop/discussions/144';
+const RELEASES = 'https://github.com/nekostul/SoundCloud-Desktop/releases/latest';
+const GITHUB = 'https://github.com/nekostul/SoundCloud-Desktop';
+const DISCUSS_FEATURE = 'https://github.com/nekostul/SoundCloud-Desktop/discussions/121';
+const DISCUSS_BUG = 'https://github.com/nekostul/SoundCloud-Desktop/discussions/144';
 const LOGO =
-  'https://raw.githubusercontent.com/zxcloli666/SoundCloud-Desktop/legacy/icons/appLogo.png';
+  'https://raw.githubusercontent.com/nekostul/SoundCloud-Desktop/legacy/icons/appLogo.png';
 
 /* ── Helpers ── */
 function Si({ icon, className = '' }: { icon: { path: string }; className?: string }) {
@@ -172,7 +172,7 @@ function useDownloadCount() {
   const [count, setCount] = useState<string>('100 000+');
   useEffect(() => {
     fetch(
-      'https://raw.githubusercontent.com/zxcloli666/download-history/refs/heads/main/data/zxcloli666_SoundCloud-Desktop.json',
+      'https://raw.githubusercontent.com/nekostul/download-history/refs/heads/main/data/nekostul_SoundCloud-Desktop.json',
     )
       .then((r) => r.json())
       .then((data: { total: number }[]) => {

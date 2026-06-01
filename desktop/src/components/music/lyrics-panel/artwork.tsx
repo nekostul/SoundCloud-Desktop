@@ -824,10 +824,9 @@ export const ArtworkLightbox = React.memo(
     const metaClassName = chromeVisible
       ? 'translate-y-0 scale-100 opacity-100 blur-0'
       : 'translate-y-2 scale-[0.985] opacity-0 blur-[2px]';
-    const frameShellClassName =
-      isOpening && !chromeVisible
-        ? 'border-transparent bg-black/0 shadow-[0_0_0_rgba(0,0,0,0)]'
-        : 'border-white/12 bg-black/30 shadow-[0_44px_160px_rgba(0,0,0,0.72)]';
+    const frameShellClassName = chromeVisible
+      ? 'border-white/12 bg-black/30 shadow-[0_44px_160px_rgba(0,0,0,0.72)]'
+      : 'border-transparent bg-black/0 shadow-[0_0_0_rgba(0,0,0,0)]';
 
     return createPortal(
       <div className="fixed inset-0 z-[240] overflow-hidden">

@@ -49,14 +49,10 @@ import type { Track } from '../stores/player';
 import { usePlayerStore } from '../stores/player';
 
 const HOME_SHELF_SECTION_STYLE: React.CSSProperties = {
-  contentVisibility: 'auto',
-  contain: 'layout paint style',
   containIntrinsicSize: '260px',
 };
 
 const HOME_FEED_SECTION_STYLE: React.CSSProperties = {
-  contentVisibility: 'auto',
-  contain: 'layout paint style',
   containIntrinsicSize: '760px',
 };
 

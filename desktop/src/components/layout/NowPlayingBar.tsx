@@ -918,7 +918,15 @@ const DiscordLyricsSyncer = React.memo(() => {
 /* ── NowPlayingBar ───────────────────────────────────────────── */
 
 export const NowPlayingBar = React.memo(
-  ({ onQueueToggle, queueOpen }: { onQueueToggle: () => void; queueOpen: boolean }) => {
+  ({
+    onQueueToggle,
+    queueOpen,
+    contained = false,
+  }: {
+    onQueueToggle: () => void;
+    queueOpen: boolean;
+    contained?: boolean;
+  }) => {
     const isMobile = useIsMobile();
     const isPlaying = usePlayerStore((s) => s.isPlaying);
     const togglePlay = usePlayerStore((s) => s.togglePlay);
@@ -932,11 +940,13 @@ export const NowPlayingBar = React.memo(
 
     const desktopDockStyle = useMemo(() => {
       if (isMobile) return undefined;
+      if (contained) return undefined;
 
       return {
         marginLeft: `${desktopBarOffset}px`,
+        marginRight: '12px',
       };
-    }, [isMobile, desktopBarOffset]);
+    }, [contained, isMobile, desktopBarOffset]);
     const desktopTrackInfoStyle = useMemo(
       () =>
         isMobile
@@ -964,7 +974,7 @@ export const NowPlayingBar = React.memo(
             className={
               isMobile
                 ? 'h-[72px] flex items-center px-5 gap-3 relative'
-                : 'pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 mr-3 mb-4 rounded-[18px] theme-dock border transition-[margin] duration-200 ease-[var(--ease-apple)]'
+                : `pointer-events-auto relative min-h-[88px] overflow-hidden grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pl-3.5 pr-4 pt-2 pb-2 ${contained ? '' : 'mb-4'} rounded-[18px] theme-dock border transition-[margin] duration-200 ease-[var(--ease-apple)]`
             }
             style={desktopDockStyle}
           >

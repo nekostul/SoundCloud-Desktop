@@ -2,7 +2,7 @@
 setlocal
 
 set "ROOT_DIR=%~dp0"
-set "APP_EXE=%LOCALAPPDATA%\soundcloud-desktop\soundcloud-desktop.exe"
+set "APP_EXE=%LOCALAPPDATA%\sc-desk\sc-desk.exe"
 
 call "%ROOT_DIR%start-local-api.bat"
 
