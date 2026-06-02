@@ -1,4 +1,4 @@
-import { listen } from '@tauri-apps/api/event';
+import { subscribeAudioVisualizer } from './audio-visualizer';
 
 export interface AudioFeatures {
   rmsEnergy: number;
@@ -64,6 +64,7 @@ class AudioAnalyserService {
   private worker: Worker | null = null;
   private workerMode = false;
   private workerCurrentFeatures: AudioFeatures | null = null;
+  private unsubscribeVisualizer: (() => void) | null = null;
 
   // Onset detection for BPM
   private fluxHistory: number[] = [];
@@ -73,8 +74,8 @@ class AudioAnalyserService {
   constructor() {
     this.initWorker();
 
-    listen<number[]>('audio:visualizer', (event) => {
-      const bins = new Uint8Array(event.payload);
+    this.unsubscribeVisualizer = subscribeAudioVisualizer((payload) => {
+      const bins = Uint8Array.from(payload);
 
       if (this.workerMode && this.worker) {
         this.worker.postMessage(
@@ -89,6 +90,13 @@ class AudioAnalyserService {
 
       this.processBins(bins);
     });
+  }
+
+  dispose() {
+    this.unsubscribeVisualizer?.();
+    this.unsubscribeVisualizer = null;
+    this.worker?.terminate();
+    this.worker = null;
   }
 
   private initWorker() {
@@ -434,3 +442,7 @@ class AudioAnalyserService {
 }
 
 export const audioAnalyser = new AudioAnalyserService();
+
+import.meta.hot?.dispose(() => {
+  audioAnalyser.dispose();
+});

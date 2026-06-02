@@ -1,4 +1,3 @@
-import { listen } from '@tauri-apps/api/event';
 import {
   Car,
   Check,
@@ -22,6 +21,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { isAppBackgrounded } from '../../lib/app-visibility';
+import { subscribeAudioVisualizer } from '../../lib/audio-visualizer';
 import { Pause, Play, Settings } from '../../lib/icons';
 import { SUPPORTED_LANGUAGES } from '../../lib/language-detection';
 import { dedupeWaveQueue } from '../../lib/soundwave-canonical';
@@ -331,33 +331,24 @@ export const SoundWaveHero: React.FC = () => {
     const targetEnergy = { bass: 0, mid: 0, high: 0, overall: 0 };
 
     // Subscribe to audio visualizer data from Tauri
-    const setupAudio = async () => {
-      try {
-        const fn = await listen<number[]>('audio:visualizer', (ev) => {
-          const d = ev.payload;
-          if (!d || d.length === 0) return;
-          const len = d.length;
-          // Bass: bins 0-3, Mid: bins 4-15, High: bins 16+
-          let bass = 0,
-            mid = 0,
-            high = 0;
-          for (let i = 0; i < Math.min(4, len); i++) bass += d[i];
-          bass /= Math.min(4, len);
-          for (let i = 4; i < Math.min(16, len); i++) mid += d[i];
-          mid /= Math.min(12, len - 4);
-          for (let i = 16; i < len; i++) high += d[i];
-          high /= Math.max(1, len - 16);
-          targetEnergy.bass = bass / 255;
-          targetEnergy.mid = mid / 255;
-          targetEnergy.high = high / 255;
-          targetEnergy.overall = (bass * 0.5 + mid * 0.35 + high * 0.15) / 255;
-        });
-        unlistenAudio = fn;
-      } catch {
-        /* noop */
-      }
-    };
-    setupAudio();
+    unlistenAudio = subscribeAudioVisualizer((d) => {
+      if (!d || d.length === 0) return;
+      const len = d.length;
+      // Bass: bins 0-3, Mid: bins 4-15, High: bins 16+
+      let bass = 0,
+        mid = 0,
+        high = 0;
+      for (let i = 0; i < Math.min(4, len); i++) bass += d[i];
+      bass /= Math.min(4, len);
+      for (let i = 4; i < Math.min(16, len); i++) mid += d[i];
+      mid /= Math.min(12, len - 4);
+      for (let i = 16; i < len; i++) high += d[i];
+      high /= Math.max(1, len - 16);
+      targetEnergy.bass = bass / 255;
+      targetEnergy.mid = mid / 255;
+      targetEnergy.high = high / 255;
+      targetEnergy.overall = (bass * 0.5 + mid * 0.35 + high * 0.15) / 255;
+    });
 
     const resize = () => {
       const w = canvas.offsetWidth;

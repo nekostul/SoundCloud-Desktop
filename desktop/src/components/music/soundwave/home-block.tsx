@@ -1,7 +1,7 @@
-import { listen } from '@tauri-apps/api/event';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../lib/api';
+import { subscribeAudioVisualizer } from '../../../lib/audio-visualizer';
 import { art } from '../../../lib/formatters';
 import type { FeedItem, Playlist } from '../../../lib/hooks';
 import {
@@ -468,32 +468,21 @@ function FlowLiquidVisualizer({ isPlaying }: { isPlaying: boolean }) {
       animationFrameId = window.requestAnimationFrame(render);
     };
 
-    const setupAudio = async () => {
-      try {
-        const unlisten = await listen<number[]>('audio:visualizer', (event) => {
-          const bins = event.payload;
-          if (!bins?.length) return;
+    unlistenAudio = subscribeAudioVisualizer((bins) => {
+      if (!bins?.length) return;
 
-          const bands = readAudioBands(bins);
-          lastAudioAt = performance.now();
-          target.bass = playingRef.current ? bands.bass : 0;
-          target.mid = playingRef.current ? bands.mid : 0;
-          target.high = playingRef.current ? bands.high : 0;
-          target.overall = playingRef.current ? bands.overall : 0;
-        });
+      const bands = readAudioBands(bins);
+      lastAudioAt = performance.now();
+      target.bass = playingRef.current ? bands.bass : 0;
+      target.mid = playingRef.current ? bands.mid : 0;
+      target.high = playingRef.current ? bands.high : 0;
+      target.overall = playingRef.current ? bands.overall : 0;
+    });
 
-        if (disposed) {
-          unlisten();
-          return;
-        }
-
-        unlistenAudio = unlisten;
-      } catch {
-        unlistenAudio = null;
-      }
-    };
-
-    void setupAudio();
+    if (disposed) {
+      unlistenAudio?.();
+      unlistenAudio = null;
+    }
 
     const createRibbonPath = (
       width: number,
@@ -820,38 +809,29 @@ const FlowBars = React.memo(function FlowBars({ isPlaying }: { isPlaying: boolea
     let unlistenAudio: (() => void) | null = null;
     let lastAudioAt = 0;
 
-    const setupAudio = async () => {
-      try {
-        unlistenAudio = await listen<number[]>('audio:visualizer', (event) => {
-          const bins = event.payload;
-          if (!bins?.length || !playingRef.current) return;
+    unlistenAudio = subscribeAudioVisualizer((bins) => {
+      if (!bins?.length || !playingRef.current) return;
 
-          lastAudioAt = performance.now();
-          const targetLevels = targetsRef.current;
-          for (let index = 0; index < FLOW_BARS.length; index++) {
-            const start = Math.floor((index / FLOW_BARS.length) * bins.length);
-            const end = Math.max(
-              start + 1,
-              Math.floor(((index + 1) / FLOW_BARS.length) * bins.length),
-            );
-            let sum = 0;
+      lastAudioAt = performance.now();
+      const targetLevels = targetsRef.current;
+      for (let index = 0; index < FLOW_BARS.length; index++) {
+        const start = Math.floor((index / FLOW_BARS.length) * bins.length);
+        const end = Math.max(
+          start + 1,
+          Math.floor(((index + 1) / FLOW_BARS.length) * bins.length),
+        );
+        let sum = 0;
 
-            for (let binIndex = start; binIndex < end; binIndex++) {
-              sum += bins[binIndex] ?? 0;
-            }
+        for (let binIndex = start; binIndex < end; binIndex++) {
+          sum += bins[binIndex] ?? 0;
+        }
 
-            const average = sum / Math.max(1, end - start);
-            const shaped = Math.min(1, (average / 255) ** 0.72 * 1.28);
-            const bassLift = index < 4 ? 0.12 : 0;
-            targetLevels[index] = Math.min(1, 0.16 + shaped * 0.84 + bassLift * shaped);
-          }
-        });
-      } catch {
-        unlistenAudio = null;
+        const average = sum / Math.max(1, end - start);
+        const shaped = Math.min(1, (average / 255) ** 0.72 * 1.28);
+        const bassLift = index < 4 ? 0.12 : 0;
+        targetLevels[index] = Math.min(1, 0.16 + shaped * 0.84 + bassLift * shaped);
       }
-    };
-
-    void setupAudio();
+    });
 
     const render = () => {
       const levels = levelsRef.current;

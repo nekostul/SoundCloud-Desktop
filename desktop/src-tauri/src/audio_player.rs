@@ -35,6 +35,8 @@ const EQ_Q: f64 = 1.414; // ~1 octave bandwidth for peaking filters
 const DEFAULT_TARGET_FPS: u32 = 60;
 const FPS_PRESETS: [u32; 4] = [15, 30, 60, 120];
 const UNLOCKED_EVENT_FPS: u32 = 144;
+const MAX_TICK_EVENT_FPS: u32 = 30;
+const MAX_VISUALIZER_EVENT_FPS: u32 = 30;
 const NORMALIZATION_ANALYSIS_SAMPLES: usize = 48_000 * 2 * 30;
 const NORMALIZATION_BLOCK_SAMPLES: usize = 48_000;
 const NORMALIZATION_TARGET_RMS: f64 = 0.14;
@@ -608,14 +610,20 @@ struct AnalyzerSource<S: Source<Item = f32>> {
     source: S,
     buffer: Vec<f32>,
     sender: std::sync::mpsc::SyncSender<Vec<f32>>,
+    enabled: Arc<AtomicBool>,
 }
 
 impl<S: Source<Item = f32>> AnalyzerSource<S> {
-    fn new(source: S, sender: std::sync::mpsc::SyncSender<Vec<f32>>) -> Self {
+    fn new(
+        source: S,
+        sender: std::sync::mpsc::SyncSender<Vec<f32>>,
+        enabled: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             source,
             buffer: Vec::with_capacity(FFT_SIZE),
             sender,
+            enabled,
         }
     }
 }
@@ -626,6 +634,12 @@ impl<S: Source<Item = f32>> Iterator for AnalyzerSource<S> {
     #[inline]
     fn next(&mut self) -> Option<f32> {
         let sample = self.source.next()?;
+        if !self.enabled.load(Ordering::Relaxed) {
+            if !self.buffer.is_empty() {
+                self.buffer.clear();
+            }
+            return Some(sample);
+        }
         self.buffer.push(sample);
         if self.buffer.len() >= FFT_SIZE {
             let _ = self.sender.try_send(std::mem::take(&mut self.buffer));
@@ -931,6 +945,7 @@ fn wrap_source_into_player<S>(
     eq_params: Arc<RwLock<EqParams>>,
     pitch_params: Arc<RwLock<PitchParams>>,
     vis_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
+    visualizer_enabled: Arc<AtomicBool>,
     start_paused: bool,
 ) -> Result<(Player, Option<f64>), String>
 where
@@ -957,7 +972,11 @@ where
     let eq_source = EqSource::new(gain_source, eq_params);
     let pitch_source = PitchSource::new(eq_source, pitch_params.clone());
     if let Some(ref tx) = vis_tx {
-        player.append(AnalyzerSource::new(pitch_source, tx.clone()));
+        player.append(AnalyzerSource::new(
+            pitch_source,
+            tx.clone(),
+            visualizer_enabled,
+        ));
     } else {
         player.append(pitch_source);
     }
@@ -977,6 +996,7 @@ fn create_player_from_owned_bytes(
     eq_params: Arc<RwLock<EqParams>>,
     pitch_params: Arc<RwLock<PitchParams>>,
     vis_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
+    visualizer_enabled: Arc<AtomicBool>,
     start_paused: bool,
 ) -> Result<(Player, Option<f64>), String> {
     if let Ok(source) = Decoder::new(Cursor::new(bytes.clone())) {
@@ -989,6 +1009,7 @@ fn create_player_from_owned_bytes(
             eq_params,
             pitch_params,
             vis_tx,
+            visualizer_enabled.clone(),
             start_paused,
         );
     }
@@ -1003,6 +1024,7 @@ fn create_player_from_owned_bytes(
         eq_params,
         pitch_params,
         vis_tx,
+        visualizer_enabled,
         start_paused,
     )
 }
@@ -1194,6 +1216,7 @@ fn create_player_from_stream_reader(
     eq_params: Arc<RwLock<EqParams>>,
     pitch_params: Arc<RwLock<PitchParams>>,
     vis_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
+    visualizer_enabled: Arc<AtomicBool>,
     start_paused: bool,
 ) -> Result<(Player, Option<f64>), String> {
     let (hint, normalized_mime) = decoder_hint_from_stream(url, content_type);
@@ -1218,6 +1241,7 @@ fn create_player_from_stream_reader(
         eq_params,
         pitch_params,
         vis_tx,
+        visualizer_enabled,
         start_paused,
     )
 }
@@ -1283,6 +1307,7 @@ pub struct AudioState {
     tick_event_token: Arc<AtomicU64>,
     seek_in_progress: AtomicBool,
     pub visualizer_tx: Mutex<Option<std::sync::mpsc::SyncSender<Vec<f32>>>>,
+    pub visualizer_enabled: Arc<AtomicBool>,
     pub frame_target: AtomicU32,
     pub frame_unlocked: AtomicBool,
     pub window_visible: AtomicBool,
@@ -1303,13 +1328,23 @@ fn clamp_target_fps(target: u32) -> u32 {
     closest
 }
 
-fn current_event_interval_ms(state: &AudioState) -> u64 {
+fn current_visualizer_event_interval_ms(state: &AudioState) -> u64 {
     if !state.window_visible.load(Ordering::Relaxed) {
         return 250;
     }
     let unlocked = state.frame_unlocked.load(Ordering::Relaxed);
     let target = clamp_target_fps(state.frame_target.load(Ordering::Relaxed));
-    let fps = if unlocked { UNLOCKED_EVENT_FPS } else { target };
+    let fps = if unlocked { UNLOCKED_EVENT_FPS } else { target }.min(MAX_VISUALIZER_EVENT_FPS);
+    ((1000.0 / fps as f64).round() as u64).max(1)
+}
+
+fn current_tick_interval_ms(state: &AudioState) -> u64 {
+    if !state.window_visible.load(Ordering::Relaxed) {
+        return 250;
+    }
+    let unlocked = state.frame_unlocked.load(Ordering::Relaxed);
+    let target = clamp_target_fps(state.frame_target.load(Ordering::Relaxed));
+    let fps = if unlocked { UNLOCKED_EVENT_FPS } else { target }.min(MAX_TICK_EVENT_FPS);
     ((1000.0 / fps as f64).round() as u64).max(1)
 }
 
@@ -1470,6 +1505,7 @@ pub fn init() -> AudioState {
         tick_event_token: Arc::new(AtomicU64::new(0)),
         seek_in_progress: AtomicBool::new(false),
         visualizer_tx: Mutex::new(None),
+        visualizer_enabled: Arc::new(AtomicBool::new(false)),
         frame_target: AtomicU32::new(DEFAULT_TARGET_FPS),
         frame_unlocked: AtomicBool::new(false),
         window_visible: AtomicBool::new(true),
@@ -1483,7 +1519,7 @@ pub fn start_tick_emitter(app: &AppHandle) {
         .name("audio-tick".into())
         .spawn(move || loop {
             let state = handle.state::<AudioState>();
-            std::thread::sleep(Duration::from_millis(current_event_interval_ms(&state)));
+            std::thread::sleep(Duration::from_millis(current_tick_interval_ms(&state)));
 
             // Check if audio device was reconnected (e.g. BT profile switch)
             if state.device_reconnected.swap(false, Ordering::Relaxed) {
@@ -2041,6 +2077,7 @@ pub fn audio_load_file(
         state.eq_params.clone(),
         state.pitch_params.clone(),
         state.visualizer_tx.lock().unwrap().clone(),
+        state.visualizer_enabled.clone(),
         start_paused.unwrap_or(false),
     )?;
     let new_player = Arc::new(new_player);
@@ -2818,6 +2855,7 @@ pub async fn audio_load_url(
         state.eq_params.clone(),
         state.pitch_params.clone(),
         state.visualizer_tx.lock().unwrap().clone(),
+        state.visualizer_enabled.clone(),
         start_paused.unwrap_or(false),
     )
     .map_err(|error| {
@@ -3127,6 +3165,7 @@ pub fn audio_seek(position: f64, state: tauri::State<'_, AudioState>) -> Result<
             .try_lock()
             .map_err(|_| "Seek busy: visualizer".to_string())?
             .clone(),
+        state.visualizer_enabled.clone(),
         seek_started_paused,
     )?;
 
@@ -3226,6 +3265,11 @@ pub fn audio_set_normalization(enabled: bool, state: tauri::State<'_, AudioState
     if let Some(ref p) = *state.player.lock().unwrap() {
         p.set_volume(effective_output_volume(&state, vol));
     }
+}
+
+#[tauri::command]
+pub fn audio_set_visualizer_enabled(enabled: bool, state: tauri::State<'_, AudioState>) {
+    state.visualizer_enabled.store(enabled, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -3458,10 +3502,14 @@ pub fn start_visualizer_thread(app: &AppHandle) {
 
             while let Ok(samples) = rx.recv() {
                 let state = handle.state::<AudioState>();
+                if !state.visualizer_enabled.load(Ordering::Relaxed) {
+                    continue;
+                }
                 if !state.window_visible.load(Ordering::Relaxed) {
                     continue;
                 }
-                if last_emit_at.elapsed() < Duration::from_millis(current_event_interval_ms(&state))
+                if last_emit_at.elapsed()
+                    < Duration::from_millis(current_visualizer_event_interval_ms(&state))
                 {
                     continue;
                 }

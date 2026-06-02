@@ -1184,6 +1184,7 @@ pub fn run() {
             audio_player::audio_get_position,
             audio_player::audio_set_eq,
             audio_player::audio_set_normalization,
+            audio_player::audio_set_visualizer_enabled,
             audio_player::audio_is_playing,
             audio_player::audio_set_metadata,
             audio_player::audio_set_playback_state,
