@@ -56,10 +56,6 @@ const HOME_FEED_SECTION_STYLE: React.CSSProperties = {
   containIntrinsicSize: '760px',
 };
 
-/* ── Helpers ──────────────────────────────────────────────── */
-
-/* ── Section Header ───────────────────────────────────────── */
-
 function SectionHeader({
   title,
   icon,
@@ -533,7 +529,9 @@ const MixShelf = React.memo(function MixShelf({
   pool: ReturnType<typeof useRelatedPool>['data'];
   isLoading: boolean;
 }) {
-  const recommendedTracks = useRecommendedTracks(pool, 6); // Just top 6 for mixes
+  const { t } = useTranslation();
+
+  const recommendedTracks = useRecommendedTracks(pool, 6);
 
   const mixColors = ['#ff5500', '#00ffcc', '#ff00ff', '#f0f000', '#0099ff', '#ff3300'];
 
@@ -542,7 +540,7 @@ const MixShelf = React.memo(function MixShelf({
   return (
     <section style={HOME_SHELF_SECTION_STYLE}>
       <SectionHeader
-        title="Миксы для тебя"
+        title={t('home.mixesForYou')}
         icon={<Headphones size={15} className="text-accent" />}
       />
       <HorizontalScroll>

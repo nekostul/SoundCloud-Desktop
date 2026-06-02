@@ -26,38 +26,37 @@ export function HorizontalScroll({
     });
   };
 
-  return (
-    <div className="relative">
-      <div className="absolute right-2 -top-12 z-10 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={scrollLeft}
-          className="w-8 h-8 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.05] flex items-center justify-center text-white/60 hover:text-white/90 transition-all duration-200"
-        >
-          <ChevronLeft size={16} />
-        </button>
-
-        <button
-          type="button"
-          onClick={scrollRight}
-          className="w-8 h-8 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.05] flex items-center justify-center text-white/60 hover:text-white/90 transition-all duration-200"
-        >
-          <ChevronRight size={16} />
-        </button>
-      </div>
-
-      <div
-        ref={ref}
-        className={`flex gap-4 overflow-x-hidden scroll-smooth scrollbar-hide pb-2 pr-12 ${className}`}
-        style={{
-          contentVisibility: 'auto',
-          contain: 'layout paint style',
-          containIntrinsicSize: '240px',
-          touchAction: 'pan-y',
-        }}
+return (
+  <div className="relative">
+    <div className="absolute right-2 -top-12 z-10 flex items-center gap-2">
+      <button
+        type="button"
+        onClick={scrollLeft}
+        className="w-8 h-8 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.05] flex items-center justify-center text-white/60 hover:text-white/90 transition-all duration-200"
       >
-        {children}
-      </div>
+        <ChevronLeft size={16} />
+      </button>
+
+      <button
+        type="button"
+        onClick={scrollRight}
+        className="w-8 h-8 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.05] flex items-center justify-center text-white/60 hover:text-white/90 transition-all duration-200"
+      >
+        <ChevronRight size={16} />
+      </button>
     </div>
-  );
+
+    <div
+      ref={ref}
+      className={`flex gap-4 pl-2 overflow-x-auto overflow-y-visible scroll-smooth scrollbar-hide pb-4 pt-2 pr-12 ${className}`}
+      style={{
+        contentVisibility: 'auto',
+        containIntrinsicSize: '240px',
+        touchAction: 'pan-y',
+      }}
+    >
+      {children}
+    </div>
+  </div>
+);
 }

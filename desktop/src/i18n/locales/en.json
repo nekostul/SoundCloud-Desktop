@@ -293,7 +293,8 @@
     "endOfFeed": "You're all caught up",
     "recommended": "Recommended For You",
     "discover": "Discover",
-    "startListening": "Start Listening"
+    "startListening": "Start Listening",
+    "mixesForYou": "Mixes For You"
   },
   "settings": {
     "title": "Settings",

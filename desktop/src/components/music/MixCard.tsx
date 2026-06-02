@@ -79,7 +79,7 @@ export const MixCard: React.FC<MixCardProps> = ({
 
           <button
             type="button"
-            className="w-10 h-10 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center text-white opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 hover:bg-accent hover:scale-105"
+            className="w-10 h-10 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center text-white opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 hover:bg-accent"
             onClick={(e) => {
               e.stopPropagation();
               onClick();
