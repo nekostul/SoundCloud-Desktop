@@ -1164,15 +1164,7 @@ impl TrackCacheState {
                 tokio::time::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt - 1])).await;
             }
 
-            match download_api(
-                target_dir,
-                urn,
-                url,
-                session_id,
-                self.app_handle.as_ref(),
-            )
-            .await
-            {
+            match download_api(target_dir, urn, url, session_id, self.app_handle.as_ref()).await {
                 Ok(result) => return Ok(result.path),
                 Err(DownloadError::Fatal(err)) => return Err(err),
                 Err(DownloadError::Retryable(err)) => {

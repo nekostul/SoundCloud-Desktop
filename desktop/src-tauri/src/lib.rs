@@ -1,5 +1,6 @@
 mod audio_player;
 mod constants;
+mod diagnostics;
 mod discord;
 mod hls;
 mod image_cache;
@@ -18,8 +19,8 @@ mod ytmusic_import;
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
-use std::fs::{self, OpenOptions};
 use std::fmt::Write as _;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -561,7 +562,10 @@ struct ExternalHttpResponse {
 }
 
 #[tauri::command]
-async fn external_http_get(url: String, accept: Option<String>) -> Result<ExternalHttpResponse, String> {
+async fn external_http_get(
+    url: String,
+    accept: Option<String>,
+) -> Result<ExternalHttpResponse, String> {
     let parsed_url = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
     if !matches!(parsed_url.scheme(), "http" | "https") {
         return Err("Unsupported URL scheme".to_string());
@@ -688,10 +692,7 @@ fn decode_scproxy_target_url(url: &str) -> Option<String> {
         return None;
     }
 
-    let encoded = parsed
-        .path()
-        .strip_prefix("/img/")?
-        .trim();
+    let encoded = parsed.path().strip_prefix("/img/")?.trim();
     if encoded.is_empty() {
         return None;
     }
@@ -701,7 +702,9 @@ fn decode_scproxy_target_url(url: &str) -> Option<String> {
         .ok()?;
     let payload = String::from_utf8(decoded).ok()?;
     let urls = serde_json::from_str::<Vec<String>>(&payload).ok()?;
-    urls.into_iter().next().filter(|value| !value.trim().is_empty())
+    urls.into_iter()
+        .next()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn decode_data_url_image(url: &str) -> Result<(Vec<u8>, &'static str), String> {
@@ -879,6 +882,11 @@ pub(crate) fn emit_window_visibility(app: &tauri::AppHandle, visible: bool) {
     let state = app.state::<audio_player::AudioState>();
     state.window_visible.store(visible, Ordering::Relaxed);
     let _ = app.emit("app:window-visibility", visible);
+    diagnostics::log_native(
+        app,
+        "INFO",
+        format!("[VisibilityNative] emit app:window-visibility visible={visible}"),
+    );
 }
 
 fn emit_current_window_visibility(window: &tauri::Window) {
@@ -906,6 +914,11 @@ fn start_window_visibility_monitor(app: tauri::AppHandle) {
                 }
 
                 last_visible = Some(visible);
+                diagnostics::log_native(
+                    &app,
+                    "INFO",
+                    format!("[VisibilityNative] monitor changed visible={visible}"),
+                );
                 emit_window_visibility(&app, visible);
             }
         });
@@ -1009,6 +1022,8 @@ pub fn run() {
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
 
+            diagnostics::mark_session_started(&app.handle());
+
             let cache_dir = app
                 .path()
                 .app_cache_dir()
@@ -1051,10 +1066,29 @@ pub fn run() {
                 } else {
                     args.push_str(&format!("--limit-fps={}", target));
                 }
+                diagnostics::log_native(
+                    &app.handle(),
+                    "INFO",
+                    format!("[Window] browser args={args}"),
+                );
                 win_builder = win_builder.additional_browser_args(&args);
             }
 
-            win_builder.build().expect("failed to build main window");
+            let main_window = win_builder.build().expect("failed to build main window");
+            let initial_native_visible =
+                window_visibility::is_webview_window_visible_to_user(&main_window);
+            diagnostics::log_native(
+                &app.handle(),
+                "INFO",
+                format!(
+                    "[Window] built main window dynamic=true size=1300x820 min=1300x820 decorations=false background=#111214"
+                ),
+            );
+            diagnostics::log_native(
+                &app.handle(),
+                "INFO",
+                format!("[VisibilityNative] initial visible={initial_native_visible}"),
+            );
 
             let audio_dir = cache_dir.join("audio");
             std::fs::create_dir_all(&audio_dir).ok();
@@ -1115,6 +1149,7 @@ pub fn run() {
             let audio_state = audio_player::init();
             audio_player::set_framerate_config(&audio_state, target, unlocked);
             app.manage(audio_state);
+            emit_window_visibility(&app.handle(), initial_native_visible);
             app.manage(media_proxy_state);
             app.manage(spotify_import::SpotifyState::new());
             app.manage(ytmusic_import::YtMusicState::new());
@@ -1156,17 +1191,37 @@ pub fn run() {
 
                 api.prevent_close();
                 let _ = window.hide();
+                diagnostics::log_native(
+                    &window.app_handle(),
+                    "INFO",
+                    "[Window] close requested -> hide to tray",
+                );
                 emit_window_visibility(&window.app_handle(), false);
             }
-            tauri::WindowEvent::Focused(_)
-            | tauri::WindowEvent::Resized(_)
-            | tauri::WindowEvent::Moved(_) => {
+            tauri::WindowEvent::Focused(focused) => {
+                diagnostics::log_native(
+                    &window.app_handle(),
+                    "INFO",
+                    format!("[Window] focused={focused}"),
+                );
+                emit_current_window_visibility(window);
+            }
+            tauri::WindowEvent::Resized(size) => {
+                diagnostics::log_native(
+                    &window.app_handle(),
+                    "INFO",
+                    format!("[Window] resized {}x{}", size.width, size.height),
+                );
+                emit_current_window_visibility(window);
+            }
+            tauri::WindowEvent::Moved(_) => {
                 emit_current_window_visibility(window);
             }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             server::get_server_ports,
+            diagnostics::diagnostics_log,
             discord::discord_connect,
             discord::discord_disconnect,
             discord::discord_set_activity,

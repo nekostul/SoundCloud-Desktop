@@ -1,13 +1,11 @@
-﻿use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::stream::StreamExt;
 use regex::Regex;
-use reqwest::header::{
-    HeaderName, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, RANGE, USER_AGENT,
-};
+use reqwest::header::{HeaderName, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, RANGE, USER_AGENT};
 use reqwest::{Client, Response, StatusCode, Url};
 use tauri::Emitter;
 use tokio::{net::TcpStream, sync::RwLock};
@@ -295,15 +293,14 @@ impl MediaProxyState {
                         type_hint: manual.type_hint,
                         source: "manual",
                     };
-                    if let Some(validated) =
-                        validate_proxy_candidate(
-                            self,
-                            candidate,
-                            self.auto_scan_epoch.load(Ordering::SeqCst),
-                            None,
-                            true,
-                        )
-                        .await
+                    if let Some(validated) = validate_proxy_candidate(
+                        self,
+                        candidate,
+                        self.auto_scan_epoch.load(Ordering::SeqCst),
+                        None,
+                        true,
+                    )
+                    .await
                     {
                         let mut inner = self.inner.write().await;
                         inner.active_proxy = Some(validated.clone());
@@ -355,9 +352,11 @@ impl MediaProxyState {
         let Some(snapshot_proxy) = ValidatedProxy::from_snapshot(&snapshot, "restore") else {
             log_auto_proxy("Previous proxy invalid, starting fallback discovery");
             let mut inner = self.inner.write().await;
-            inner
-                .blacklisted_endpoints
-                .insert(format!("{}:{}", snapshot.host.trim(), snapshot.port));
+            inner.blacklisted_endpoints.insert(format!(
+                "{}:{}",
+                snapshot.host.trim(),
+                snapshot.port
+            ));
             inner.last_checked_at = Some(now_secs());
             return Ok(false);
         };
@@ -379,9 +378,11 @@ impl MediaProxyState {
         let Some(validated) = validated else {
             log_auto_proxy("Previous proxy invalid, starting fallback discovery");
             let mut inner = self.inner.write().await;
-            inner
-                .blacklisted_endpoints
-                .insert(format!("{}:{}", snapshot.host.trim(), snapshot.port));
+            inner.blacklisted_endpoints.insert(format!(
+                "{}:{}",
+                snapshot.host.trim(),
+                snapshot.port
+            ));
             inner.last_checked_at = Some(now_secs());
             return Ok(false);
         };
@@ -649,7 +650,12 @@ impl MediaProxyState {
         }
     }
 
-    async fn note_success(&self, decision: &RoutingDecision, latency_ms: u64, throughput: Option<u64>) {
+    async fn note_success(
+        &self,
+        decision: &RoutingDecision,
+        latency_ms: u64,
+        throughput: Option<u64>,
+    ) {
         if decision.routing != ProxyRouting::Proxy {
             return;
         }
@@ -719,7 +725,9 @@ impl MediaProxyState {
                         let inner = self.inner.read().await;
                         inner.standby_proxy.clone()
                     };
-                    log_auto_proxy("Refreshing auto proxy pool before switching direct media routing");
+                    log_auto_proxy(
+                        "Refreshing auto proxy pool before switching direct media routing",
+                    );
                     let scan_epoch = self.bump_auto_scan_epoch();
                     let next_proxy = match self.refresh_auto_pool_inner(None, scan_epoch).await? {
                         AutoPoolRefreshResult::Selected(proxy) => Some(proxy),
@@ -788,10 +796,7 @@ impl MediaProxyType {
 }
 
 impl ValidatedProxy {
-    fn from_snapshot(
-        snapshot: &MediaProxySessionSnapshot,
-        source: &'static str,
-    ) -> Option<Self> {
+    fn from_snapshot(snapshot: &MediaProxySessionSnapshot, source: &'static str) -> Option<Self> {
         let host = snapshot.host.trim().to_string();
         if host.is_empty() || snapshot.port == 0 {
             return None;
@@ -823,7 +828,12 @@ impl ValidatedProxy {
     }
 
     fn endpoint_label(&self) -> String {
-        format!("{}:{} ({})", self.candidate.host, self.candidate.port, self.proxy_type.as_label())
+        format!(
+            "{}:{} ({})",
+            self.candidate.host,
+            self.candidate.port,
+            self.proxy_type.as_label()
+        )
     }
 
     fn to_snapshot(
@@ -878,9 +888,17 @@ impl ProxyCandidate {
                 vec![MediaProxyType::Http, MediaProxyType::Https]
             }
             _ if self.username.is_some() || self.password.is_some() => {
-                vec![MediaProxyType::Socks5, MediaProxyType::Https, MediaProxyType::Http]
+                vec![
+                    MediaProxyType::Socks5,
+                    MediaProxyType::Https,
+                    MediaProxyType::Http,
+                ]
             }
-            _ => vec![MediaProxyType::Http, MediaProxyType::Https, MediaProxyType::Socks5],
+            _ => vec![
+                MediaProxyType::Http,
+                MediaProxyType::Https,
+                MediaProxyType::Socks5,
+            ],
         };
 
         let mut unique = Vec::new();
@@ -961,7 +979,8 @@ pub async fn perform_get(
         match request.send().await {
             Ok(response) => {
                 let latency_ms = started.elapsed().as_millis() as u64;
-                if response.status().is_success() || response.status() == StatusCode::PARTIAL_CONTENT
+                if response.status().is_success()
+                    || response.status() == StatusCode::PARTIAL_CONTENT
                 {
                     state.note_success(&decision, latency_ms, None).await;
                     return Ok((response, decision, latency_ms));
@@ -1044,7 +1063,9 @@ pub async fn media_proxy_http_get(
         .unwrap_or_default()
         .into_iter()
         .collect::<Vec<(String, String)>>();
-    shared()?.remember_media_url(&url, ClientProfile::Generic).await;
+    shared()?
+        .remember_media_url(&url, ClientProfile::Generic)
+        .await;
     let (response, decision, latency_ms) = if let Some(timeout_ms) = timeout_ms {
         let state = shared()?;
         let mut decision = state.select_decision().await;
@@ -1093,7 +1114,8 @@ pub async fn media_proxy_http_get(
                 Err(error) => {
                     let formatted = format_reqwest_error(&error);
                     if attempt == 0 {
-                        if let Some(next) = state.handle_failure(&decision, formatted.clone()).await?
+                        if let Some(next) =
+                            state.handle_failure(&decision, formatted.clone()).await?
                         {
                             decision = next;
                             continue;
@@ -1121,7 +1143,10 @@ pub async fn media_proxy_http_get(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let body = response.text().await.map_err(|error| format_reqwest_error(&error))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format_reqwest_error(&error))?;
     shared()?.note_success(&decision, latency_ms, None).await;
 
     Ok(MediaHttpResponse {
@@ -1189,7 +1214,8 @@ pub async fn media_proxy_http_head(
                 Err(error) => {
                     let formatted = format_reqwest_error(&error);
                     if attempt == 0 {
-                        if let Some(next) = state.handle_failure(&decision, formatted.clone()).await?
+                        if let Some(next) =
+                            state.handle_failure(&decision, formatted.clone()).await?
                         {
                             decision = next;
                             continue;
@@ -1288,8 +1314,9 @@ async fn probe_stream_url_inner(
                 let mut total_bytes = 0usize;
 
                 while let Some(chunk) = bytes_stream.next().await {
-                    let chunk =
-                        chunk.map_err(|error| format!("media chunk read failed: {}", format_reqwest_error(&error)))?;
+                    let chunk = chunk.map_err(|error| {
+                        format!("media chunk read failed: {}", format_reqwest_error(&error))
+                    })?;
                     total_bytes += chunk.len();
                     if total_bytes >= VALIDATION_MIN_MEDIA_BYTES {
                         break;
@@ -1329,7 +1356,9 @@ async fn probe_stream_url_inner(
 }
 
 #[tauri::command]
-pub async fn media_proxy_probe_stream(timeout_ms: Option<u64>) -> Result<MediaStreamProbeResponse, String> {
+pub async fn media_proxy_probe_stream(
+    timeout_ms: Option<u64>,
+) -> Result<MediaStreamProbeResponse, String> {
     let timeout_ms = timeout_ms.filter(|value| *value >= 1000).unwrap_or(6500);
     let state = shared()?;
     let url = {
@@ -1409,9 +1438,9 @@ fn build_http_client(
         ClientProfile::Validation => builder
             .pool_max_idle_per_host(8)
             .connect_timeout(Duration::from_millis(VALIDATION_CONNECT_TIMEOUT_MS))
-            .read_timeout(timeout_override.unwrap_or(Duration::from_secs(
-                VALIDATION_READ_TIMEOUT_SECS,
-            ))),
+            .read_timeout(
+                timeout_override.unwrap_or(Duration::from_secs(VALIDATION_READ_TIMEOUT_SECS)),
+            ),
     };
 
     if let Some(proxy) = proxy {
@@ -1462,7 +1491,9 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-fn normalize_manual_proxy_settings(payload: &MediaProxySettingsPayload) -> Option<ManualProxySettings> {
+fn normalize_manual_proxy_settings(
+    payload: &MediaProxySettingsPayload,
+) -> Option<ManualProxySettings> {
     let raw_host = payload.host.as_deref()?.trim();
     if raw_host.is_empty() {
         return None;
@@ -1587,8 +1618,7 @@ async fn fetch_belurk_candidates(
 
     log_auto_proxy(format!(
         "Scraping source: {} ({})",
-        BELURK_SOURCE_LABEL,
-        BELURK_SOURCE_PAGE
+        BELURK_SOURCE_LABEL, BELURK_SOURCE_PAGE
     ));
     let response = match client
         .get(BELURK_API_URL)
@@ -1684,8 +1714,7 @@ async fn fetch_gologin_candidates(
 
     log_auto_proxy(format!(
         "Scraping source: {} ({})",
-        GOLOGIN_SOURCE_LABEL,
-        GOLOGIN_SOURCE_PAGE
+        GOLOGIN_SOURCE_LABEL, GOLOGIN_SOURCE_PAGE
     ));
     let response = match client
         .get(format!("{GOLOGIN_API_URL}?count={GOLOGIN_FETCH_COUNT}"))
@@ -1781,17 +1810,17 @@ async fn fetch_toproxylab_candidates(
         return (None, 0, false);
     }
 
-    let html = match fetch_source_html(client, TOPROXYLAB_SOURCE_LABEL, TOPROXYLAB_SOURCE_PAGE).await
-    {
-        Ok(html) => html,
-        Err(error) => {
-            log_auto_proxy_error(format!(
-                "Failed to scrape {}: {error}",
-                TOPROXYLAB_SOURCE_LABEL
-            ));
-            return (None, 0, false);
-        }
-    };
+    let html =
+        match fetch_source_html(client, TOPROXYLAB_SOURCE_LABEL, TOPROXYLAB_SOURCE_PAGE).await {
+            Ok(html) => html,
+            Err(error) => {
+                log_auto_proxy_error(format!(
+                    "Failed to scrape {}: {error}",
+                    TOPROXYLAB_SOURCE_LABEL
+                ));
+                return (None, 0, false);
+            }
+        };
 
     let nonce = match parse_toproxylab_nonce(&html) {
         Ok(nonce) => nonce,
@@ -1845,7 +1874,11 @@ async fn fetch_toproxylab_candidates(
         return (selected, pool_size, false);
     }
 
-    let total_pages = first_page.pages.unwrap_or(1).max(1).min(TOPROXYLAB_MAX_PAGES);
+    let total_pages = first_page
+        .pages
+        .unwrap_or(1)
+        .max(1)
+        .min(TOPROXYLAB_MAX_PAGES);
     for page in 2..=total_pages {
         if pool_size >= AUTO_MAX_CANDIDATES {
             break;
@@ -1891,8 +1924,7 @@ async fn fetch_toproxylab_candidates(
             Err(error) => {
                 log_auto_proxy_error(format!(
                     "Failed to fetch {} page {}: {error}",
-                    TOPROXYLAB_SOURCE_LABEL,
-                    page
+                    TOPROXYLAB_SOURCE_LABEL, page
                 ));
             }
         }
@@ -1900,19 +1932,25 @@ async fn fetch_toproxylab_candidates(
 
     log_auto_proxy(format!(
         "Found {} proxies from {}",
-        pool_size,
-        TOPROXYLAB_SOURCE_LABEL
+        pool_size, TOPROXYLAB_SOURCE_LABEL
     ));
     (None, pool_size, false)
 }
 
-async fn fetch_source_html(client: &Client, source_label: &str, url: &str) -> Result<String, String> {
+async fn fetch_source_html(
+    client: &Client,
+    source_label: &str,
+    url: &str,
+) -> Result<String, String> {
     log_auto_proxy(format!("Scraping source: {source_label} ({url})"));
     let response = client
         .get(url)
         .header(USER_AGENT, DEFAULT_USER_AGENT)
         .header(ACCEPT_LANGUAGE, DEFAULT_ACCEPT_LANGUAGE)
-        .header(ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .send()
         .await
         .map_err(|error| format_reqwest_error(&error))?;
@@ -1957,8 +1995,8 @@ fn detect_anti_bot_challenge(body: &str) -> Option<&'static str> {
 }
 
 fn parse_toproxylab_nonce(html: &str) -> Result<String, String> {
-    let nonce_re = Regex::new(r#"var\s+NC\s*=\s*["']([^"']+)["']"#)
-        .map_err(|error| error.to_string())?;
+    let nonce_re =
+        Regex::new(r#"var\s+NC\s*=\s*["']([^"']+)["']"#).map_err(|error| error.to_string())?;
     nonce_re
         .captures(html)
         .and_then(|captures| captures.get(1))
@@ -1974,8 +2012,7 @@ async fn fetch_toproxylab_page(
 ) -> Result<ToproxylabAjaxData, String> {
     log_auto_proxy(format!(
         "Scraping source: {} page {}",
-        TOPROXYLAB_SOURCE_LABEL,
-        page
+        TOPROXYLAB_SOURCE_LABEL, page
     ));
     let response = client
         .post(TOPROXYLAB_AJAX_URL)
@@ -2264,7 +2301,9 @@ async fn validate_proxy_with_type(
                 last_checked_at: now_secs(),
             });
         }
-        return Err("no remembered media URL available for real track cache validation".to_string());
+        return Err(
+            "no remembered media URL available for real track cache validation".to_string(),
+        );
     };
 
     let client = build_http_client(
@@ -2346,8 +2385,9 @@ async fn try_media_validation_request(
     let mut total_bytes = 0usize;
 
     while let Some(chunk) = bytes_stream.next().await {
-        let chunk =
-            chunk.map_err(|error| format!("media chunk read failed: {}", format_reqwest_error(&error)))?;
+        let chunk = chunk.map_err(|error| {
+            format!("media chunk read failed: {}", format_reqwest_error(&error))
+        })?;
         if first_chunk_latency_ms.is_none() {
             let first_byte = stream_started.elapsed().as_millis() as u64;
             first_chunk_latency_ms = Some(first_byte.max(1));
@@ -2428,15 +2468,14 @@ async fn validate_auto_source(
         if !state.is_auto_scan_epoch_active(scan_epoch) {
             return (None, pool_size);
         }
-        if let Some(proxy) =
-            validate_proxy_candidate(
-                state,
-                candidate,
-                scan_epoch,
-                validation_url,
-                allow_handshake_only,
-            )
-            .await
+        if let Some(proxy) = validate_proxy_candidate(
+            state,
+            candidate,
+            scan_epoch,
+            validation_url,
+            allow_handshake_only,
+        )
+        .await
         {
             if !exclude_key.is_empty() && proxy.cache_key() == exclude_key {
                 log_auto_proxy(format!(
@@ -2446,18 +2485,12 @@ async fn validate_auto_source(
                 continue;
             }
 
-            log_auto_proxy(format!(
-                "Validated working proxy from {}",
-                source_label
-            ));
+            log_auto_proxy(format!("Validated working proxy from {}", source_label));
             return (Some(proxy), pool_size);
         }
     }
 
-    log_auto_proxy(format!(
-        "No working proxies accepted from {}",
-        source_label
-    ));
+    log_auto_proxy(format!("No working proxies accepted from {}", source_label));
     (None, pool_size)
 }
 
@@ -2492,9 +2525,3 @@ fn looks_like_media_stream_url(url: &str) -> bool {
 
     is_direct_media_host && (has_media_hint || path.len() > 1)
 }
-
-
-
-
-
-

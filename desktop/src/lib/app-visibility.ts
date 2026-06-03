@@ -7,6 +7,7 @@ let documentVisible =
   typeof document === 'undefined' ? true : document.visibilityState !== 'hidden';
 let nativeWindowVisible = true;
 let appVisible = documentVisible && nativeWindowVisible;
+let backgrounded = !documentVisible;
 const listeners = new Set<VisibilityListener>();
 let initialized = false;
 let tauriUnlisten: (() => void) | null = null;
@@ -14,7 +15,7 @@ let tauriUnlisten: (() => void) | null = null;
 function applyVisibilityClass() {
   if (typeof document === 'undefined') return;
 
-  document.documentElement.classList.toggle('app-backgrounded', !appVisible);
+  document.documentElement.classList.toggle('app-backgrounded', backgrounded);
 }
 
 function emitChange() {
@@ -26,12 +27,32 @@ function emitChange() {
 function setAppVisible(nextVisible: boolean) {
   if (appVisible === nextVisible) return;
   appVisible = nextVisible;
-  applyVisibilityClass();
-  emitChange();
 }
 
 function updateAppVisible() {
   setAppVisible(documentVisible && nativeWindowVisible);
+}
+
+function setBackgrounded(nextBackgrounded: boolean) {
+  if (backgrounded === nextBackgrounded) return;
+  backgrounded = nextBackgrounded;
+  applyVisibilityClass();
+}
+
+function updateBackgrounded() {
+  // Native occlusion/minimize is too noisy on Windows while fullscreen games
+  // are running. Treat only actual document hidden state as "backgrounded"
+  // for UI/rAF throttling so we match upstream behavior.
+  setBackgrounded(!documentVisible);
+}
+
+export function getAppVisibilitySnapshot() {
+  return {
+    documentVisible,
+    nativeWindowVisible,
+    appVisible,
+    backgrounded,
+  };
 }
 
 export function isAppVisible() {
@@ -39,7 +60,7 @@ export function isAppVisible() {
 }
 
 export function isAppBackgrounded() {
-  return !appVisible;
+  return backgrounded;
 }
 
 export function subscribeAppVisibility(listener: VisibilityListener) {
@@ -49,18 +70,30 @@ export function subscribeAppVisibility(listener: VisibilityListener) {
   };
 }
 
+function syncVisibilityState(forceEmit = false) {
+  const prevAppVisible = appVisible;
+  const prevBackgrounded = backgrounded;
+
+  updateAppVisible();
+  updateBackgrounded();
+
+  if (forceEmit || appVisible !== prevAppVisible || backgrounded !== prevBackgrounded) {
+    emitChange();
+  }
+}
+
 async function initAppVisibilityBridge() {
   if (initialized || typeof window === 'undefined' || typeof document === 'undefined') return;
   initialized = true;
 
   const syncFromDocument = () => {
     documentVisible = document.visibilityState !== 'hidden';
-    updateAppVisible();
+    syncVisibilityState();
   };
 
   const markVisible = () => {
     documentVisible = true;
-    updateAppVisible();
+    syncVisibilityState();
   };
 
   document.addEventListener('visibilitychange', syncFromDocument);
@@ -73,7 +106,7 @@ async function initAppVisibilityBridge() {
     try {
       tauriUnlisten = await listen<boolean>('app:window-visibility', (event) => {
         nativeWindowVisible = Boolean(event.payload);
-        updateAppVisible();
+        syncVisibilityState(true);
       });
     } catch (error) {
       console.warn('[Visibility] Failed to subscribe to app:window-visibility', error);

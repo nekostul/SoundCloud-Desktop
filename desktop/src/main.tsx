@@ -8,19 +8,18 @@ import { normalizeLanguage } from './i18n/language';
 import { ApiError } from './lib/api';
 import './lib/app-visibility';
 import { installGlobalFrameLimiter, setGlobalFrameLimiterConfig } from './lib/framerate';
+import { setupUiDiagnostics } from './lib/ui-diagnostics';
 import { setServerPorts } from './lib/constants';
 import { installEmbeddedFont } from './lib/embedded-font';
 import { isTauriRuntime } from './lib/runtime';
-import {
-  applyMediaProxySettings,
-  initMediaProxyRuntime,
-} from './lib/media-proxy';
+import { applyMediaProxySettings, initMediaProxyRuntime } from './lib/media-proxy';
 import './lib/audio';
 import './index.css';
 import { getEffectivePitchSemitones, usePlayerStore } from './stores/player';
 import { useSettingsStore } from './stores/settings';
 
 installGlobalFrameLimiter();
+setupUiDiagnostics();
 installEmbeddedFont();
 
 function installBrowserChromeBlockers() {
@@ -54,9 +53,7 @@ function installBrowserChromeBlockers() {
 
 installBrowserChromeBlockers();
 
-function syncGlobalFramerateLimiter(
-  state = useSettingsStore.getState(),
-) {
+function syncGlobalFramerateLimiter(state = useSettingsStore.getState()) {
   setGlobalFrameLimiterConfig(state.targetFramerate, state.unlockFramerate);
 }
 
@@ -482,9 +479,14 @@ function BootstrapScreen({
       {children ? <div className="startup-shell__app">{children}</div> : null}
 
       {showOverlay ? (
-        <div className={['startup-overlay', phase === 'exiting' ? 'is-exiting' : '', error ? 'is-error' : '']
-          .filter(Boolean)
-          .join(' ')}
+        <div
+          className={[
+            'startup-overlay',
+            phase === 'exiting' ? 'is-exiting' : '',
+            error ? 'is-error' : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
         >
           <div className="startup-overlay__backdrop" />
           <div className="startup-content">
@@ -535,12 +537,7 @@ function renderBootstrapScreen(
 ) {
   root.render(
     <AppRoot>
-      <BootstrapScreen
-        title={title}
-        label={label}
-        ready={options?.ready}
-        error={options?.error}
-      >
+      <BootstrapScreen title={title} label={label} ready={options?.ready} error={options?.error}>
         {options?.children}
       </BootstrapScreen>
     </AppRoot>,
@@ -575,11 +572,7 @@ async function bootstrap() {
   const root = getRoot();
   if (!root) return;
 
-  renderBootstrapScreen(
-    root,
-    t('boot.title'),
-    t('boot.starting'),
-  );
+  renderBootstrapScreen(root, t('boot.title'), t('boot.starting'));
 
   let staticPort = 1420;
   let proxyPort = 1420;
@@ -593,17 +586,9 @@ async function bootstrap() {
     }
 
     if (tauriRuntime) {
-      renderBootstrapScreen(
-        root,
-        t('boot.title'),
-        t('boot.connectingServices'),
-      );
+      renderBootstrapScreen(root, t('boot.title'), t('boot.connectingServices'));
 
-      await Promise.all([
-        import('./lib/scproxy'),
-        import('./lib/discord'),
-        import('./lib/tray'),
-      ]);
+      await Promise.all([import('./lib/scproxy'), import('./lib/discord'), import('./lib/tray')]);
 
       await initMediaProxyRuntime();
 
@@ -631,33 +616,20 @@ async function bootstrap() {
 
     setServerPorts(staticPort, proxyPort);
 
-    renderBootstrapScreen(
-      root,
-      t('boot.title'),
-      t('boot.openingLibrary'),
-      {
-        ready: true,
-        children: (
-          <QueryClientProvider client={queryClient}>
-            <App />
-          </QueryClientProvider>
-        ),
-      },
-    );
+    renderBootstrapScreen(root, t('boot.title'), t('boot.openingLibrary'), {
+      ready: true,
+      children: (
+        <QueryClientProvider client={queryClient}>
+          <App />
+        </QueryClientProvider>
+      ),
+    });
   } catch (error) {
     console.error('[Bootstrap] Failed to initialize app:', error);
 
-    renderBootstrapScreen(
-      root,
-      t('boot.title'),
-      t('boot.startupFailed'),
-      {
-        error:
-          error instanceof Error
-            ? error.stack || error.message
-            : String(error),
-      },
-    );
+    renderBootstrapScreen(root, t('boot.title'), t('boot.startupFailed'), {
+      error: error instanceof Error ? error.stack || error.message : String(error),
+    });
   }
 }
 

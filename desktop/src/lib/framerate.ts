@@ -21,6 +21,15 @@ type FrameLimiterRoot = Window &
     };
   };
 
+export interface FrameLimiterSnapshot {
+  installed: boolean;
+  paused: boolean;
+  frameBudgetMs: number;
+  pendingCallbacks: number;
+  schedulerActive: boolean;
+  lastFlushTs: number;
+}
+
 function getFrameLimiterRoot(): FrameLimiterRoot | null {
   if (typeof window === 'undefined') {
     return null;
@@ -212,4 +221,28 @@ export function setGlobalFrameLimiterConfig(targetFramerate: number, unlockFrame
   if (state.pending.size > 0) {
     state.pump();
   }
+}
+
+export function getNativeRequestAnimationFrame(): typeof window.requestAnimationFrame | null {
+  const root = getFrameLimiterRoot();
+  return root?.__scdNativeRequestAnimationFrame ?? null;
+}
+
+export function getNativeCancelAnimationFrame(): typeof window.cancelAnimationFrame | null {
+  const root = getFrameLimiterRoot();
+  return root?.__scdNativeCancelAnimationFrame ?? null;
+}
+
+export function getGlobalFrameLimiterSnapshot(): FrameLimiterSnapshot {
+  const root = getFrameLimiterRoot();
+  const state = root?.__scdFrameLimiterState;
+
+  return {
+    installed: Boolean(root?.__scdFrameLimiterInstalled && state),
+    paused: state?.paused ?? false,
+    frameBudgetMs: state?.frameBudgetMs ?? 0,
+    pendingCallbacks: state?.pending.size ?? 0,
+    schedulerActive: state?.schedulerId != null,
+    lastFlushTs: state?.lastFlushTs ?? 0,
+  };
 }
