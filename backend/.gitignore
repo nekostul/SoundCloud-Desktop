@@ -1,10 +1,15 @@
-# compiled output
-/dist
-/node_modules
-/build
+# Dependencies
+/node_modules/
+
+# Build output
+/dist/
+/build/
+/coverage/
+/.nyc_output/
+*.tsbuildinfo
 
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 pnpm-debug.log*
@@ -12,49 +17,53 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
-# OS
-.DS_Store
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# Tests
-/coverage
-/.nyc_output
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
-# IDEs and editors
-/.idea
+# Temp
+/.temp/
+/.tmp/
+
+# Local browser/OAuth artifacts
+/chrome-*/
+/oauth-*/profile/
+/oauth-*/*-profile/
+/oauth-matrix-results.json
+/chrome-authorize-generated.html
+
+# Editors and IDEs
+/.idea/
+*.iml
 .project
 .classpath
 .c9/
 *.launch
 .settings/
 *.sublime-workspace
-
-# IDE - VSCode
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
 
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-data/
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
+# Diagnostic reports
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
