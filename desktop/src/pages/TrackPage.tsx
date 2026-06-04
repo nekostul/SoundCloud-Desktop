@@ -113,7 +113,7 @@ const LikeBtn = React.memo(({ trackUrn, count }: { trackUrn: string; count?: num
 
 /* ── Repost Button ───────────────────────────────────────── */
 
-const RepostBtn = React.memo(({ trackUrn, count }: { trackUrn: string; count?: number }) => {
+const RepostBtn = React.memo(({ track, count }: { track: Track; count?: number }) => {
   const [reposted, setReposted] = useState(false);
   const [localCount, setLocalCount] = useState(count ?? 0);
 
@@ -122,9 +122,12 @@ const RepostBtn = React.memo(({ trackUrn, count }: { trackUrn: string; count?: n
     setReposted(next);
     setLocalCount((c) => c + (next ? 1 : -1));
     try {
-      await api(`/reposts/tracks/${encodeURIComponent(trackUrn)}`, {
+      await api(`/reposts/tracks/${encodeURIComponent(track.urn)}`, {
         method: next ? 'POST' : 'DELETE',
       });
+      if (next) {
+        useSoundWaveProfileStore.getState().recordTrackReposted(track);
+      }
     } catch {
       setReposted(!next);
       setLocalCount((c) => c + (next ? -1 : 1));
@@ -564,7 +567,7 @@ export const TrackPage = React.memo(() => {
               </button>
 
               <LikeBtn trackUrn={track.urn} count={track.favoritings_count ?? track.likes_count} />
-              <RepostBtn trackUrn={track.urn} count={track.reposts_count} />
+              <RepostBtn track={track} count={track.reposts_count} />
               <button
                 type="button"
                 onClick={openLyrics}

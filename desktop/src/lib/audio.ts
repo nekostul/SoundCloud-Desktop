@@ -8,7 +8,11 @@ import {
   usePlayerStore,
 } from '../stores/player';
 import { useSettingsStore } from '../stores/settings';
-import { CHARACTER_PRESETS, useSoundWaveStore } from '../stores/soundwave';
+import {
+  CHARACTER_PRESETS,
+  getSoundWaveManagedBufferCount,
+  useSoundWaveStore,
+} from '../stores/soundwave';
 import { rankWaveCandidates, useSoundWaveProfileStore } from '../stores/soundwave-profile';
 import {
   api,
@@ -27,7 +31,6 @@ import {
 } from './cache';
 import { art } from './formatters';
 import { isTauriRuntime } from './runtime';
-import { dedupeWaveQueue } from './soundwave-canonical';
 import { filterSoundWaveTracks } from './soundwave-freshness';
 import { buildWaveQueueFromPlayerContext, dedupeTracksByUrn } from './soundwave-queue';
 import { getTrackWaveform } from './waveform';
@@ -93,12 +96,13 @@ let notifyPending = false;
 const MAX_PLAYBACK_NOTIFY_HZ = 30; // Limit notification frequency to 30/sec max during playback
 
 const SEEK_DEBOUNCE_MS = 120;
-const CONTEXTUAL_AUTOPLAY_TAIL_TARGET = 18;
-const SOUNDWAVE_REFRESH_DEBOUNCE_MS = 180;
-const SOUNDWAVE_REFILL_MIN_TAIL = 2;
+const CONTEXTUAL_AUTOPLAY_TAIL_TARGET = 16;
+const SOUNDWAVE_REFRESH_DEBOUNCE_MS = 60;
+const SOUNDWAVE_REFILL_MIN_TAIL = 10;
 let backgroundContinuationInFlight = false;
 let backgroundContinuationPreparedUrn: string | null = null;
 let queuedSoundWaveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingSoundWaveAdvanceAfterRefill = false;
 const SEEK_BUSY_RETRY_MS = 80;
 const SEEK_NO_SOURCE_RETRY_MS = 220;
 const SEEK_UNBUFFERED_RETRY_MS = 260;
@@ -336,7 +340,11 @@ export function getSmoothCurrentTime(): number {
   }
   if (lastTickAt === 0 || now < lastTickAt) return cachedTime;
   const elapsed = (now - lastTickAt) / 1000;
-  const raw = Math.min(cachedTime + elapsed, cachedTime + MAX_SMOOTH_TIME_EXTRAPOLATION_SECS);
+  const playbackRate = Math.max(0.25, usePlayerStore.getState().playbackRate || 1);
+  const raw = Math.min(
+    cachedTime + elapsed * playbackRate,
+    cachedTime + MAX_SMOOTH_TIME_EXTRAPOLATION_SECS,
+  );
 
   if (raw + 0.08 < lastSmoothTime && lastSmoothTime - raw < 1.25) {
     return lastSmoothTime;
@@ -2721,8 +2729,12 @@ function serializeStringList(values: string[]) {
 
 function scheduleSoundWaveQueueRefresh(reason: string) {
   useSoundWaveStore.getState().setQueueRefilling(true, reason);
+  const replaceManaged = reason.startsWith('settings:');
 
   if (queuedSoundWaveRefreshTimer) {
+    if (!replaceManaged) {
+      return;
+    }
     clearTimeout(queuedSoundWaveRefreshTimer);
   }
 
@@ -2736,11 +2748,22 @@ function scheduleSoundWaveQueueRefresh(reason: string) {
     }
 
     void sw
-      .refreshUpcomingQueue({ reason })
+      .refreshUpcomingQueue({ reason, replaceManaged })
       .then((tail) => {
         if (tail.length > 0) {
           preloadQueue();
           warmUpcomingTransitionProfiles();
+          const after = usePlayerStore.getState();
+          if (
+            pendingSoundWaveAdvanceAfterRefill &&
+            after.queueSource === 'soundwave' &&
+            after.currentTrack &&
+            after.queueIndex < after.queue.length - 1
+          ) {
+            pendingSoundWaveAdvanceAfterRefill = false;
+            currentUrn = null;
+            after.next();
+          }
         }
       })
       .catch((error) => {
@@ -2862,8 +2885,8 @@ function maybeQueueSoundWaveRefill(
     return;
   }
 
-  const remaining = state.queue.length - state.queueIndex - 1;
-  if (remaining > SOUNDWAVE_REFILL_MIN_TAIL || sw.isQueueRefilling) {
+  const managedRemaining = getSoundWaveManagedBufferCount(state.queue, state.queueIndex);
+  if (managedRemaining > SOUNDWAVE_REFILL_MIN_TAIL || sw.isQueueRefilling) {
     return;
   }
 
@@ -2873,7 +2896,7 @@ function maybeQueueSoundWaveRefill(
   }
 
   if (
-    remaining > 0 ||
+    managedRemaining > 0 ||
     backgroundContinuationInFlight ||
     backgroundContinuationPreparedUrn === state.currentTrack.urn
   ) {
@@ -2907,13 +2930,16 @@ setQueueEndAdvanceHandler(() => {
   const state = usePlayerStore.getState();
   const sw = useSoundWaveStore.getState();
   if (!state.currentTrack || state.queueSource !== 'soundwave' || !sw.isActive || sw.isSuspended) {
+    pendingSoundWaveAdvanceAfterRefill = false;
     return false;
   }
 
   if (sw.isQueueRefilling) {
+    pendingSoundWaveAdvanceAfterRefill = true;
     return true;
   }
 
+  pendingSoundWaveAdvanceAfterRefill = false;
   void continueSoundWaveQueue(state.currentTrack);
   return true;
 });
@@ -2928,6 +2954,7 @@ usePlayerStore.subscribe((state, prev) => {
     state.queueSource !== prev.queueSource;
 
   if (trackChanged) {
+    pendingSoundWaveAdvanceAfterRefill = false;
     if (previousTrack) {
       finalizeTrackedPlayback(previousTrack, {
         playedSeconds: getCurrentTime(),
@@ -3022,6 +3049,18 @@ usePlayerStore.subscribe((state, prev) => {
   }
 
   if (queueChanged && state.currentTrack) {
+    const sw = useSoundWaveStore.getState();
+    if (pendingSoundWaveAdvanceAfterRefill) {
+      if (
+        state.queueSource !== 'soundwave' ||
+        !sw.isActive ||
+        sw.isSuspended ||
+        state.queueIndex >= state.queue.length - 1
+      ) {
+        pendingSoundWaveAdvanceAfterRefill = false;
+      }
+    }
+
     maybePrepareBackgroundContinuation(state, 'queue-update:last-manual-track');
     maybeQueueSoundWaveRefill(state, 'queue-update:tail-low');
     if (state.queue.length > prev.queue.length || state.queueSource !== prev.queueSource) {
@@ -3230,25 +3269,22 @@ async function autoplayRelated(lastTrack: Track) {
 
     const player = usePlayerStore.getState();
     if (queueSource === 'soundwave') {
-      const protectedUrns = new Set(
-        player.queue
-          .slice(0, Math.max(0, player.queueIndex + 1))
-          .map((track) => track.urn)
-          .filter(Boolean),
-      );
-      const nextQueue = dedupeWaveQueue([...player.queue, ...rankedFresh], {
-        stage: 'autoplay-related-final',
-        protectedUrns,
-      });
-      const appendedTracks = nextQueue.filter(
-        (track) => !protectedUrns.has(track.urn) && !existingUrns.has(track.urn),
-      );
-      if (appendedTracks.length === 0) {
+      const queueHead =
+        player.queueIndex >= 0
+          ? player.queue.slice(0, Math.max(0, player.queueIndex + 1))
+          : [lastTrack];
+      const nextSeedQueue = dedupeTracksByUrn([...queueHead, ...rankedFresh]);
+      if (nextSeedQueue.length <= queueHead.length) {
         player.pause();
         return;
       }
-      useSoundWaveProfileStore.getState().recordWaveQueue(appendedTracks, 'related-fallback');
-      player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
+      await useSoundWaveStore.getState().startFromQueue({
+        queue: nextSeedQueue,
+        seedTracks: [lastTrack],
+        preserveCurrentTrack: true,
+        preset: getContextualWavePreset(),
+        launchContext: null,
+      });
     } else {
       player.addToQueue(rankedFresh);
     }

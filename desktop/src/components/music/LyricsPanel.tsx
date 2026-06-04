@@ -29,7 +29,7 @@ import {
   useFullscreenPanelStore,
   useLyricsStore,
 } from '../../stores/lyrics';
-import { usePlayerStore } from '../../stores/player';
+import { type PlaybackSpeedPreset, usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
 import {
   ArtworkLightbox,
@@ -117,6 +117,11 @@ type CommunitySyncSeekHold = {
   cursorIndex: number;
   startedAt: number;
   holdUntil: number;
+};
+
+type CommunitySyncPlaybackRestoreState = {
+  playbackRate: number;
+  playbackSpeedPreset: PlaybackSpeedPreset;
 };
 
 /* ── Source Badge ─────────────────────────────────────────── */
@@ -603,6 +608,8 @@ const FullscreenPanels = React.memo(() => {
   const open = useLyricsStore((s) => s.open);
   const setCommunitySyncStageInStore = useLyricsStore((s) => s.setCommunitySyncStage);
   const track = usePlayerStore((s) => s.currentTrack);
+  const playbackRate = usePlayerStore((s) => s.playbackRate);
+  const playbackSpeedPreset = usePlayerStore((s) => s.playbackSpeedPreset);
   const visualizerFullscreen = useSettingsStore((s) => s.visualizerFullscreen);
   const lyricsMiniPlayerControlsCollapsed = useSettingsStore(
     (s) => s.lyricsMiniPlayerControlsCollapsed,
@@ -666,6 +673,7 @@ const FullscreenPanels = React.memo(() => {
   } | null>(null);
   const communitySyncSeekHoldRef = useRef<CommunitySyncSeekHold | null>(null);
   const miniPlayerCollapsedBeforeCommunityFlowRef = useRef<boolean | null>(null);
+  const communitySyncPlaybackRestoreRef = useRef<CommunitySyncPlaybackRestoreState | null>(null);
   const prevTrackUrnRef = useRef<string | null>(null);
   const trackUrn = track?.urn ?? null;
   const setCommunitySyncTimingReference = useCallback(
@@ -978,6 +986,39 @@ const FullscreenPanels = React.memo(() => {
     setLyricsMiniPlayerControlsCollapsed,
   ]);
 
+  useEffect(() => {
+    if (communityFlowActive) {
+      if (communitySyncPlaybackRestoreRef.current === null) {
+        communitySyncPlaybackRestoreRef.current = {
+          playbackRate,
+          playbackSpeedPreset,
+        };
+      }
+
+      if (Math.abs(playbackRate - 1) > 0.001 || playbackSpeedPreset !== 'default') {
+        usePlayerStore.setState({
+          playbackRate: 1,
+          playbackSpeedPreset: 'default',
+        });
+      }
+      return;
+    }
+
+    const restoreState = communitySyncPlaybackRestoreRef.current;
+    if (!restoreState) return;
+
+    communitySyncPlaybackRestoreRef.current = null;
+    if (
+      Math.abs(playbackRate - restoreState.playbackRate) > 0.001 ||
+      playbackSpeedPreset !== restoreState.playbackSpeedPreset
+    ) {
+      usePlayerStore.setState({
+        playbackRate: restoreState.playbackRate,
+        playbackSpeedPreset: restoreState.playbackSpeedPreset,
+      });
+    }
+  }, [communityFlowActive, playbackRate, playbackSpeedPreset]);
+
   useEffect(
     () => () => {
       const previousCollapsedState = miniPlayerCollapsedBeforeCommunityFlowRef.current;
@@ -986,6 +1027,26 @@ const FullscreenPanels = React.memo(() => {
       const settings = useSettingsStore.getState();
       if (settings.lyricsMiniPlayerControlsCollapsed !== previousCollapsedState) {
         settings.setLyricsMiniPlayerControlsCollapsed(previousCollapsedState);
+      }
+    },
+    [],
+  );
+
+  useEffect(
+    () => () => {
+      const restoreState = communitySyncPlaybackRestoreRef.current;
+      if (!restoreState) return;
+
+      const player = usePlayerStore.getState();
+      communitySyncPlaybackRestoreRef.current = null;
+      if (
+        Math.abs(player.playbackRate - restoreState.playbackRate) > 0.001 ||
+        player.playbackSpeedPreset !== restoreState.playbackSpeedPreset
+      ) {
+        usePlayerStore.setState({
+          playbackRate: restoreState.playbackRate,
+          playbackSpeedPreset: restoreState.playbackSpeedPreset,
+        });
       }
     },
     [],

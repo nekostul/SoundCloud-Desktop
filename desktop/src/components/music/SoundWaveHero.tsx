@@ -24,7 +24,6 @@ import { isAppBackgrounded } from '../../lib/app-visibility';
 import { subscribeAudioVisualizer } from '../../lib/audio-visualizer';
 import { Pause, Play, Settings } from '../../lib/icons';
 import { SUPPORTED_LANGUAGES } from '../../lib/language-detection';
-import { dedupeWaveQueue } from '../../lib/soundwave-canonical';
 import { usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
 import {
@@ -34,7 +33,6 @@ import {
   type SoundWavePreset,
   useSoundWaveStore,
 } from '../../stores/soundwave';
-import { useSoundWaveProfileStore } from '../../stores/soundwave-profile';
 
 const SOUNDWAVE_PRESET_MAP = {
   ...ACTIVITY_PRESETS,
@@ -123,7 +121,6 @@ interface Blob {
 export const SoundWaveHero: React.FC = () => {
   const { t } = useTranslation();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const isPrefetchingRef = useRef(false);
   const awaitingFirstPlayableRef = useRef(false);
   const genreMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const languageMenuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -145,7 +142,6 @@ export const SoundWaveHero: React.FC = () => {
   const pausePlayback = usePlayerStore((s) => s.pause);
   const queue = usePlayerStore((s) => s.queue);
   const queueIndex = usePlayerStore((s) => s.queueIndex);
-  const queueLength = usePlayerStore((s) => s.queue.length);
 
   const isActive = useSoundWaveStore((s) => s.isActive);
   const isSuspended = useSoundWaveStore((s) => s.isSuspended);
@@ -154,7 +150,6 @@ export const SoundWaveHero: React.FC = () => {
   const stopWave = useSoundWaveStore((s) => s.stop);
   const resumeSuspendedPlayback = useSoundWaveStore((s) => s.resumeSuspendedPlayback);
   const suspendForExternalPlayback = useSoundWaveStore((s) => s.suspendForExternalPlayback);
-  const generateBatch = useSoundWaveStore((s) => s.generateBatch);
   const isInitialLoading = useSoundWaveStore((s) => s.isInitialLoading);
   const startupProgress = useSoundWaveStore((s) => s.startupProgress);
   const startupVisible = useSoundWaveStore((s) => s.startupVisible);
@@ -174,47 +169,6 @@ export const SoundWaveHero: React.FC = () => {
   const selectedPreset = getPresetByKey(selectedPresetKey);
   const currentTrackUrn = currentTrack?.urn;
   const currentTrackStreamQuality = currentTrack?.streamQuality;
-
-  // Prefetching logic
-  useEffect(() => {
-    if (!isActive) return;
-    if (isSuspended) return;
-    if (isInitialLoading) return;
-    if (queueIndex < 0 || queueLength === 0) return;
-
-    // If we have less than 5 tracks left in queue, fetch more
-    const remaining = queueLength - (queueIndex + 1);
-    if (remaining < 5) {
-      if (isPrefetchingRef.current) return;
-      isPrefetchingRef.current = true;
-      console.log('[SoundWave] Queue low, prefetching...');
-      generateBatch()
-        .then((newTracks) => {
-          if (newTracks.length > 0) {
-            const player = usePlayerStore.getState();
-            const existingUrns = new Set(player.queue.map((track) => track.urn).filter(Boolean));
-            const protectedUrns = new Set(
-              player.queue
-                .slice(0, Math.max(0, player.queueIndex + 1))
-                .map((track) => track.urn)
-                .filter(Boolean),
-            );
-            const nextQueue = dedupeWaveQueue([...player.queue, ...newTracks], {
-              stage: 'hero-prefetch-final',
-              protectedUrns,
-            });
-            const freshTracks = nextQueue.filter((track) => !existingUrns.has(track.urn));
-            if (freshTracks.length > 0) {
-              useSoundWaveProfileStore.getState().recordWaveQueue(freshTracks, 'hero-prefetch');
-              player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
-            }
-          }
-        })
-        .finally(() => {
-          isPrefetchingRef.current = false;
-        });
-    }
-  }, [isActive, isSuspended, queueIndex, queueLength, generateBatch, isInitialLoading]);
 
   useEffect(() => {
     if (!isAwaitingFirstTrack) return;

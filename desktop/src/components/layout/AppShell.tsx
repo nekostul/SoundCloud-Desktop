@@ -25,7 +25,7 @@ import { toggleWindowFullscreen } from '../../lib/window';
 import { useArtworkStore, useFullscreenPanelStore, useLyricsStore } from '../../stores/lyrics';
 import { usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
-import { useSoundWaveStore } from '../../stores/soundwave';
+import { getSoundWaveManagedBufferCount, useSoundWaveStore } from '../../stores/soundwave';
 import { FullscreenPanels } from '../music/LyricsPanel';
 import { QueuePanel } from '../music/QueuePanel';
 import { FloatingNavigation } from './FloatingNavigation';
@@ -234,9 +234,22 @@ const HardwareAccelSync = React.memo(() => {
 
 const WaveFloatingStatusChip = React.memo(({ mobile }: { mobile: boolean }) => {
   const { t } = useTranslation();
+  const queue = usePlayerStore((s) => s.queue);
+  const queueIndex = usePlayerStore((s) => s.queueIndex);
+  const queueSource = usePlayerStore((s) => s.queueSource);
+  const currentTrack = usePlayerStore((s) => s.currentTrack);
+  const isWaveActive = useSoundWaveStore((s) => s.isActive);
+  const isWaveSuspended = useSoundWaveStore((s) => s.isSuspended);
   const isQueueRefilling = useSoundWaveStore((s) => s.isQueueRefilling);
   const isTrackFlowLaunching = useSoundWaveStore((s) => s.isTrackFlowLaunching);
-  const visible = isTrackFlowLaunching || isQueueRefilling;
+  const managedBufferCount = useMemo(
+    () => getSoundWaveManagedBufferCount(queue, queueIndex),
+    [queue, queueIndex],
+  );
+  const isSoundWaveRadio =
+    queueSource === 'soundwave' && isWaveActive && !isWaveSuspended && Boolean(currentTrack);
+  const visible =
+    isTrackFlowLaunching || (isQueueRefilling && (!isSoundWaveRadio || managedBufferCount === 0));
   const label = isTrackFlowLaunching
     ? t('player.trackFlowPreparing')
     : t('player.wavePreparing');

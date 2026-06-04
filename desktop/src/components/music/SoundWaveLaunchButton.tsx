@@ -2,9 +2,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { AudioLines, Loader2 } from '../../lib/icons';
-import { dedupeWaveQueue } from '../../lib/soundwave-canonical';
 import {
-  buildWaveQueueFromPlayerContext,
   createInitialSoundWaveQueue,
   dedupeTracksByUrn,
 } from '../../lib/soundwave-queue';
@@ -12,7 +10,6 @@ import type { Track } from '../../stores/player';
 import { usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
 import { CHARACTER_PRESETS, useSoundWaveStore } from '../../stores/soundwave';
-import { useSoundWaveProfileStore } from '../../stores/soundwave-profile';
 
 type SoundWaveLaunchKind = 'playlist' | 'artist';
 
@@ -52,9 +49,7 @@ export function SoundWaveLaunchButton({
 }: SoundWaveLaunchButtonProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const selectedLanguages = useSettingsStore((s) => s.soundwaveLanguages);
   const mode = useSettingsStore((s) => s.soundwaveMode);
-  const hideLiked = useSettingsStore((s) => s.soundwaveHideLiked);
   const startFromQueue = useSoundWaveStore((s) => s.startFromQueue);
   const isWaveActive = useSoundWaveStore((s) => s.isActive);
   const launchContext = useSoundWaveStore((s) => s.launchContext);
@@ -101,30 +96,6 @@ export function SoundWaveLaunchButton({
       });
 
       navigate('/');
-
-      void buildWaveQueueFromPlayerContext({
-        languages: selectedLanguages,
-        mode,
-        hideLiked,
-        targetSize: 18,
-      }).then((tail) => {
-        if (tail.length === 0) return;
-
-        const player = usePlayerStore.getState();
-        if (player.queueSource !== 'soundwave') return;
-
-        const existingUrns = new Set(player.queue.map((track) => track.urn).filter(Boolean));
-        const protectedUrns = new Set(player.currentTrack?.urn ? [player.currentTrack.urn] : []);
-        const nextQueue = dedupeWaveQueue([...player.queue, ...tail], {
-          stage: 'launch-tail-final',
-          protectedUrns,
-        });
-        const freshTracks = nextQueue.filter((track) => !existingUrns.has(track.urn));
-        if (freshTracks.length > 0) {
-          useSoundWaveProfileStore.getState().recordWaveQueue(freshTracks, 'launch-tail');
-          player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
-        }
-      });
     } finally {
       setIsLoading(false);
     }

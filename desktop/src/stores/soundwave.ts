@@ -124,6 +124,7 @@ interface SoundWaveState {
   launchContext: SoundWaveLaunchContext | null;
   seedTracks: Track[];
   explorePool: Track[];
+  flowManagedUrns: Set<string>;
   genreWeights: Record<string, number>;
   artistWeights: Record<string, number>;
   playedUrns: Set<string>;
@@ -135,9 +136,11 @@ interface SoundWaveState {
   languageProfilesMap: Map<number, TrackLanguageProfile>;
   suspendedQueue: Track[] | null;
   suspendedQueueIndex: number;
+  suspendedFlowManagedUrns: string[];
   setStartupProgress: (progress: number, visible?: boolean, stage?: StartupStageKey) => void;
   setQueueRefilling: (value: boolean, reason?: string | null) => void;
   setTrackFlowLaunching: (value: boolean) => void;
+  setManagedUpcomingTracks: (tracks: Track[]) => void;
 
   init: () => Promise<void>;
   start: (preset: SoundWavePreset) => Promise<void>;
@@ -155,13 +158,19 @@ interface SoundWaveState {
   ingestPlayedTrackFeatures: (track: Track | null | undefined) => void;
   markTrackPlayed: (track: Track | null | undefined) => void;
   generateBatch: (options?: { startup?: boolean }) => Promise<Track[]>;
-  refreshUpcomingQueue: (options?: { reason?: string; targetSize?: number }) => Promise<Track[]>;
+  refreshUpcomingQueue: (options?: {
+    reason?: string;
+    targetSize?: number;
+    replaceManaged?: boolean;
+  }) => Promise<Track[]>;
   recordFeedback: (track: Track, type: 'positive' | 'negative') => void;
   trainTrackMood: (track: Track, mood: MoodLabel) => void;
 }
 
 const clampProgress = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
-const CONTEXTUAL_WAVE_REFRESH_TARGET = 22;
+const SOUNDWAVE_RADIO_BUFFER_TARGET = 12;
+const SOUNDWAVE_RADIO_BUFFER_MAX = 16;
+const CONTEXTUAL_WAVE_REFRESH_TARGET = 10;
 let startupProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
 let initPromise: Promise<void> | null = null;
 let inFlightGenerateBatch: Promise<Track[]> | null = null;
@@ -169,6 +178,79 @@ let soundWaveUpcomingRefreshSeq = 0;
 
 function isTrackPlayable(track: Track | null | undefined): track is Track {
   return Boolean(track?.urn && track.title && track.user?.username && track.access !== 'blocked');
+}
+
+function collectQueueHead(queue: Track[], queueIndex: number, fallbackTrack: Track | null = null): Track[] {
+  if (queueIndex >= 0) {
+    return queue.slice(0, queueIndex + 1).filter(isTrackPlayable);
+  }
+  return fallbackTrack ? [fallbackTrack] : [];
+}
+
+function collectUpcomingQueueEntries(queue: Track[], queueIndex: number) {
+  const entries: Array<{ track: Track; absIdx: number }> = [];
+  const startIndex = Math.max(0, queueIndex + 1);
+
+  for (let absIdx = startIndex; absIdx < queue.length; absIdx += 1) {
+    const track = queue[absIdx];
+    if (isTrackPlayable(track)) {
+      entries.push({ track, absIdx });
+    }
+  }
+
+  return entries;
+}
+
+function collectManagedUpcomingTracks(queue: Track[], queueIndex: number, managedUrns: Set<string>) {
+  return collectUpcomingQueueEntries(queue, queueIndex)
+    .map((entry) => entry.track)
+    .filter((track) => managedUrns.has(track.urn));
+}
+
+function collectManualUpcomingEntries(queue: Track[], queueIndex: number, managedUrns: Set<string>) {
+  return collectUpcomingQueueEntries(queue, queueIndex).filter(
+    (entry) => !managedUrns.has(entry.track.urn),
+  );
+}
+
+function collectManualUpcomingTracks(queue: Track[], queueIndex: number, managedUrns: Set<string>) {
+  return collectManualUpcomingEntries(queue, queueIndex, managedUrns).map((entry) => entry.track);
+}
+
+function takeRadioBuffer(tracks: Track[], stage: string, limit = SOUNDWAVE_RADIO_BUFFER_TARGET) {
+  return dedupeWaveQueue(dedupeTracksByUrn(tracks.filter(isTrackPlayable)), {
+    stage,
+  }).slice(0, Math.max(1, Math.min(limit, SOUNDWAVE_RADIO_BUFFER_MAX)));
+}
+
+function buildRadioQueue(opts: {
+  queueHead: Track[];
+  manualUpcoming: Track[];
+  flowUpcoming: Track[];
+  stage: string;
+}) {
+  const protectedUrns = new Set(
+    [...opts.queueHead, ...opts.manualUpcoming].map((track) => track.urn).filter(Boolean),
+  );
+  const merged = dedupeWaveQueue(
+    dedupeTracksByUrn([...opts.queueHead, ...opts.manualUpcoming, ...opts.flowUpcoming]),
+    {
+      stage: `${opts.stage}:merged`,
+      protectedUrns,
+    },
+  );
+  const managedUpcoming = merged
+    .filter((track) => track?.urn && !protectedUrns.has(track.urn))
+    .slice(0, SOUNDWAVE_RADIO_BUFFER_MAX);
+  const nextQueue = dedupeWaveQueue(
+    dedupeTracksByUrn([...opts.queueHead, ...opts.manualUpcoming, ...managedUpcoming]),
+    {
+      stage: opts.stage,
+      protectedUrns,
+    },
+  );
+
+  return { nextQueue, managedUpcoming };
 }
 
 function extractPlaylistTracks(
@@ -257,6 +339,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
   launchContext: null,
   seedTracks: [],
   explorePool: [],
+  flowManagedUrns: new Set(),
   genreWeights: {},
   artistWeights: {},
   playedUrns: new Set(),
@@ -268,6 +351,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
   languageProfilesMap: new Map(),
   suspendedQueue: null,
   suspendedQueueIndex: -1,
+  suspendedFlowManagedUrns: [],
 
   setStartupProgress: (progress, visible = true, stage) => {
     if (startupProgressHideTimer) {
@@ -290,6 +374,12 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
 
   setTrackFlowLaunching: (value) => {
     set({ isTrackFlowLaunching: value });
+  },
+
+  setManagedUpcomingTracks: (tracks) => {
+    set({
+      flowManagedUrns: new Set(tracks.map((track) => track.urn).filter(Boolean)),
+    });
   },
 
   init: async () => {
@@ -375,11 +465,13 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       continuationStrategy: 'preset-batch',
       currentPreset: preset,
       launchContext: null,
+      flowManagedUrns: new Set(),
       playedUrns: new Set(),
       sessionPositive: [],
       sessionNegative: [],
       suspendedQueue: null,
       suspendedQueueIndex: -1,
+      suspendedFlowManagedUrns: [],
       startupVisible: true,
       startupProgress: Math.max(get().startupProgress, 82),
       startupStage: 'batch',
@@ -393,9 +485,15 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     try {
       const batch = await generateBatch({ startup: true });
       const finalBatch = dedupeWaveQueue(batch, { stage: 'start-final' });
-      if (finalBatch.length > 0) {
-        useSoundWaveProfileStore.getState().recordWaveQueue(finalBatch, 'preset-start');
-        usePlayerStore.getState().play(finalBatch[0], finalBatch, 'soundwave');
+      const radioQueue = takeRadioBuffer(
+        finalBatch,
+        'start-radio',
+        SOUNDWAVE_RADIO_BUFFER_MAX,
+      );
+      if (radioQueue.length > 0) {
+        get().setManagedUpcomingTracks(radioQueue.slice(1));
+        useSoundWaveProfileStore.getState().recordWaveQueue(radioQueue, 'preset-start');
+        usePlayerStore.getState().play(radioQueue[0], radioQueue, 'soundwave');
         set({ startupVisible: true, startupProgress: 100, startupStage: 'done' });
         scheduleStartupHide(set);
       } else {
@@ -473,11 +571,13 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       continuationStrategy,
       currentPreset: preset,
       launchContext,
+      flowManagedUrns: new Set(),
       playedUrns: new Set(),
       sessionPositive: [],
       sessionNegative: [],
       suspendedQueue: null,
       suspendedQueueIndex: -1,
+      suspendedFlowManagedUrns: [],
       startupVisible: restartInPlace ? get().startupVisible : false,
       startupProgress: restartInPlace ? get().startupProgress : 0,
       startupStage: restartInPlace ? 'idle' : 'done',
@@ -491,26 +591,46 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       });
     }
 
-    const currentTrackIndex = currentTrack?.urn
-      ? normalizedQueue.findIndex((track) => track.urn === currentTrack.urn)
-      : -1;
-    const queuedTracksToRecord =
-      preserveCurrentTrack && currentTrackIndex >= 0
-        ? normalizedQueue.slice(currentTrackIndex + 1)
-        : normalizedQueue;
-    if (queuedTracksToRecord.length > 0) {
-      useSoundWaveProfileStore
-        .getState()
-        .recordWaveQueue(queuedTracksToRecord, continuationStrategy ?? 'queue-start');
-    }
-
     const player = usePlayerStore.getState();
     if (preserveCurrentTrack && player.currentTrack) {
-      player.replaceQueueKeepingCurrent(normalizedQueue, 'soundwave');
+      const currentTrackIndex = currentTrack?.urn
+        ? normalizedQueue.findIndex((track) => track.urn === currentTrack.urn)
+        : -1;
+      const queueHead = collectQueueHead(player.queue, player.queueIndex, player.currentTrack);
+      const hiddenSeed =
+        currentTrackIndex >= 0 ? normalizedQueue.slice(currentTrackIndex + 1) : normalizedQueue;
+      const { nextQueue, managedUpcoming } = buildRadioQueue({
+        queueHead,
+        manualUpcoming: [],
+        flowUpcoming: takeRadioBuffer(
+          hiddenSeed,
+          'start-from-queue-preserve-radio',
+          SOUNDWAVE_RADIO_BUFFER_MAX,
+        ),
+        stage: 'start-from-queue-preserve-final',
+      });
+      get().setManagedUpcomingTracks(managedUpcoming);
+      if (managedUpcoming.length > 0) {
+        useSoundWaveProfileStore
+          .getState()
+          .recordWaveQueue(managedUpcoming, continuationStrategy ?? 'queue-start');
+      }
+      player.replaceQueueKeepingCurrent(nextQueue, 'soundwave');
       return;
     }
 
-    player.play(normalizedQueue[0], normalizedQueue, 'soundwave');
+    const radioQueue = takeRadioBuffer(
+      normalizedQueue,
+      'start-from-queue-radio',
+      SOUNDWAVE_RADIO_BUFFER_MAX,
+    );
+    if (radioQueue.length === 0) return;
+
+    get().setManagedUpcomingTracks(radioQueue.slice(1));
+    useSoundWaveProfileStore
+      .getState()
+      .recordWaveQueue(radioQueue, continuationStrategy ?? 'queue-start');
+    player.play(radioQueue[0], radioQueue, 'soundwave');
   },
 
   stop: () => {
@@ -532,6 +652,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       startupStage: 'idle',
       currentPreset: null,
       launchContext: null,
+      flowManagedUrns: new Set(),
       playedUrns: new Set(),
       sessionPositive: [],
       sessionNegative: [],
@@ -539,6 +660,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       languageProfilesMap: new Map(),
       suspendedQueue: null,
       suspendedQueueIndex: -1,
+      suspendedFlowManagedUrns: [],
     });
   },
 
@@ -554,6 +676,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       startupStage: 'caching',
       suspendedQueue: queue.map((track) => ({ ...track })),
       suspendedQueueIndex: safeIndex,
+      suspendedFlowManagedUrns: [...get().flowManagedUrns],
     });
   },
 
@@ -572,8 +695,10 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       isTrackFlowLaunching: false,
       queueRefillReason: null,
       startupStage: 'done',
+      flowManagedUrns: new Set(get().suspendedFlowManagedUrns),
       suspendedQueue: null,
       suspendedQueueIndex: -1,
+      suspendedFlowManagedUrns: [],
     });
     return true;
   },
@@ -594,8 +719,12 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
 
   refreshUpcomingQueue: async (options) => {
     const reason = options?.reason || 'manual';
-    const targetSize = Math.max(8, options?.targetSize ?? CONTEXTUAL_WAVE_REFRESH_TARGET);
-    const { isActive, isSuspended, continuationStrategy } = get();
+    const targetSize = Math.max(
+      1,
+      Math.min(SOUNDWAVE_RADIO_BUFFER_MAX, options?.targetSize ?? SOUNDWAVE_RADIO_BUFFER_MAX),
+    );
+    const replaceManaged = Boolean(options?.replaceManaged);
+    const { isActive, isSuspended, continuationStrategy, flowManagedUrns } = get();
     const player = usePlayerStore.getState();
     const { currentTrack, queue, queueIndex, queueSource } = player;
 
@@ -612,17 +741,24 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
 
     const requestId = ++soundWaveUpcomingRefreshSeq;
     const anchorUrn = currentTrack.urn;
-    const queueHead = queue.slice(0, queueIndex + 1);
+    const queueHead = collectQueueHead(queue, queueIndex, currentTrack);
+    const manualUpcoming = collectManualUpcomingTracks(queue, queueIndex, flowManagedUrns);
+    const existingManaged = replaceManaged
+      ? []
+      : collectManagedUpcomingTracks(queue, queueIndex, flowManagedUrns);
+    if (!replaceManaged && existingManaged.length >= targetSize) {
+      return existingManaged;
+    }
     const settings = useSettingsStore.getState();
     const mode = resolveSoundWaveMode(get().currentPreset);
 
-    const tail =
+    const candidates =
       continuationStrategy === 'contextual-tail'
         ? await buildWaveQueueFromPlayerContext({
             languages: settings.soundwaveLanguages,
             mode,
             hideLiked: settings.soundwaveHideLiked,
-            targetSize,
+            targetSize: Math.max(CONTEXTUAL_WAVE_REFRESH_TARGET, targetSize + 4),
           })
         : await get().generateBatch();
 
@@ -636,24 +772,44 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       return [];
     }
 
-    if (tail.length === 0) return [];
+    const protectedUrns = new Set(
+      [...queueHead, ...manualUpcoming].map((track) => track.urn).filter(Boolean),
+    );
+    const nextManaged = takeRadioBuffer(
+      [
+        ...existingManaged,
+        ...candidates.filter((track) => track?.urn && !protectedUrns.has(track.urn)),
+      ],
+      `refresh-buffer:${reason}`,
+      targetSize,
+    ).filter((track) => !protectedUrns.has(track.urn));
 
-    const protectedUrns = new Set(queueHead.map((track) => track.urn).filter(Boolean));
-    const nextQueue = dedupeWaveQueue(dedupeTracksByUrn([...queueHead, ...tail]), {
+    if (nextManaged.length === 0 && existingManaged.length === 0) return [];
+
+    const { nextQueue, managedUpcoming } = buildRadioQueue({
+      queueHead,
+      manualUpcoming,
+      flowUpcoming: nextManaged,
       stage: `refresh-final:${reason}`,
-      protectedUrns,
     });
-    const finalTail = nextQueue.filter((track) => !protectedUrns.has(track.urn));
-    if (finalTail.length === 0) return [];
+    const previousManagedUrns = new Set(
+      collectManagedUpcomingTracks(queue, queueIndex, flowManagedUrns)
+        .map((track) => track.urn)
+        .filter(Boolean),
+    );
+    const appendedTracks = managedUpcoming.filter((track) => !previousManagedUrns.has(track.urn));
 
-    useSoundWaveProfileStore
-      .getState()
-      .recordWaveQueue(
-        finalTail,
-        continuationStrategy === 'contextual-tail' ? 'contextual-tail' : 'preset-refill',
-      );
+    if (appendedTracks.length > 0) {
+      useSoundWaveProfileStore
+        .getState()
+        .recordWaveQueue(
+          appendedTracks,
+          continuationStrategy === 'contextual-tail' ? 'contextual-tail' : 'preset-refill',
+        );
+    }
+    get().setManagedUpcomingTracks(managedUpcoming);
     usePlayerStore.getState().replaceQueueKeepingCurrent(nextQueue, 'soundwave');
-    return finalTail;
+    return managedUpcoming;
   },
 
   recordFeedback: (track, type) => {
@@ -740,3 +896,58 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     return inFlightGenerateBatch;
   },
 }));
+
+export function isSoundWaveManagedTrack(track: Track | null | undefined) {
+  return Boolean(track?.urn && useSoundWaveStore.getState().flowManagedUrns.has(track.urn));
+}
+
+export function getSoundWaveManagedUpcomingTracks(
+  queue = usePlayerStore.getState().queue,
+  queueIndex = usePlayerStore.getState().queueIndex,
+) {
+  return collectManagedUpcomingTracks(
+    queue,
+    queueIndex,
+    useSoundWaveStore.getState().flowManagedUrns,
+  );
+}
+
+export function getSoundWaveManagedBufferCount(
+  queue = usePlayerStore.getState().queue,
+  queueIndex = usePlayerStore.getState().queueIndex,
+) {
+  return getSoundWaveManagedUpcomingTracks(queue, queueIndex).length;
+}
+
+export function getSoundWaveVisibleQueueEntries(
+  queue = usePlayerStore.getState().queue,
+  queueIndex = usePlayerStore.getState().queueIndex,
+) {
+  return collectManualUpcomingEntries(queue, queueIndex, useSoundWaveStore.getState().flowManagedUrns);
+}
+
+export function getSoundWaveVisibleQueueTracks(
+  queue = usePlayerStore.getState().queue,
+  queueIndex = usePlayerStore.getState().queueIndex,
+) {
+  return getSoundWaveVisibleQueueEntries(queue, queueIndex).map((entry) => entry.track);
+}
+
+export function replaceSoundWaveVisibleQueue(manualUpcoming: Track[], stage = 'manual-queue') {
+  const player = usePlayerStore.getState();
+  const currentTrack = player.currentTrack;
+  if (!currentTrack) return [];
+
+  const queueHead = collectQueueHead(player.queue, player.queueIndex, currentTrack);
+  const managedUpcoming = getSoundWaveManagedUpcomingTracks(player.queue, player.queueIndex);
+  const { nextQueue, managedUpcoming: nextManaged } = buildRadioQueue({
+    queueHead,
+    manualUpcoming,
+    flowUpcoming: managedUpcoming,
+    stage,
+  });
+
+  useSoundWaveStore.getState().setManagedUpcomingTracks(nextManaged);
+  usePlayerStore.getState().replaceQueueKeepingCurrent(nextQueue, 'soundwave');
+  return nextQueue;
+}

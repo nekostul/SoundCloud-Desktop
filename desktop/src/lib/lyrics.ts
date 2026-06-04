@@ -13,6 +13,8 @@ const ENABLE_QWEN_ASR = false;
 const ENABLE_KROKO_ASR = false;
 const DEV_LYRICS_DEBUG = import.meta.env.DEV;
 const LYRICS_MISS_CACHE_TTL_MS = 10 * 60 * 1000;
+const FAST_LRCLIB_TIMEOUT_MS = 2200;
+const MAX_FAST_LRCLIB_TITLE_ATTEMPTS = 3;
 const MAX_LRCLIB_QUERY_ATTEMPTS = 8;
 const MAX_LRCLIB_TITLE_ONLY_ATTEMPTS = 3;
 const MAX_GENIUS_QUERIES = 2;
@@ -21,7 +23,7 @@ const MAX_GENIUS_FALLBACK_ATTEMPTS = 2;
 const MAX_ACCEPTED_DURATION_DELTA_SEC = 2.25;
 // Bump to drop stale cache entries after lyrics search pipeline changes.
 const LYRICS_SEARCH_CACHE_VERSION = 25;
-export const LYRICS_SEARCH_QUERY_VERSION = 26;
+export const LYRICS_SEARCH_QUERY_VERSION = 27;
 const LYRIC_PAUSE_MARKER = '♪♪♪';
 const PAUSE_SECTION_LINE_REGEX =
   /^(?:instrumental|interlude|solo|guitar solo|drum solo|проигрыш|проигрыши|инструментал|соло)(?:\s+(?:x|х|×)?\d+)?$/iu;
@@ -1008,6 +1010,27 @@ async function requestText(url: string, signal?: AbortSignal): Promise<string> {
 
 async function requestJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return JSON.parse(await requestText(url, signal)) as T;
+}
+
+function createLinkedTimeoutSignal(parent: AbortSignal, timeoutMs: number) {
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort();
+
+  if (parent.aborted) {
+    controller.abort();
+  } else {
+    parent.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      parent.removeEventListener('abort', abortFromParent);
+    },
+  };
 }
 
 function normalizeLyricText(value: string): string {
@@ -3649,6 +3672,240 @@ function pickBestLyricsCandidate<T>(
   return best.item;
 }
 
+function collectFastLrclibTitleOnlyParams(
+  titleSeeds: Array<string | null | undefined>,
+  profile: LyricsSearchProfile,
+): Record<string, string>[] {
+  const paramsList: Record<string, string>[] = [];
+  const seen = new Set<string>();
+  const focusedTitleHints = Array.from(
+    new Map(
+      [
+        ...titleSeeds,
+        ...collectFeaturedTitleBaseHints(profile.requestedTitle),
+        ...collectFeaturedTitleBaseHints(profile.originalTitle),
+        ...collectLatinToCyrillicTitleHints([
+          profile.requestedTitle,
+          profile.originalTitle,
+          ...titleSeeds,
+        ]),
+        ...collectLooseTitleOnlyCandidates([
+          profile.requestedTitle,
+          profile.originalTitle,
+          ...titleSeeds,
+        ]),
+      ]
+        .filter((value): value is string => Boolean(value?.trim()))
+        .map((value) => [normalizeSearchText(value), value] as const),
+    ).values(),
+  );
+
+  for (const titleCandidate of focusedTitleHints) {
+    const normalizedTitle = normalizeLrclibQueryPart(titleCandidate);
+    if (!normalizedTitle || seen.has(normalizedTitle)) continue;
+    seen.add(normalizedTitle);
+    paramsList.push({ track_name: normalizedTitle });
+    if (paramsList.length >= MAX_FAST_LRCLIB_TITLE_ATTEMPTS) break;
+  }
+
+  return paramsList;
+}
+
+function isAcceptedFastLrclibTitleOnlyCandidate(
+  profile: LyricsSearchProfile,
+  scored: {
+    score: number;
+    titleScore: number;
+    artistScore: number;
+    combinedScore: number;
+    durationScore?: number;
+    durationDeltaSec?: number | null;
+  },
+  candidateArtist: string,
+  candidateTitle: string,
+): boolean {
+  if (profile.durationSec == null || scored.durationDeltaSec == null) {
+    return false;
+  }
+
+  if (scored.durationDeltaSec > MAX_ACCEPTED_DURATION_DELTA_SEC) {
+    return false;
+  }
+
+  if (hasMissingRequiredTitleTokens(candidateTitle, profile.requiredTitleTokens)) {
+    return false;
+  }
+
+  const titleIsAmbiguous =
+    isAmbiguousShortTitle(profile.requestedTitle) || isAmbiguousShortTitle(profile.originalTitle);
+  if (
+    titleIsAmbiguous &&
+    !hasStrongTitleOnlyHint(profile.requestedTitle) &&
+    !hasStrongTitleOnlyHint(profile.originalTitle)
+  ) {
+    return false;
+  }
+
+  const requestedHasDerivative =
+    hasDerivativeVersionMarker(profile.requestedTitle) ||
+    hasDerivativeVersionMarker(profile.originalTitle);
+  if (
+    !requestedHasDerivative &&
+    hasDerivativeVersionMarker(candidateTitle) &&
+    scored.titleScore < 0.96
+  ) {
+    return false;
+  }
+
+  const titleIsNearExact = scored.titleScore >= 0.96;
+  const titleIsStrong = scored.titleScore >= 0.92;
+  const durationIsTight = (scored.durationScore ?? 0) >= 0.24;
+  const durationIsAcceptable = (scored.durationScore ?? 0) >= 0.14;
+  const hasArtistSupport =
+    scored.artistScore >= 0.08 ||
+    scored.combinedScore >= 0.5 ||
+    isCompatibleLrclibArtistQuery(candidateArtist, profile.requestedArtist) ||
+    isCompatibleLrclibArtistQuery(candidateArtist, profile.uploaderUsername);
+
+  if (titleIsNearExact && durationIsAcceptable) return true;
+  if (titleIsStrong && durationIsTight && hasArtistSupport) return true;
+  return false;
+}
+
+function dedupeLrclibEntries(entries: LrclibEntry[]): LrclibEntry[] {
+  const deduped: LrclibEntry[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of entries) {
+    const key = [
+      normalizeSearchText(String(entry.artistName || '')),
+      normalizeSearchText(String(entry.trackName || '')),
+      entry.duration != null && Number.isFinite(entry.duration) ? String(entry.duration) : '',
+    ].join('::');
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(entry);
+  }
+
+  return deduped;
+}
+
+function pickFastLrclibTitleOnlyCandidate(
+  entries: LrclibEntry[],
+  profile: LyricsSearchProfile,
+): LrclibEntry | null {
+  const ranked = dedupeLrclibEntries(entries)
+    .map((entry) => {
+      const artist = String(entry.artistName || '').trim();
+      const title = String(entry.trackName || '').trim();
+      const scored = scoreLyricsCandidate(
+        profile,
+        artist,
+        title,
+        String(entry.albumName || '').trim(),
+        entry.duration ?? null,
+      );
+      return { entry, artist, title, ...scored };
+    })
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.titleScore - a.titleScore ||
+        (a.durationDeltaSec ?? Number.POSITIVE_INFINITY) -
+          (b.durationDeltaSec ?? Number.POSITIVE_INFINITY),
+    );
+
+  const best = ranked[0];
+  if (!best) return null;
+
+  if (!isAcceptedFastLrclibTitleOnlyCandidate(profile, best, best.artist, best.title)) {
+    logLyricsPipeline('LRCLIB fast title-only candidate rejected', {
+      requestedArtist: profile.requestedArtist,
+      requestedTitle: profile.requestedTitle,
+      originalTitle: profile.originalTitle,
+      candidateArtist: best.artist,
+      candidateTitle: best.title,
+      score: Number(best.score.toFixed(3)),
+      titleScore: Number(best.titleScore.toFixed(3)),
+      artistScore: Number(best.artistScore.toFixed(3)),
+      combinedScore: Number(best.combinedScore.toFixed(3)),
+      durationDeltaSec:
+        best.durationDeltaSec == null ? null : Number(best.durationDeltaSec.toFixed(2)),
+    });
+    return null;
+  }
+
+  return best.entry;
+}
+
+async function searchFastLrclibTitleOnly(
+  titleSeeds: Array<string | null | undefined>,
+  profile: LyricsSearchProfile,
+  signal: AbortSignal,
+): Promise<LyricsResult | null> {
+  if (profile.durationSec == null || !Number.isFinite(profile.durationSec)) {
+    return null;
+  }
+
+  const paramsList = collectFastLrclibTitleOnlyParams(titleSeeds, profile);
+  if (paramsList.length === 0) return null;
+
+  const responses = await Promise.allSettled(
+    paramsList.map(async (params) => {
+      const url = `${LRCLIB_API}/search?${new URLSearchParams(params)}`;
+      logLyricsPipeline('LRCLIB fast title-only fetch', {
+        params,
+        requestedArtist: profile.requestedArtist,
+        requestedTitle: profile.requestedTitle,
+      });
+      const data = await requestJson<LrclibEntry[]>(url, signal);
+      logLyricsPipeline('LRCLIB fast title-only response', {
+        params,
+        count: data?.length ?? 0,
+      });
+      return { params, data: data ?? [] };
+    }),
+  );
+
+  const syncedEntries: LrclibEntry[] = [];
+
+  for (const response of responses) {
+    if (response.status === 'rejected') {
+      logLyricsPipeline('LRCLIB fast title-only fetch failed', {
+        error:
+          response.reason instanceof Error
+            ? `${response.reason.name}: ${response.reason.message}`
+            : String(response.reason),
+      });
+      continue;
+    }
+
+    for (const entry of response.value.data) {
+      if (hasLrclibSyncedLyrics(entry)) {
+        syncedEntries.push(entry);
+      }
+    }
+  }
+
+  if (syncedEntries.length === 0) return null;
+
+  const best = pickFastLrclibTitleOnlyCandidate(syncedEntries, profile);
+  logLyricsPipeline(best ? 'LRCLIB fast title-only match accepted' : 'LRCLIB fast title-only match rejected', {
+    requestedArtist: profile.requestedArtist,
+    requestedTitle: profile.requestedTitle,
+    originalTitle: profile.originalTitle,
+    best: best
+      ? {
+          artistName: best.artistName ?? null,
+          trackName: best.trackName ?? null,
+          duration: best.duration ?? null,
+        }
+      : null,
+  });
+
+  return best ? toResultLrclib(best) : null;
+}
+
 type LrclibSearchStage = 'strict' | 'title';
 
 type LrclibSearchAttempt = {
@@ -4505,6 +4762,37 @@ export async function searchLyrics(
       stripBrackets(originalTitle) ||
       requestedTitle ||
       originalTitle;
+    const cleanedQuery = cleanupSoundCloudLyricsQuery(
+      requestedArtist,
+      requestedTitle,
+      originalTitle,
+      uploaderUsername,
+    );
+    const earlyLrclibProfile = buildLyricsSearchProfile(canonicalArtist, canonicalTitle, {
+      ...options,
+      uploaderUsername,
+      originalTitle,
+    });
+
+    const fastLrclibSignal = createLinkedTimeoutSignal(sig, FAST_LRCLIB_TIMEOUT_MS);
+    try {
+      const fastLrclibResult = await searchFastLrclibTitleOnly(
+        [canonicalTitle, requestedTitle, originalTitle, cleanedQuery?.title],
+        earlyLrclibProfile,
+        fastLrclibSignal.signal,
+      );
+      if (fastLrclibResult) {
+        logLyricsDebug('resolved lyrics via fast LRCLIB title-only search', {
+          trackUrn,
+          requestedArtist,
+          requestedTitle,
+          canonicalTitle,
+        });
+        return await saveMatchedLyrics(fastLrclibResult);
+      }
+    } finally {
+      fastLrclibSignal.cleanup();
+    }
 
     const runLyricsSearchPipeline = async (
       artist: string,
@@ -4596,12 +4884,6 @@ export async function searchLyrics(
       geniusFallback ??= result.geniusFallback;
     }
 
-    const cleanedQuery = cleanupSoundCloudLyricsQuery(
-      requestedArtist,
-      requestedTitle,
-      originalTitle,
-      uploaderUsername,
-    );
     if (cleanedQuery) {
       logLyricsDebug('retrying lyrics search with cleaned SoundCloud title', {
         trackUrn,

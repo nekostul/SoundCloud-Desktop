@@ -11,6 +11,7 @@ type WaveEntityProfile = {
   positive: number;
   negative: number;
   likes: number;
+  reposts: number;
   playlistAdds: number;
   fullListens: number;
   quickSkips: number;
@@ -33,6 +34,7 @@ type WaveTrackProfile = {
   midSkips: number;
   replays: number;
   likes: number;
+  reposts: number;
   playlistAdds: number;
   explicitDislikes: number;
   confirmedRejects: number;
@@ -64,6 +66,7 @@ type WaveSessionSummary = {
   plays: number;
   skips: number;
   likes: number;
+  reposts: number;
   playlistAdds: number;
   discoveries: number;
 };
@@ -97,6 +100,7 @@ type SoundWaveProfileState = {
   recordPlaybackStart: (track: Track | null | undefined, opts?: PlaybackStartInput) => void;
   recordPlaybackResult: (track: Track | null | undefined, opts: PlaybackResultInput) => void;
   recordTrackLiked: (track: Track | null | undefined, liked: boolean) => void;
+  recordTrackReposted: (track: Track | null | undefined) => void;
   recordTrackAddedToPlaylistUrns: (urns: string[]) => void;
   recordTrackDisliked: (track: Track | null | undefined) => void;
   clearTrackBlock: (urn: string) => void;
@@ -162,6 +166,7 @@ function createEntityProfile(): WaveEntityProfile {
     positive: 0,
     negative: 0,
     likes: 0,
+    reposts: 0,
     playlistAdds: 0,
     fullListens: 0,
     quickSkips: 0,
@@ -190,6 +195,7 @@ function createTrackProfile(
     midSkips: 0,
     replays: 0,
     likes: 0,
+    reposts: 0,
     playlistAdds: 0,
     explicitDislikes: 0,
     confirmedRejects: 0,
@@ -240,6 +246,7 @@ function recomputeInterestScore(profile: WaveTrackProfile) {
     profile.nearFullListens * 2.6 +
     profile.replays * 5.4 +
     profile.likes * 9 +
+    (profile.reposts ?? 0) * 7.2 +
     profile.playlistAdds * 10.5;
   const negative =
     profile.quickSkips * 9.5 +
@@ -263,6 +270,7 @@ function adjustEntity(
     positive?: number;
     negative?: number;
     likes?: number;
+    reposts?: number;
     playlistAdds?: number;
     fullListens?: number;
     quickSkips?: number;
@@ -276,6 +284,7 @@ function adjustEntity(
     current.positive += delta.positive ?? 0;
     current.negative += delta.negative ?? 0;
     current.likes += delta.likes ?? 0;
+    current.reposts = (current.reposts ?? 0) + (delta.reposts ?? 0);
     current.playlistAdds += delta.playlistAdds ?? 0;
     current.fullListens += delta.fullListens ?? 0;
     current.quickSkips += delta.quickSkips ?? 0;
@@ -366,6 +375,7 @@ function createSession(meta?: {
     plays: 0,
     skips: 0,
     likes: 0,
+    reposts: 0,
     playlistAdds: 0,
     discoveries: 0,
   };
@@ -806,6 +816,53 @@ export const useSoundWaveProfileStore = create<SoundWaveProfileState>()(
           return pruneState(next);
         }),
 
+      recordTrackReposted: (track) =>
+        set((state) => {
+          if (!track?.urn) return state;
+
+          const next: SoundWaveProfileState = {
+            ...state,
+            trackProfiles: { ...state.trackProfiles },
+            artistProfiles: { ...state.artistProfiles },
+            genreProfiles: { ...state.genreProfiles },
+            sourceProfiles: { ...state.sourceProfiles },
+            recentWaveExposure: [...state.recentWaveExposure],
+            sessionHistory: [...state.sessionHistory],
+          };
+          const profile = ensureTrackProfile(next, track);
+          if (!profile) return state;
+
+          const timestamp = nowTs();
+          profile.reposts = (profile.reposts ?? 0) + 1;
+          profile.lastInteractionAt = timestamp;
+          recomputeInterestScore(profile);
+
+          adjustEntity(
+            next.artistProfiles,
+            profile.workIdentity?.artists ?? [],
+            { affinity: 7.2, positive: 1, reposts: 1 },
+            timestamp,
+          );
+          adjustEntity(
+            next.genreProfiles,
+            profile.genreKeys,
+            { affinity: 3.4, positive: 1, reposts: 1 },
+            timestamp,
+          );
+          adjustEntity(
+            next.sourceProfiles,
+            profile.sourceKeys,
+            { affinity: 2.2, reposts: 1 },
+            timestamp,
+          );
+
+          touchSession(next, (session) => {
+            session.reposts = (session.reposts ?? 0) + 1;
+          });
+
+          return pruneState(next);
+        }),
+
       recordTrackAddedToPlaylistUrns: (urns) =>
         set((state) => {
           if (urns.length === 0) return state;
@@ -1029,8 +1086,18 @@ export function pickPersonalizedSeedTracks(
   const rankedProfiles = Object.values(state.trackProfiles)
     .filter((profile) => profile.snapshot?.urn && profile.interestScore >= 12)
     .sort((a, b) => {
-      const scoreA = a.interestScore + a.playlistAdds * 4 + a.likes * 3 + a.replays * 2;
-      const scoreB = b.interestScore + b.playlistAdds * 4 + b.likes * 3 + b.replays * 2;
+      const scoreA =
+        a.interestScore +
+        a.playlistAdds * 4 +
+        a.likes * 3 +
+        (a.reposts ?? 0) * 2.5 +
+        a.replays * 2;
+      const scoreB =
+        b.interestScore +
+        b.playlistAdds * 4 +
+        b.likes * 3 +
+        (b.reposts ?? 0) * 2.5 +
+        b.replays * 2;
       return scoreB - scoreA;
     });
 

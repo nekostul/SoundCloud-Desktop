@@ -47,6 +47,7 @@ import {
   Users,
   X,
 } from '../lib/icons';
+import { addTracksToQueueNextWithSoundWavePriority } from '../lib/soundwave-radio';
 import { filterTracksByQuery } from '../lib/track-search';
 import { useMountFrameGate } from '../lib/useMountFrameGate';
 import { useTrackPlay } from '../lib/useTrackPlay';
@@ -517,7 +518,6 @@ const LibraryTrackRow = React.memo(
     const { t } = useTranslation();
     const navigate = useNavigate();
     const { isThis, isThisPlaying, togglePlay: baseToggle } = useTrackPlay(track, queue);
-    const addToQueueNext = usePlayerStore((s) => s.addToQueueNext);
     const isTrackCached = useTrackCachedFlag(track.urn);
 
     const togglePlay = () => {
@@ -544,7 +544,7 @@ const LibraryTrackRow = React.memo(
 
     const handleAddToQueue = (e: React.MouseEvent) => {
       e.stopPropagation();
-      addToQueueNext([track]);
+      addTracksToQueueNextWithSoundWavePriority([track]);
     };
 
     const cover = art(track.artwork_url, 't200x200');

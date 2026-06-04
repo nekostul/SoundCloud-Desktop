@@ -42,10 +42,14 @@ import { invalidateAllLikesCache } from '../../lib/hooks';
 import { isUrnLiked, optimisticToggleLike } from '../../lib/likes';
 import { isTauriRuntime } from '../../lib/runtime';
 import { hydrateByIds, type RecommendResult, trackIdFromTrack } from '../../lib/soundwave';
+import {
+  addTracksToQueueNextWithSoundWavePriority,
+  addTracksToQueueWithSoundWavePriority,
+} from '../../lib/soundwave-radio';
 import { useAuthStore } from '../../stores/auth';
 import { type Track, usePlayerStore } from '../../stores/player';
 import { useSettingsStore } from '../../stores/settings';
-import { CHARACTER_PRESETS, useSoundWaveStore } from '../../stores/soundwave';
+import { CHARACTER_PRESETS, isSoundWaveManagedTrack, useSoundWaveStore } from '../../stores/soundwave';
 import { useSoundWaveProfileStore } from '../../stores/soundwave-profile';
 import { AddToPlaylistDialog } from '../music/AddToPlaylistDialog';
 import {
@@ -418,6 +422,8 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((state) => state.user);
   const playerQueue = usePlayerStore((state) => state.queue);
+  const playerQueueIndex = usePlayerStore((state) => state.queueIndex);
+  const playerQueueSource = usePlayerStore((state) => state.queueSource);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuState, setMenuState] = useState<MenuState | null>(null);
   const [focusIndex, setFocusIndex] = useState(0);
@@ -878,12 +884,18 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
       const { target, image } = context;
       const currentLiked = isUrnLiked(target.track.urn) || Boolean(target.track.user_favorite);
       const queuedTrackIndex = playerQueue.findIndex((track) => track.urn === target.track.urn);
+      const isHiddenWaveTrack =
+        playerQueueSource === 'soundwave' &&
+        queuedTrackIndex > playerQueueIndex &&
+        isSoundWaveManagedTrack(target.track);
       const removableQueueIndex =
-        queuedTrackIndex >= 0
-          ? queuedTrackIndex
-          : typeof target.queueIndex === 'number'
-            ? target.queueIndex
-            : -1;
+        isHiddenWaveTrack
+          ? -1
+          : queuedTrackIndex >= 0
+            ? queuedTrackIndex
+            : typeof target.queueIndex === 'number'
+              ? target.queueIndex
+              : -1;
       const isTrackInQueue = removableQueueIndex >= 0;
       const items: MenuItem[] = [
         {
@@ -899,7 +911,7 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
           label: t('contextMenu.playNext'),
           icon: SkipForward,
           onSelect: () => {
-            usePlayerStore.getState().addToQueueNext([target.track]);
+            addTracksToQueueNextWithSoundWavePriority([target.track]);
           },
         },
         {
@@ -920,7 +932,7 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
               return;
             }
 
-            usePlayerStore.getState().addToQueue([target.track]);
+            addTracksToQueueWithSoundWavePriority([target.track]);
           },
           danger: isTrackInQueue,
         },
@@ -941,6 +953,7 @@ export function ContextMenuProvider({ children }: { children: React.ReactNode })
             await api(`/reposts/tracks/${encodeURIComponent(target.track.urn)}`, {
               method: 'POST',
             });
+            useSoundWaveProfileStore.getState().recordTrackReposted(target.track);
           },
         },
         {

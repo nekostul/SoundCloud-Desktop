@@ -10,7 +10,7 @@ import { isTauriRuntime } from './runtime';
 
 let connected = false;
 let lastConnectAttemptAt = 0;
-const CONNECT_RETRY_MS = 5000;
+const CONNECT_RETRY_MS = 30000;
 
 let lastUpdateTs = 0;
 let updateTimeout: number | null = null;
