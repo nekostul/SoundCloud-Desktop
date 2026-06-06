@@ -168,13 +168,54 @@ interface SoundWaveState {
 }
 
 const clampProgress = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
+// Адаптивный буфер: базовый запас при спокойном прослушивании, расширенный — при
+// активных скипах. Пользователь буфер не видит, он живёт только внутри Flow.
 const SOUNDWAVE_RADIO_BUFFER_TARGET = 12;
-const SOUNDWAVE_RADIO_BUFFER_MAX = 16;
+const SOUNDWAVE_RADIO_BUFFER_MAX = 20;
+const SOUNDWAVE_RADIO_BUFFER_MIN = 10;
+// Окно для оценки темпа скипов: сколько последних переходов учитываем.
+const SOUNDWAVE_SKIP_WINDOW = 6;
 const CONTEXTUAL_WAVE_REFRESH_TARGET = 10;
 let startupProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
 let initPromise: Promise<void> | null = null;
 let inFlightGenerateBatch: Promise<Track[]> | null = null;
 let soundWaveUpcomingRefreshSeq = 0;
+// Скользящее окно последних переходов: true = скип (мало прослушали), false = дослушал.
+const recentSkipFlags: boolean[] = [];
+
+function recordSkipSignal(isSkip: boolean) {
+  recentSkipFlags.push(isSkip);
+  if (recentSkipFlags.length > SOUNDWAVE_SKIP_WINDOW) recentSkipFlags.shift();
+}
+
+function getRecentSkipRatio() {
+  if (recentSkipFlags.length === 0) return 0;
+  const skips = recentSkipFlags.reduce((acc, flag) => acc + (flag ? 1 : 0), 0);
+  return skips / recentSkipFlags.length;
+}
+
+function resetSkipSignals() {
+  recentSkipFlags.length = 0;
+}
+
+// Целевой размер буфера, масштабируется от доли скипов в последнем окне:
+// спокойно слушает → MIN..TARGET, агрессивно скипает → вплоть до MAX.
+export function getAdaptiveRadioBufferTarget() {
+  const ratio = getRecentSkipRatio();
+  const span = SOUNDWAVE_RADIO_BUFFER_MAX - SOUNDWAVE_RADIO_BUFFER_TARGET;
+  const target = Math.round(SOUNDWAVE_RADIO_BUFFER_TARGET + span * ratio);
+  return Math.max(SOUNDWAVE_RADIO_BUFFER_MIN, Math.min(SOUNDWAVE_RADIO_BUFFER_MAX, target));
+}
+
+// Раннее пополнение: запускаем refill, как только осталась ~половина запаса,
+// а не дожидаемся опустошения. При активных скипах порог поднимается вместе с буфером.
+export function getAdaptiveRefillThreshold() {
+  return Math.max(5, Math.round(getAdaptiveRadioBufferTarget() * 0.5));
+}
+
+// Критически низкий буфер — разрешаем параллельный refill, чтобы серия скипов
+// не упёрлась в single-flight и воспроизведение не остановилось.
+export const SOUNDWAVE_CRITICAL_BUFFER = 3;
 
 function isTrackPlayable(track: Track | null | undefined): track is Track {
   return Boolean(track?.urn && track.title && track.user?.username && track.access !== 'blocked');
@@ -635,6 +676,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
 
   stop: () => {
     useSoundWaveProfileStore.getState().finishSession();
+    resetSkipSignals();
     if (startupProgressHideTimer) {
       clearTimeout(startupProgressHideTimer);
       startupProgressHideTimer = null;
@@ -721,7 +763,10 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     const reason = options?.reason || 'manual';
     const targetSize = Math.max(
       1,
-      Math.min(SOUNDWAVE_RADIO_BUFFER_MAX, options?.targetSize ?? SOUNDWAVE_RADIO_BUFFER_MAX),
+      Math.min(
+        SOUNDWAVE_RADIO_BUFFER_MAX,
+        options?.targetSize ?? getAdaptiveRadioBufferTarget(),
+      ),
     );
     const replaceManaged = Boolean(options?.replaceManaged);
     const { isActive, isSuspended, continuationStrategy, flowManagedUrns } = get();
@@ -815,6 +860,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
   recordFeedback: (track, type) => {
     if (!track?.urn) return;
     if (type === 'negative') {
+      recordSkipSignal(true);
       blockSoundWaveTrackForToday(track);
       set((state) => {
         const playedUrns = new Set(state.playedUrns);
@@ -824,6 +870,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
       return;
     }
 
+    recordSkipSignal(false);
     get().markTrackPlayed(track);
   },
 

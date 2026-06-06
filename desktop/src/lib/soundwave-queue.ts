@@ -97,22 +97,31 @@ export async function buildWaveQueueFromSeeds(
   const selectedUrns = new Set<string>();
   const anchorLimit =
     mode === 'diverse' ? RELATED_ANCHOR_LIMIT : Math.max(2, RELATED_ANCHOR_LIMIT - 1);
-  const anchorsToProcess = anchors.slice(0, Math.min(anchors.length, anchorLimit + 3));
+  const anchorsToProcess = anchors
+    .slice(0, Math.min(anchors.length, anchorLimit + 3))
+    .filter((anchor) => trackIdFromTrack(anchor));
 
-  for (const anchor of anchorsToProcess) {
-    const anchorId = trackIdFromTrack(anchor);
-    if (!anchorId) continue;
+  // Запросы по якорям независимы — гоним их параллельно, чтобы refill не ждал
+  // round-trip каждого якоря по очереди. Кросс-якорный dedup теряется, но его
+  // полностью закрывает пост-обработка ниже (selectedUrns + isSameWork + dedupeWaveQueue),
+  // а лёгкий over-fetch покрывается limit = targetSize * 2.
+  const anchorResults = await Promise.all(
+    anchorsToProcess.map(async (anchor) => {
+      const anchorId = trackIdFromTrack(anchor);
+      const recs = await fetchWaveTailFromSeed(anchorId, {
+        languages,
+        mode,
+        limit: Math.max(targetSize * 2, 24),
+        excludeTrackIds,
+        recentTrackIds,
+      });
+      return hydrateByIds(recs);
+    }),
+  );
 
-    const recs = await fetchWaveTailFromSeed(anchorId, {
-      languages,
-      mode,
-      limit: Math.max(targetSize * 2, 24),
-      excludeTrackIds: [...excludeTrackIds, ...idsFromUrns(selectedUrns)],
-      recentTrackIds,
-    });
-
+  for (const hydrated of anchorResults) {
     const tracks = collapseVariations(
-      filterSoundWaveTracks(await hydrateByIds(recs), {
+      filterSoundWaveTracks(hydrated, {
         hideLiked,
         excludeUrns: new Set([...antiRepeatUrns, ...selectedUrns]),
         minTracks: Math.min(6, targetSize),

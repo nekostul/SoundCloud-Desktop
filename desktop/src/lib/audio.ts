@@ -10,7 +10,10 @@ import {
 import { useSettingsStore } from '../stores/settings';
 import {
   CHARACTER_PRESETS,
+  getAdaptiveRadioBufferTarget,
+  getAdaptiveRefillThreshold,
   getSoundWaveManagedBufferCount,
+  SOUNDWAVE_CRITICAL_BUFFER,
   useSoundWaveStore,
 } from '../stores/soundwave';
 import { rankWaveCandidates, useSoundWaveProfileStore } from '../stores/soundwave-profile';
@@ -98,7 +101,6 @@ const MAX_PLAYBACK_NOTIFY_HZ = 30; // Limit notification frequency to 30/sec max
 const SEEK_DEBOUNCE_MS = 120;
 const CONTEXTUAL_AUTOPLAY_TAIL_TARGET = 16;
 const SOUNDWAVE_REFRESH_DEBOUNCE_MS = 60;
-const SOUNDWAVE_REFILL_MIN_TAIL = 10;
 let backgroundContinuationInFlight = false;
 let backgroundContinuationPreparedUrn: string | null = null;
 let queuedSoundWaveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2517,6 +2519,12 @@ function setupTauriBindings() {
     if (cachedDuration <= 0) cachedDuration = fallbackDuration;
     notify();
 
+    // Предиктивная заготовка: прослушано >60% трека — сильный позитивный сигнал.
+    // Начинаем строить кандидатов уже сейчас, не дожидаясь конца/скипа.
+    if (cachedDuration > 0 && tickPos >= cachedDuration * 0.6) {
+      prefetchSoundWaveOnPositiveSignal('predictive:majority-listened');
+    }
+
     const settings = useSettingsStore.getState();
     if (
       useLyricsStore.getState().communitySyncStage === 'idle' &&
@@ -2727,9 +2735,20 @@ function serializeStringList(values: string[]) {
   return [...values].sort().join('|');
 }
 
-function scheduleSoundWaveQueueRefresh(reason: string) {
+function scheduleSoundWaveQueueRefresh(reason: string, immediate = false) {
   useSoundWaveStore.getState().setQueueRefilling(true, reason);
   const replaceManaged = reason.startsWith('settings:');
+
+  // Критически низкий буфер: запускаем refill немедленно, в обход дебаунса и уже
+  // идущего таймера, чтобы серия скипов не дождалась опустошения.
+  if (immediate) {
+    if (queuedSoundWaveRefreshTimer) {
+      clearTimeout(queuedSoundWaveRefreshTimer);
+      queuedSoundWaveRefreshTimer = null;
+    }
+    runSoundWaveQueueRefresh(reason, replaceManaged);
+    return;
+  }
 
   if (queuedSoundWaveRefreshTimer) {
     if (!replaceManaged) {
@@ -2740,39 +2759,43 @@ function scheduleSoundWaveQueueRefresh(reason: string) {
 
   queuedSoundWaveRefreshTimer = setTimeout(() => {
     queuedSoundWaveRefreshTimer = null;
-    const sw = useSoundWaveStore.getState();
-    const player = usePlayerStore.getState();
-    if (!sw.isActive || sw.isSuspended || player.queueSource !== 'soundwave') {
-      sw.setQueueRefilling(false);
-      return;
-    }
-
-    void sw
-      .refreshUpcomingQueue({ reason, replaceManaged })
-      .then((tail) => {
-        if (tail.length > 0) {
-          preloadQueue();
-          warmUpcomingTransitionProfiles();
-          const after = usePlayerStore.getState();
-          if (
-            pendingSoundWaveAdvanceAfterRefill &&
-            after.queueSource === 'soundwave' &&
-            after.currentTrack &&
-            after.queueIndex < after.queue.length - 1
-          ) {
-            pendingSoundWaveAdvanceAfterRefill = false;
-            currentUrn = null;
-            after.next();
-          }
-        }
-      })
-      .catch((error) => {
-        console.error('[SoundWave] Scheduled queue refresh failed', error);
-      })
-      .finally(() => {
-        useSoundWaveStore.getState().setQueueRefilling(false);
-      });
+    runSoundWaveQueueRefresh(reason, replaceManaged);
   }, SOUNDWAVE_REFRESH_DEBOUNCE_MS);
+}
+
+function runSoundWaveQueueRefresh(reason: string, replaceManaged: boolean) {
+  const sw = useSoundWaveStore.getState();
+  const player = usePlayerStore.getState();
+  if (!sw.isActive || sw.isSuspended || player.queueSource !== 'soundwave') {
+    sw.setQueueRefilling(false);
+    return;
+  }
+
+  void sw
+    .refreshUpcomingQueue({ reason, replaceManaged })
+    .then((tail) => {
+      if (tail.length > 0) {
+        preloadQueue();
+        warmUpcomingTransitionProfiles();
+        const after = usePlayerStore.getState();
+        if (
+          pendingSoundWaveAdvanceAfterRefill &&
+          after.queueSource === 'soundwave' &&
+          after.currentTrack &&
+          after.queueIndex < after.queue.length - 1
+        ) {
+          pendingSoundWaveAdvanceAfterRefill = false;
+          currentUrn = null;
+          after.next();
+        }
+      }
+    })
+    .catch((error) => {
+      console.error('[SoundWave] Scheduled queue refresh failed', error);
+    })
+    .finally(() => {
+      useSoundWaveStore.getState().setQueueRefilling(false);
+    });
 }
 
 async function ensureHiddenSoundWaveContinuation(
@@ -2886,12 +2909,19 @@ function maybeQueueSoundWaveRefill(
   }
 
   const managedRemaining = getSoundWaveManagedBufferCount(state.queue, state.queueIndex);
-  if (managedRemaining > SOUNDWAVE_REFILL_MIN_TAIL || sw.isQueueRefilling) {
+  const refillThreshold = getAdaptiveRefillThreshold();
+  // Критически низкий буфер при активном refill: разрешаем второй параллельный
+  // проход, чтобы серия скипов не упёрлась в single-flight и плеер не встал.
+  const criticallyLow = managedRemaining <= SOUNDWAVE_CRITICAL_BUFFER;
+  if (managedRemaining > refillThreshold) {
+    return;
+  }
+  if (sw.isQueueRefilling && !criticallyLow) {
     return;
   }
 
   if (sw.continuationStrategy) {
-    scheduleSoundWaveQueueRefresh(reason);
+    scheduleSoundWaveQueueRefresh(reason, criticallyLow);
     return;
   }
 
@@ -2911,6 +2941,44 @@ function maybeQueueSoundWaveRefill(
     .finally(() => {
       useSoundWaveStore.getState().setQueueRefilling(false);
     });
+}
+
+// Предиктивная заготовка: сильный позитивный сигнал (дослушал большую часть,
+// лайкнул, повторил) — повод подтянуть буфер до полного адаптивного таргета
+// заранее, во время воспроизведения, не дожидаясь 50%-порога. Кандидаты строятся
+// в фоне и просто лежат готовыми. Если буфер уже полон, refreshUpcomingQueue
+// выходит рано — лишних запросов не будет.
+let lastPredictivePrefetchUrn: string | null = null;
+
+export function prefetchSoundWaveOnPositiveSignal(reason: string) {
+  const sw = useSoundWaveStore.getState();
+  const state = usePlayerStore.getState();
+  if (
+    !state.currentTrack ||
+    state.repeat !== 'off' ||
+    state.queueSource !== 'soundwave' ||
+    !sw.isActive ||
+    sw.isSuspended ||
+    sw.isQueueRefilling ||
+    !sw.continuationStrategy ||
+    state.queueIndex < 0
+  ) {
+    return;
+  }
+
+  // Один предиктивный заход на трек — сигнал по одному и тому же треку (тики +
+  // лайк) не должен спамить refill.
+  if (lastPredictivePrefetchUrn === state.currentTrack.urn) {
+    return;
+  }
+
+  const managedRemaining = getSoundWaveManagedBufferCount(state.queue, state.queueIndex);
+  if (managedRemaining >= getAdaptiveRadioBufferTarget()) {
+    return;
+  }
+
+  lastPredictivePrefetchUrn = state.currentTrack.urn;
+  scheduleSoundWaveQueueRefresh(reason);
 }
 
 setupTauriBindings();

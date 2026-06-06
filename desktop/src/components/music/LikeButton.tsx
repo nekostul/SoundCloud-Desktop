@@ -1,10 +1,11 @@
 import { useQueryClient } from '@tanstack/react-query';
 import React, { useEffect } from 'react';
 import { api } from '../../lib/api';
+import { prefetchSoundWaveOnPositiveSignal } from '../../lib/audio';
 import { invalidateAllLikesCache } from '../../lib/hooks';
 import { Heart } from '../../lib/icons';
 import { optimisticToggleLike, setLikedUrn, useLiked } from '../../lib/likes';
-import type { Track } from '../../stores/player';
+import { type Track, usePlayerStore } from '../../stores/player';
 import { useSoundWaveProfileStore } from '../../stores/soundwave-profile';
 
 export const LikeButton = React.memo(function LikeButton({
@@ -32,6 +33,10 @@ export const LikeButton = React.memo(function LikeButton({
         method: next ? 'POST' : 'DELETE',
       });
       useSoundWaveProfileStore.getState().recordTrackLiked(track, next);
+      // Лайк текущего трека Flow — сильный позитивный сигнал: заранее готовим буфер.
+      if (next && usePlayerStore.getState().currentTrack?.urn === track.urn) {
+        prefetchSoundWaveOnPositiveSignal('predictive:liked');
+      }
     } catch {
       optimisticToggleLike(qc, track, !next);
     }
