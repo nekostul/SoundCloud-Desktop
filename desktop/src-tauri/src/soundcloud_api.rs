@@ -887,10 +887,15 @@ impl DirectSoundCloudApi {
     }
 }
 
-pub fn init_deep_link(app: &AppHandle) -> Result<(), String> {
-    app.deep_link()
-        .register_all()
-        .map_err(|error| format!("Failed to register deep links: {error}"))?;
+pub fn init_deep_link(app: &AppHandle) {
+    // register_all регистрирует URI-схемы из tauri.conf.json в рантайме.
+    // Поддерживается только на Linux/Windows. На macOS/iOS схемы прописываются
+    // в Info.plist, а рантайм-регистрация возвращает "unsupported platform".
+    // Это не повод прерывать запуск — логируем warning и продолжаем: обработчики
+    // ниже (on_open_url / get_current) работают на всех платформах.
+    if let Err(error) = app.deep_link().register_all() {
+        eprintln!("[deep-link] runtime registration skipped: {error}");
+    }
 
     let app_handle = app.clone();
     app.deep_link().on_open_url(move |event| {
@@ -904,8 +909,6 @@ pub fn init_deep_link(app: &AppHandle) -> Result<(), String> {
             forward_oauth_callback(app, url.as_str());
         }
     }
-
-    Ok(())
 }
 
 fn clear_pending_callback(app: &AppHandle) {

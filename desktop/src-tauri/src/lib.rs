@@ -1037,7 +1037,7 @@ pub fn run() {
 
             app.manage(TrayAvailabilityState::default());
             app.manage(soundcloud_api::OAuthCallbackState::default());
-            soundcloud_api::init_deep_link(&app.handle()).map_err(std::io::Error::other)?;
+            soundcloud_api::init_deep_link(&app.handle());
 
             // Read framerate config
             let config_path = config_dir.join("framerate_config.json");
