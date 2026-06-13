@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { isLowPerformanceMode } from '../performance';
 
 export function useTilt() {
   const ref = useRef<HTMLDivElement>(null);
@@ -17,9 +18,7 @@ export function useTilt() {
     }
 
     rectRef.current = null;
-    el.style.transition = animated
-      ? 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)'
-      : 'none';
+    el.style.transition = animated ? 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)' : 'none';
     el.style.transform = 'perspective(500px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)';
     el.style.willChange = 'auto';
   }, []);
@@ -28,8 +27,7 @@ export function useTilt() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
 
     enabledRef.current =
-      window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
-      !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      window.matchMedia('(hover: hover) and (pointer: fine)').matches && !isLowPerformanceMode();
 
     return () => {
       if (frameRef.current != null) {
@@ -78,21 +76,24 @@ export function useTilt() {
     el.style.willChange = 'transform';
   }, []);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!enabledRef.current) return;
-    if (e.buttons !== 0) {
-      resetTilt(false);
-      return;
-    }
-    if (!ensureMeasured()) return;
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      if (!enabledRef.current) return;
+      if (e.buttons !== 0) {
+        resetTilt(false);
+        return;
+      }
+      if (!ensureMeasured()) return;
 
-    pointRef.current.x = e.clientX;
-    pointRef.current.y = e.clientY;
+      pointRef.current.x = e.clientX;
+      pointRef.current.y = e.clientY;
 
-    if (frameRef.current == null) {
-      frameRef.current = window.requestAnimationFrame(flushFrame);
-    }
-  }, [ensureMeasured, flushFrame, resetTilt]);
+      if (frameRef.current == null) {
+        frameRef.current = window.requestAnimationFrame(flushFrame);
+      }
+    },
+    [ensureMeasured, flushFrame, resetTilt],
+  );
 
   const handleMouseLeave = useCallback(() => {
     if (!enabledRef.current || !ref.current) return;

@@ -26,7 +26,7 @@ export const AmbientLayer = React.memo(function AmbientLayer({
 
   return (
     <div
-      className="absolute inset-0 pointer-events-none overflow-hidden"
+      className="sw-ambient-layer absolute inset-0 pointer-events-none overflow-hidden"
       aria-hidden
       style={{ contain: 'strict', transform: 'translateZ(0)' }}
     >

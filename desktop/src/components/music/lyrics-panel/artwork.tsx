@@ -12,6 +12,7 @@ import {
 } from '../../../lib/artwork-palette';
 import { art } from '../../../lib/formatters';
 import { invalidateAllLikesCache } from '../../../lib/hooks';
+import { isLowPerformanceMode } from '../../../lib/performance';
 import {
   Ban,
   ExternalLink,
@@ -81,9 +82,7 @@ export function runDocumentViewTransition(update: () => void) {
     return;
   }
 
-  const prefersReducedMotion =
-    typeof window !== 'undefined' &&
-    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const prefersReducedMotion = isLowPerformanceMode();
   const doc = document as ViewTransitionDocument;
 
   if (!doc.startViewTransition || prefersReducedMotion) {
@@ -661,9 +660,7 @@ export const ArtworkLightbox = React.memo(
     const rafTwoRef = useRef<number | null>(null);
     const anchorRectRef = useRef<ArtworkLightboxRect | null>(anchorRect);
     const sourceElementRef = useRef<HTMLElement | null>(sourceElement);
-    const prefersReducedMotion =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const prefersReducedMotion = isLowPerformanceMode();
 
     useEffect(() => {
       setFullscreenArtIndex(0);

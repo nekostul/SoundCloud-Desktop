@@ -148,6 +148,7 @@ export const SoundWaveHero: React.FC = () => {
   const currentPreset = useSoundWaveStore((s) => s.currentPreset);
   const startWave = useSoundWaveStore((s) => s.start);
   const stopWave = useSoundWaveStore((s) => s.stop);
+  const lowPerformanceMode = useSettingsStore((s) => s.lowPerformanceMode);
   const resumeSuspendedPlayback = useSoundWaveStore((s) => s.resumeSuspendedPlayback);
   const suspendForExternalPlayback = useSoundWaveStore((s) => s.suspendForExternalPlayback);
   const isInitialLoading = useSoundWaveStore((s) => s.isInitialLoading);
@@ -276,7 +277,7 @@ export const SoundWaveHero: React.FC = () => {
     let animationFrameId: number;
     let lastFrameTime = 0;
     let unlistenAudio: (() => void) | null = null;
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reducedMotion = lowPerformanceMode;
     const blobs: Blob[] = [];
     const blobCount = reducedMotion ? 3 : 5;
 
@@ -465,7 +466,7 @@ export const SoundWaveHero: React.FC = () => {
       cancelAnimationFrame(animationFrameId);
       unlistenAudio?.();
     };
-  }, [isPlaying, isActive]);
+  }, [isPlaying, isActive, lowPerformanceMode]);
 
   const runWaveWithLoading = (preset: SoundWavePreset) => {
     awaitingFirstPlayableRef.current = false;

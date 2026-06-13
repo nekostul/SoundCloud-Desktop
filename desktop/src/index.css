@@ -16,7 +16,8 @@
   --color-accent-selection: rgba(255, 85, 0, 0.3);
   --color-accent-contrast: #ffffff;
 
-  --font-sans: "Inter";
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -94,7 +95,24 @@ body,
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   letter-spacing: -0.01em;
+}
+
+/* macOS: the bundled Inter is a single static Regular face, so synthesised
+   bold/semibold render mushy/blurry through CoreText. Use the native San
+   Francisco stack (real weights, sub-pixel hinted) and forbid faux weights so
+   text looks native and crisp — matching the Windows/WebView2 appearance. */
+html.is-macos,
+html.is-macos body,
+html.is-macos #root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "Helvetica Neue", "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+html.is-macos * {
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
 }
 
 #root {
@@ -419,26 +437,81 @@ body,
   will-change: background-position;
 }
 
+/* ── Low-end PC mode ───────────────────────────────────────────
+   Driven by the in-app toggle (html.perf-low), NOT the OS
+   prefers-reduced-motion. This keeps animations identical across
+   Windows and macOS, and only strips effects when the user opts in.
+
+   Killed in perf mode:
+   - looping decorative keyframes (theme gradient, dock, accent, shimmer,
+     soundwave bars/particles/aurora, note gradient, spinners stay)
+   - blur / backdrop-filter (the single most expensive WebView paint)
+   - heavy box-shadows / saturation
+   Kept: short functional transitions (opacity/transform/colour) so the UI
+   still feels responsive instead of dead. */
+html.perf-low #root,
+html.perf-low .theme-accent-animated,
+html.perf-low .theme-dock,
+html.perf-low .skeleton-shimmer,
+html.perf-low .soundwave-bar,
+html.perf-low .animate-note-gradient,
+html.perf-low .note-gradient-text,
+html.perf-low .sw-ambient-layer,
+html.perf-low .sw-ambient-layer * {
+  animation: none !important;
+}
+
+/* The ambient aurora/particle layer is pure decoration and its blur orbs are
+   a steady GPU drain — hide it entirely in perf mode (inline styles need the
+   !important override). */
+html.perf-low .sw-ambient-layer {
+  display: none !important;
+}
+
+/* Disable the expensive blur layers entirely — biggest GPU win on weak HW. */
+html.perf-low .glass,
+html.perf-low .glass-flat,
+html.perf-low .glass-featured,
+html.perf-low .theme-dock,
+html.perf-low [class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Strip soft glow shadows; keep a flat solid surface. */
+html.perf-low .glass,
+html.perf-low .glass-flat,
+html.perf-low .glass-featured,
+html.perf-low .theme-dock,
+html.perf-low .theme-accent-fill,
+html.perf-low .theme-accent-progress,
+html.perf-low .theme-accent-thumb,
+html.perf-low .theme-accent-soft,
+html.perf-low .theme-accent-chip {
+  box-shadow: none !important;
+}
+
+/* Drop the long, springy transitions to short cheap ones. Loading spinners
+   (animate-spin) and the explicit decorative loops above are handled
+   separately, so we only clamp transitions here — never freeze spinners. */
+html.perf-low *,
+html.perf-low *::before,
+html.perf-low *::after {
+  transition-duration: 120ms !important;
+}
+
+/* startup/boot keyframes can keep running — they're one-shot, not a steady
+   GPU drain — but the looping ambient ones above are cut. */
+
 @media (prefers-reduced-motion: reduce) {
-  #root {
-    animation: none !important;
-  }
-
-  .theme-accent-animated {
-    animation: none !important;
-  }
-
-  .theme-dock {
-    animation: none !important;
-  }
-
+  /* Respect the OS setting only for the truly optional startup flourish; the
+     core UI animations stay so macOS users with Reduce Motion enabled still
+     get the same experience as Windows. */
   .startup-shell__app,
   .startup-overlay,
   .startup-bar,
   .startup-cloud-sheen {
-    animation: none !important;
-    transition: none !important;
-    transform: none !important;
+    animation-duration: 0.01ms;
   }
 }
 

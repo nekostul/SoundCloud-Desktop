@@ -12,6 +12,8 @@ export function installEmbeddedFont() {
     @font-face {
       font-family: "Inter";
       src: url("${interFontDataUrl}") format("truetype");
+      font-weight: 400;
+      font-style: normal;
       font-display: swap;
     }
   `;

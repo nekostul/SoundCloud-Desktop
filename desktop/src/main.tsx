@@ -7,12 +7,13 @@ import i18n from './i18n';
 import { normalizeLanguage } from './i18n/language';
 import { ApiError } from './lib/api';
 import './lib/app-visibility';
-import { installGlobalFrameLimiter, setGlobalFrameLimiterConfig } from './lib/framerate';
-import { setupUiDiagnostics } from './lib/ui-diagnostics';
 import { setServerPorts } from './lib/constants';
 import { installEmbeddedFont } from './lib/embedded-font';
-import { isTauriRuntime } from './lib/runtime';
+import { installGlobalFrameLimiter, setGlobalFrameLimiterConfig } from './lib/framerate';
 import { applyMediaProxySettings, initMediaProxyRuntime } from './lib/media-proxy';
+import { applyLowPerformanceClass, applyPlatformClass } from './lib/performance';
+import { isTauriRuntime } from './lib/runtime';
+import { setupUiDiagnostics } from './lib/ui-diagnostics';
 import './lib/audio';
 import './index.css';
 import { getEffectivePitchSemitones, usePlayerStore } from './stores/player';
@@ -21,6 +22,8 @@ import { useSettingsStore } from './stores/settings';
 installGlobalFrameLimiter();
 setupUiDiagnostics();
 installEmbeddedFont();
+applyPlatformClass();
+applyLowPerformanceClass();
 
 function installBrowserChromeBlockers() {
   const onKeyDown = (event: KeyboardEvent) => {
@@ -80,7 +83,13 @@ useSettingsStore.persist.onFinishHydration((state) => {
     i18n.changeLanguage(language);
   }
   syncGlobalFramerateLimiter(state);
+  applyLowPerformanceClass(state.lowPerformanceMode);
   applyHydratedDesktopSettings(state);
+});
+
+const unsubscribeLowPerformanceClass = useSettingsStore.subscribe((state, prev) => {
+  if (state.lowPerformanceMode === prev.lowPerformanceMode) return;
+  applyLowPerformanceClass(state.lowPerformanceMode);
 });
 
 const unsubscribeFramerateLimiter = useSettingsStore.subscribe((state, prev) => {
@@ -96,6 +105,7 @@ const unsubscribeFramerateLimiter = useSettingsStore.subscribe((state, prev) => 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     unsubscribeFramerateLimiter();
+    unsubscribeLowPerformanceClass();
     unsubscribeMediaProxySync();
     if (proxySyncTimeout) {
       clearTimeout(proxySyncTimeout);
