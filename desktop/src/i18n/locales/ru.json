@@ -133,7 +133,7 @@
     "checkSuccessToast": "Медиасерверы снова доступны"
   },
   "search": {
-    "placeholder": "Треки, плейлисты, пользователи...",
+    "placeholder": "Треки, плейлисты, пользователи, жанры...",
     "tracks": "Треки",
     "playlists": "Плейлисты",
     "users": "Пользователи",
@@ -147,7 +147,22 @@
     "resolveLoading": "Открываем ссылку...",
     "resolveError": "Не удалось открыть ссылку",
     "resolveRedirecting": "Перенаправляем...",
-    "openLinkHint": "Нажмите Enter, чтобы открыть ссылку"
+    "openLinkHint": "Нажмите Enter, чтобы открыть ссылку",
+    "favoriteArtists": "Любимые артисты",
+    "favoriteArtistsHint": "быстрый поиск",
+    "recentReleases": "Что они выпустили за последнее время",
+    "recentReleasesHint": "свежие релизы",
+    "listenAgain": "Ещё раз?",
+    "listenAgainHint": "слушали часто",
+    "listenAgainEmpty": "Послушайте музыку — то, что вы включите повторно, появится здесь",
+    "discoverNew": "Послушайте новое",
+    "discoverNewHint": "персональные находки",
+    "genresMoods": "Поиск по жанрам и настроениям",
+    "genresMoodsHint": "быстрые порталы",
+    "genreTap": "Нажмите",
+    "genreLabel": "Жанр",
+    "genrePlay": "Слушать",
+    "scrollTop": "Наверх"
   },
   "track": {
     "comments": "Комментарии",

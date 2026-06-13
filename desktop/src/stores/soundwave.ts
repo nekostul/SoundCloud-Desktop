@@ -587,6 +587,17 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
     const { init, stop } = get();
     const restartInPlace = preserveCurrentTrack && get().isActive;
 
+    // Треки, которые пользователь вручную добавил в очередь, нужно сохранить ДО
+    // сброса flowManagedUrns ниже: при переформировании волны (серия скипов)
+    // очередь пересобирается, и без этого ручные треки теряются.
+    const preservedManualUpcoming = preserveCurrentTrack
+      ? collectManualUpcomingTracks(
+          usePlayerStore.getState().queue,
+          usePlayerStore.getState().queueIndex,
+          get().flowManagedUrns,
+        )
+      : [];
+
     if (startupProgressHideTimer) {
       clearTimeout(startupProgressHideTimer);
       startupProgressHideTimer = null;
@@ -642,7 +653,7 @@ export const useSoundWaveStore = create<SoundWaveState>((set, get) => ({
         currentTrackIndex >= 0 ? normalizedQueue.slice(currentTrackIndex + 1) : normalizedQueue;
       const { nextQueue, managedUpcoming } = buildRadioQueue({
         queueHead,
-        manualUpcoming: [],
+        manualUpcoming: preservedManualUpcoming,
         flowUpcoming: takeRadioBuffer(
           hiddenSeed,
           'start-from-queue-preserve-radio',

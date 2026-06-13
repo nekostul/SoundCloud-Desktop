@@ -939,6 +939,54 @@ export function useSearchTracks(q: string) {
   return { tracks, ...query };
 }
 
+/**
+ * Tracks filtered by a single SoundCloud genre — backed by the official
+ * `GET /tracks?genres=<genre>` filter. Real SC data, no local curation.
+ */
+export function useGenreTracks(genre: string) {
+  const query = useInfiniteQuery({
+    queryKey: ['genre', 'tracks', genre],
+    maxPages: SEARCH_MAX_PAGES,
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({
+        genres: genre,
+        limit: '20',
+        linked_partitioning: 'true',
+      });
+      if (pageParam) {
+        for (const [key, val] of Object.entries(pageParam)) {
+          params.set(key, val);
+        }
+      }
+      return api<TrackListResponse>(`/tracks?${params}`);
+    },
+    initialPageParam: undefined as PageParam | undefined,
+    getNextPageParam: (last, _all, lastPageParam) => {
+      const next = extractPagination(last.next_href);
+      if (!next) return undefined;
+      if (lastPageParam && JSON.stringify(next) === JSON.stringify(lastPageParam)) return undefined;
+      return next;
+    },
+    enabled: !!genre.trim(),
+    staleTime: 1000 * 60 * 5,
+  });
+
+  const tracks = useMemo(() => {
+    if (!query.data) return [];
+    const arr: Track[] = [];
+    const seen = new Set<string>();
+    for (const page of query.data.pages) {
+      for (const t of page.collection ?? []) {
+        if (!t?.urn || seen.has(t.urn)) continue;
+        seen.add(t.urn);
+        arr.push(t);
+      }
+    }
+    return arr;
+  }, [query.data]);
+  return { tracks, ...query };
+}
+
 export function useSearchPlaylists(q: string) {
   const query = useInfiniteQuery({
     queryKey: ['search', 'playlists', q],

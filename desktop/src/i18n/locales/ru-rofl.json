@@ -143,7 +143,22 @@
     "resolveLoading": "Ща раскопаем ссылку...",
     "resolveError": "Ссылка не разрулилась",
     "resolveRedirecting": "Перекидываем...",
-    "openLinkHint": "Жми Enter, чтобы открыть ссылку"
+    "openLinkHint": "Жми Enter, чтобы открыть ссылку",
+    "favoriteArtists": "Твои типы",
+    "favoriteArtistsHint": "быстрый розыск",
+    "recentReleases": "Чё они там высрали",
+    "recentReleasesHint": "свежая хуйня",
+    "listenAgain": "Опять эту хуйню?",
+    "listenAgainHint": "заслушал до смерти",
+    "listenAgainEmpty": "Послушай хоть что-нибудь — потом тут появится то, что ты дрочишь на повторе",
+    "discoverNew": "Найти новую хуйню",
+    "discoverNewHint": "авось зайдёт",
+    "genresMoods": "Жанры и шизы",
+    "genresMoodsHint": "быстрый телепорт",
+    "genreTap": "Жми",
+    "genreLabel": "Шиза",
+    "genrePlay": "Въебать",
+    "scrollTop": "Наверх нахуй"
   },
   "track": {
     "comments": "Высеры",

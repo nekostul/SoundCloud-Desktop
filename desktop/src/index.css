@@ -1096,6 +1096,22 @@ body,
   animation: zoomIn 0.4s var(--ease-apple) both;
 }
 
+/* Genre screen open — slide up + fade, GPU-only (transform/opacity) */
+@keyframes genreEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.animate-genre-enter {
+  animation: genreEnter 0.42s var(--ease-apple) backwards;
+}
+
 @keyframes star-float {
   0%,
   100% {

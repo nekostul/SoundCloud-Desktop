@@ -133,7 +133,7 @@
     "checkSuccessToast": "Media servers are reachable again"
   },
   "search": {
-    "placeholder": "Search tracks, playlists, users...",
+    "placeholder": "Tracks, playlists, users, genres...",
     "tracks": "Tracks",
     "playlists": "Playlists",
     "users": "Users",
@@ -147,7 +147,22 @@
     "resolveLoading": "Resolving link...",
     "resolveError": "Could not resolve link",
     "resolveRedirecting": "Redirecting...",
-    "openLinkHint": "Press Enter to open link"
+    "openLinkHint": "Press Enter to open link",
+    "favoriteArtists": "Favorite artists",
+    "favoriteArtistsHint": "quick search",
+    "recentReleases": "What they've released lately",
+    "recentReleasesHint": "fresh releases",
+    "listenAgain": "Listen again?",
+    "listenAgainHint": "played often",
+    "listenAgainEmpty": "Play some music — your repeats will show up here",
+    "discoverNew": "Discover something new",
+    "discoverNewHint": "personal picks",
+    "genresMoods": "Browse genres & moods",
+    "genresMoodsHint": "quick portals",
+    "genreTap": "Tap",
+    "genreLabel": "Genre",
+    "genrePlay": "Play",
+    "scrollTop": "Scroll to top"
   },
   "track": {
     "comments": "Comments",

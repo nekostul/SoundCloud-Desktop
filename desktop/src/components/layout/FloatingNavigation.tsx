@@ -10,6 +10,11 @@ export const FloatingNavigation = React.memo(() => {
 
   const canGoBack = location.key !== 'default';
 
+  // Genre sub-view has its own back button — hide the floating arrows there.
+  const isGenreView =
+    location.pathname === '/search' && new URLSearchParams(location.search).has('genre');
+  if (isGenreView) return null;
+
   return (
     <div
       className={`absolute top-3 left-3 z-40 flex items-center gap-1.5 pointer-events-auto transition-all duration-300 ${
